@@ -62,7 +62,7 @@ class Crawler:
             markets = await discover_countries(
                 self.http_client,
                 self.config,
-                homepage_url="https://www.paypal.com/de",
+                discovery_url="https://www.paypal.com/de/business/paypal-business-fees",
             )
             if not markets:
                 raise CountryDiscoveryError("No markets discovered")

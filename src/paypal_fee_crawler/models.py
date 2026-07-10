@@ -10,6 +10,30 @@ from .exceptions import ExitCode
 from .market_mapping import normalize_paypal_market_code
 
 
+def _migrate_legacy_country_code(data: Any) -> Any:
+    """Migrate a legacy ``country_code`` field into modern market-code fields.
+
+    Older serialized output used ``country_code`` for what is now split into
+    ``paypal_market_code`` (the PayPal market identifier) and
+    ``iso_country_code`` (the ISO 3166-1 alpha-2 code when known). This
+    helper copies ``country_code`` into the new fields when they are missing
+    and removes the legacy key so it does not conflict with the computed
+    ``country_code`` property.
+    """
+    if not isinstance(data, dict):
+        return data
+    data = dict(data)
+    legacy = data.pop("country_code", None)
+    if legacy is None:
+        return data
+    legacy = str(legacy).strip().upper()
+    if "paypal_market_code" not in data:
+        data["paypal_market_code"] = legacy
+    if "iso_country_code" not in data and len(legacy) == 2 and legacy.isalpha():
+        data["iso_country_code"] = legacy
+    return data
+
+
 class Language(BaseModel):
     """A supported language for a market."""
 
@@ -62,6 +86,11 @@ class Market(BaseModel):
     @property
     def url_slug(self) -> str:
         return self.paypal_market_code.lower()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy(cls, data: Any) -> Any:
+        return _migrate_legacy_country_code(data)
 
 
 class Source(BaseModel):
@@ -290,6 +319,11 @@ class CountryIndexEntry(BaseModel):
     def country_code(self) -> str:
         return self.iso_country_code or self.paypal_market_code
 
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy(cls, data: Any) -> Any:
+        return _migrate_legacy_country_code(data)
+
 
 class CountryIndex(BaseModel):
     """Index of successfully processed countries."""
@@ -335,6 +369,11 @@ class UnsupportedCountry(BaseModel):
     def country_code(self) -> str:
         return self.iso_country_code or self.paypal_market_code
 
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy(cls, data: Any) -> Any:
+        return _migrate_legacy_country_code(data)
+
 
 class CountryManifest(BaseModel):
     """Discovered country manifest."""
@@ -376,6 +415,11 @@ class CoreFeeEntry(BaseModel):
     @property
     def country_code(self) -> str:
         return self.iso_country_code or self.paypal_market_code
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy(cls, data: Any) -> Any:
+        return _migrate_legacy_country_code(data)
 
 
 class CoreFees(BaseModel):

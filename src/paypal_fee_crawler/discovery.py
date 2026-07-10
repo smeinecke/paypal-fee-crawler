@@ -135,24 +135,26 @@ def _normalize_markets(selectors: list[dict[str, Any]]) -> list[Market]:
 async def discover_countries(
     http_client: HttpClient,
     config: CrawlConfiguration,
-    homepage_url: str = "https://www.paypal.com/de",
+    discovery_url: str = "https://www.paypal.com/de/business/paypal-business-fees",
 ) -> list[Market]:
-    """Discover PayPal markets from the country selector embedded in a homepage.
+    """Discover PayPal markets from the country selector embedded in a page.
 
-    The country selector is searched across all allowlisted global JSON contexts
-    (CMS, footer, header) independently. Falls back to the bootstrap list if
-    discovery fails and a fallback is allowed by the caller.
+    The PayPal homepage redirect no longer exposes the CMS render context, so
+    the country selector is read from a fee page (which still contains the
+    CMS context). The selector is searched across all allowlisted global JSON
+    contexts (CMS, footer, header) independently. Falls back to the bootstrap
+    list if discovery fails and a fallback is allowed by the caller.
     """
     try:
-        response = await http_client.get(homepage_url)
+        response = await http_client.get(discovery_url)
     except (NetworkError, ParserError) as exc:
         logger.warning("Country discovery request failed: %s", exc)
-        raise CountryDiscoveryError(f"Failed to retrieve PayPal homepage: {exc}") from exc
+        raise CountryDiscoveryError(f"Failed to retrieve PayPal discovery page: {exc}") from exc
 
     try:
         all_contexts = extract_all_contexts(response.text)
     except ParserError as exc:
-        logger.warning("Could not extract CMS context from homepage: %s", exc)
+        logger.warning("Could not extract CMS context from discovery page: %s", exc)
         # Try to find any global JSON assignments that may contain the selector.
         assignments = find_global_json_assignments(response.text, list(ALLOWLISTED_GLOBAL_CONTEXTS))
         for data in assignments.values():
@@ -161,7 +163,7 @@ async def discover_countries(
                 markets = _normalize_markets(selectors)
                 if markets:
                     return markets
-        raise CountryDiscoveryError(f"No country selector found in homepage: {exc}") from exc
+        raise CountryDiscoveryError(f"No country selector found in discovery page: {exc}") from exc
 
     contexts = all_contexts["contexts"]
     # Search each parsed context independently; the selector may live only in the

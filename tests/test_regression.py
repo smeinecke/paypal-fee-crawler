@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -197,3 +198,40 @@ def test_previous_state_load_from_output() -> None:
         assert "DE" in previous.supported_countries
         assert previous.country_tables.get("DE") == 1
         assert previous.country_rows.get("DE") == 2
+
+
+def test_previous_state_loads_legacy_manifest_with_country_code() -> None:
+    """Old manifests stored country_code instead of paypal_market_code."""
+    with tempfile.TemporaryDirectory() as tmp:
+        output_dir = Path(tmp) / "out"
+        meta_dir = output_dir / "meta"
+        meta_dir.mkdir(parents=True)
+        legacy_manifest = {
+            "schema_version": 1,
+            "generated_at": "2026-04-30",
+            "markets": [
+                {
+                    "country_code": "DE",
+                    "country_name": "Germany",
+                    "url_prefix": "https://www.paypal.com/de",
+                },
+                {
+                    "country_code": "US",
+                    "country_name": "United States",
+                    "url_prefix": "https://www.paypal.com/us",
+                },
+            ],
+            "unsupported": [
+                {
+                    "country_code": "XY",
+                    "country_name": "Unknown",
+                    "temporary": True,
+                }
+            ],
+            "fee_page_urls": {},
+        }
+        (meta_dir / "countries.json").write_text(json.dumps(legacy_manifest), encoding="utf-8")
+        previous = PreviousState.load(output_dir)
+        assert previous.discovered_countries == {"DE", "US"}
+        assert previous.unsupported_countries == {"XY"}
+        assert previous.transient_countries == {"XY"}
