@@ -19,7 +19,7 @@ from paypal_fee_crawler.discovery import (
     get_bootstrap_markets,
     get_canonical_page_id,
 )
-from paypal_fee_crawler.exceptions import UnsupportedCountryError
+from paypal_fee_crawler.exceptions import FeePageError, TransientNetworkError, UnsupportedCountryError
 from paypal_fee_crawler.http import HttpClient, HttpResponse
 from paypal_fee_crawler.models import CrawlConfiguration, Market
 
@@ -195,3 +195,59 @@ def test_normalize_markets_locale_fallback() -> None:
     assert markets[0].country_code == "FR"
     assert markets[0].locale is None
     assert markets[0].preferred_language == "fr"
+
+
+def test_transient_failure_not_unsupported() -> None:
+    async def _fake_transient(self: HttpClient, url: str, **kwargs: Any) -> HttpResponse:
+        if "paypal-business-fees" in url:
+            raise TransientNetworkError("Simulated transient failure")
+        # Homepage returns a page with no fee links for this test market.
+        return HttpResponse(
+            url=url,
+            status_code=200,
+            content=b"<html></html>",
+            text="<html></html>",
+            headers={"content-type": "text/html"},
+        )
+
+    async def _run() -> str:
+        async with HttpClient(CrawlConfiguration(max_workers=1, request_delay=0)) as client:
+            with patch.object(HttpClient, "get", _fake_transient):
+                return await discover_fee_page(
+                    client,
+                    Market(paypal_market_code="ZZ", iso_country_code=None, country_name="Unknown"),
+                    CrawlConfiguration(),
+                )
+
+    with pytest.raises(FeePageError):
+        asyncio.run(_run())
+
+
+def test_unsupported_country_records_tested_urls() -> None:
+    no_page_html = (
+        "<html><script>window.__CMS_ENGINE_RENDER_CONTEXT__ = "
+        '{"pageContext":{"additionalContext":{"clientSideContext":{"pageId":"home"}}}};'
+        "</script></html>"
+    )
+
+    async def _fake_no_page(self: HttpClient, url: str, **kwargs: Any) -> HttpResponse:
+        return HttpResponse(
+            url=url,
+            status_code=200,
+            content=no_page_html.encode("utf-8"),
+            text=no_page_html,
+            headers={"content-type": "text/html"},
+        )
+
+    async def _run() -> str:
+        async with HttpClient(CrawlConfiguration(max_workers=1, request_delay=0)) as client:
+            with patch.object(HttpClient, "get", _fake_no_page):
+                return await discover_fee_page(
+                    client,
+                    Market(paypal_market_code="ZZ", iso_country_code=None, country_name="Unknown"),
+                    CrawlConfiguration(),
+                )
+
+    with pytest.raises(UnsupportedCountryError) as exc_info:
+        asyncio.run(_run())
+    assert exc_info.value.tested_urls

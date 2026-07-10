@@ -15,9 +15,12 @@ import httpx
 from lxml import html
 
 from .exceptions import (
+    AccessChallengeError,
     ContentSecurityError,
     NetworkError,
+    PermanentHttpError,
     PermanentNetworkError,
+    RateLimitError,
     TransientNetworkError,
 )
 from .models import CrawlConfiguration
@@ -153,31 +156,29 @@ class HttpClient:
         dependency whose URL contains the string ``captcha`` must not by itself
         classify the page as a challenge.
         """
-        if response.status_code in (401, 403):
-            raise PermanentNetworkError(f"Access denied ({response.status_code}): {response.url}")
         if response.status_code == 429:
             retry_after = response.headers.get("retry-after")
-            raise TransientNetworkError(f"Rate limited (429): {response.url}", retry_after=retry_after)
+            raise RateLimitError(f"Rate limited (429): {response.url}", retry_after=retry_after)
         if response.status_code >= 500:
             raise TransientNetworkError(f"Server error ({response.status_code}): {response.url}")
-        if response.status_code in (502, 503, 504):
-            raise TransientNetworkError(f"Gateway error ({response.status_code}): {response.url}")
+        if response.status_code in (401, 403):
+            raise AccessChallengeError(f"Access denied ({response.status_code}): {response.url}")
         if response.status_code >= 400:
-            raise PermanentNetworkError(f"HTTP {response.status_code} for {response.url}")
+            raise PermanentHttpError(f"HTTP {response.status_code} for {response.url}", response.status_code)
 
         title, challenge_score, login_score = self._parse_challenge_signals(response.text)
 
         # Strong evidence: challenge title phrase plus at least one structural signal.
         if title and self._is_challenge_title(title) and challenge_score >= 1:
-            raise PermanentNetworkError(f"CAPTCHA/interstitial detected: {response.url}")
+            raise AccessChallengeError(f"CAPTCHA/interstitial detected: {response.url}")
 
         # Multiple structural challenge signals also trigger a block.
         if challenge_score >= 2:
-            raise PermanentNetworkError(f"CAPTCHA/interstitial detected: {response.url}")
+            raise AccessChallengeError(f"CAPTCHA/interstitial detected: {response.url}")
 
         # Login pages are classified separately.
         if login_score >= 2 and self._looks_like_login_page(response.text):
-            raise PermanentNetworkError(f"Login page detected: {response.url}")
+            raise AccessChallengeError(f"Login page detected: {response.url}")
 
     def _parse_challenge_signals(self, text: str) -> tuple[str | None, int, int]:
         """Parse HTML and return (title, challenge_score, login_score).
@@ -346,8 +347,6 @@ class HttpClient:
                         last_modified=response.headers.get("last-modified"),
                     )
                     self._detect_blocking_page(http_response)
-                    if response.status_code >= 400:
-                        raise PermanentNetworkError(f"HTTP {response.status_code} for {final_url}")
                     if self.config.request_delay > 0:
                         await asyncio.sleep(self.config.request_delay)
                     return http_response

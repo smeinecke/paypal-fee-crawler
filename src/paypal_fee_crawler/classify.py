@@ -410,11 +410,14 @@ def _is_international_surcharge(table: Table) -> tuple[bool, float, list[str]]:
     else:
         return False, 0.0, []
 
+    header_text = _norm(" ".join(h.text for h in table.headers))
+    if _contains_any(header_text, _POS_INTERNATIONAL):
+        confidence += 0.2
+        evidence.append("headers match international-surcharge patterns")
+
     has_percentage = any(_row_has_token_kind(row, "percentage") for row in table.rows)
     if has_percentage:
         confidence += 0.1
-    else:
-        return False, 0.0, []
 
     return confidence >= 0.4, confidence, evidence
 
@@ -470,11 +473,14 @@ def _is_currency_conversion(table: Table) -> tuple[bool, float, list[str]]:
     else:
         return False, 0.0, []
 
+    header_text = _norm(" ".join(h.text for h in table.headers))
+    if _contains_any(header_text, _POS_CONVERSION):
+        confidence += 0.2
+        evidence.append("headers match currency-conversion patterns")
+
     has_percentage = any(_row_has_token_kind(row, "percentage") for row in table.rows)
     if has_percentage:
         confidence += 0.1
-    else:
-        return False, 0.0, []
 
     return confidence >= 0.4, confidence, evidence
 
@@ -860,8 +866,6 @@ def classify_tables(tables: list[Table]) -> DerivedFees:
         if standard_percentage:
             evidence.extend(pct_evidence)
             evidence.append(f"standard_commercial table {selected.table.document_id or selected.table.caption}")
-        else:
-            warnings.append("standard-commercial table matched but no percentage extracted")
 
     # Fixed fees.
     fixed_fees, fixed_evidence, fixed_warnings = _aggregate_fixed_fees(by_category[FeeCategory.FIXED_FEE])
@@ -880,18 +884,33 @@ def classify_tables(tables: list[Table]) -> DerivedFees:
     evidence.extend(conv_evidence)
     warnings.extend(conv_warnings)
 
-    warnings.extend(fixed_warnings)
-    warnings.extend(intl_warnings)
-    warnings.extend(conv_warnings)
+    # Determine which categories are exposed and whether they produced reliable data.
+    exposed_categories: set[FeeCategory] = {
+        category for category, category_candidates in by_category.items() if category_candidates
+    }
 
-    # Determine status.
-    status = "unclassified"
-    if standard_percentage or fixed_fees or surcharges or conversion:
+    if by_category[FeeCategory.STANDARD_COMMERCIAL] and not standard_percentage:
+        warnings.append("standard-commercial section exposed but no reliable percentage extracted")
+    if by_category[FeeCategory.FIXED_FEE] and not fixed_fees:
+        warnings.append("fixed-fee section exposed but no reliable values extracted")
+    if by_category[FeeCategory.INTERNATIONAL_SURCHARGE] and not surcharges:
+        warnings.append("international-surcharge section exposed but no reliable values extracted")
+    if by_category[FeeCategory.CURRENCY_CONVERSION] and not conversion:
+        warnings.append("currency-conversion section exposed but no reliable spread extracted")
+
+    warnings = sorted(set(warnings))
+
+    has_standard = standard_percentage is not None
+    has_fixed = bool(fixed_fees)
+    intl_exposed = bool(by_category[FeeCategory.INTERNATIONAL_SURCHARGE])
+    conv_exposed = bool(by_category[FeeCategory.CURRENCY_CONVERSION])
+    if not exposed_categories:
+        status = "unclassified"
+    elif warnings:
         status = "partial"
-    if standard_percentage and fixed_fees and not warnings:
+    elif has_standard and has_fixed and (not intl_exposed or surcharges) and (not conv_exposed or conversion):
         status = "complete"
-    # If a required category is conflicted, downgrade from complete.
-    if warnings and status == "complete":
+    else:
         status = "partial"
 
     return DerivedFees(

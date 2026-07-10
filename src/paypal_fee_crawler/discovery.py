@@ -13,9 +13,17 @@ from .cms_context import (
     find_global_json_assignments,
 )
 from .exceptions import (
+    AccessChallengeError,
+    ContentSecurityError,
     CountryDiscoveryError,
     FeePageError,
+    FeePageStructureError,
+    NetworkError,
     ParserError,
+    PermanentHttpError,
+    PermanentNetworkError,
+    RateLimitError,
+    TransientNetworkError,
     UnsupportedCountryError,
 )
 from .http import HttpClient, HttpResponse
@@ -137,7 +145,7 @@ async def discover_countries(
     """
     try:
         response = await http_client.get(homepage_url)
-    except Exception as exc:
+    except (NetworkError, ParserError) as exc:
         logger.warning("Country discovery request failed: %s", exc)
         raise CountryDiscoveryError(f"Failed to retrieve PayPal homepage: {exc}") from exc
 
@@ -216,6 +224,27 @@ def _is_fee_page(page_data: dict[str, Any], response: HttpResponse) -> bool:
     return _has_fee_component(page_data)
 
 
+def _find_fee_links(data: Any, homepage: str) -> list[str]:
+    """Search structurally for fee/business/merchant/seller links in CMS navigation."""
+    links: list[str] = []
+    if isinstance(data, dict):
+        ct = data.get("componentType", "")
+        if isinstance(ct, str) and any(token in ct.lower() for token in ["nav", "link", "button"]):
+            href = data.get("href") or data.get("url") or data.get("link")
+            if (
+                href
+                and isinstance(href, str)
+                and any(token in href.lower() for token in ["fee", "business", "merchant", "seller"])
+            ):
+                links.append(urljoin(homepage, href))
+        for value in data.values():
+            links.extend(_find_fee_links(value, homepage))
+    elif isinstance(data, list):
+        for item in data:
+            links.extend(_find_fee_links(item, homepage))
+    return links
+
+
 async def discover_fee_page(
     http_client: HttpClient,
     market: Market,
@@ -224,77 +253,122 @@ async def discover_fee_page(
     """Find and validate the canonical merchant fee page URL for a market.
 
     Returns the confirmed URL. Raises FeePageError or UnsupportedCountryError on failure.
+    Transient failures, access challenges, and parser/structure failures are never
+    converted into unsupported-country records.
     """
+    code = market.paypal_market_code
     slug = market.url_slug
     candidates = [f"https://www.paypal.com/{slug}/business/paypal-business-fees"]
     for legacy in config.legacy_fee_paths:
         candidates.append(f"https://www.paypal.com/{slug}/{legacy}")
 
     tested: list[str] = []
+    transient_failure = False
+    parser_failure = False
+
     for url in candidates:
         tested.append(url)
         try:
             response = await http_client.get(url)
-        except Exception as exc:
-            logger.debug("Fee page candidate failed for %s: %s", market.paypal_market_code, exc)
+        except (AccessChallengeError, ContentSecurityError) as exc:
+            logger.debug("Access/security failure on candidate for %s: %s", code, exc)
+            transient_failure = True
             continue
+        except PermanentHttpError as exc:
+            if exc.status_code == 404:
+                # Confirmed not-found for this candidate path; keep trying others.
+                continue
+            logger.debug("Permanent HTTP error for candidate %s: %s", code, exc)
+            transient_failure = True
+            continue
+        except PermanentNetworkError as exc:
+            logger.debug("Permanent network error for candidate %s: %s", code, exc)
+            transient_failure = True
+            continue
+        except (TransientNetworkError, RateLimitError, NetworkError) as exc:
+            logger.debug("Transient candidate failure for %s: %s", code, exc)
+            transient_failure = True
+            continue
+        except ParserError as exc:
+            logger.debug("Parser error on candidate for %s: %s", code, exc)
+            parser_failure = True
+            continue
+
         try:
             page_data = extract_cms_context(response.text)
-        except ParserError:
-            # Not a valid CMS page; likely a redirect or error page.
+        except ParserError as exc:
+            logger.debug("Parser error extracting CMS from candidate for %s: %s", code, exc)
+            parser_failure = True
             continue
         if _is_fee_page(page_data, response):
             return str(response.url)
 
     # If the default path failed, try the homepage and search navigation for fee links.
     homepage = f"https://www.paypal.com/{slug}"
+    tested.append(homepage)
     try:
         response = await http_client.get(homepage)
-    except Exception as exc:
-        raise UnsupportedCountryError(
-            f"No fee page found and homepage failed for {market.paypal_market_code}: {exc}"
-        ) from exc
+    except (AccessChallengeError, ContentSecurityError) as exc:
+        raise FeePageError(f"Homepage access challenge for {code}: {exc}") from exc
+    except PermanentHttpError as exc:
+        raise FeePageError(f"Homepage returned HTTP {exc.status_code} for {code}") from exc
+    except PermanentNetworkError as exc:
+        raise FeePageError(f"Homepage access denied for {code}: {exc}") from exc
+    except (TransientNetworkError, RateLimitError, NetworkError) as exc:
+        raise FeePageError(f"Homepage request failed for {code}: {exc}") from exc
 
     try:
         page_data = extract_cms_context(response.text)
     except ParserError as exc:
-        raise FeePageError(f"Homepage for {market.paypal_market_code} has no valid CMS context: {exc}") from exc
+        raise FeePageStructureError(f"Homepage for {code} has no valid CMS context: {exc}") from exc
 
-    # Search structurally for fee/business links in navigation.
-    def _find_fee_links(data: Any, base: str = "") -> list[str]:
-        links: list[str] = []
-        if isinstance(data, dict):
-            ct = data.get("componentType", "")
-            if isinstance(ct, str) and any(token in ct.lower() for token in ["nav", "link", "button"]):
-                href = data.get("href") or data.get("url") or data.get("link")
-                if (
-                    href
-                    and isinstance(href, str)
-                    and any(token in href.lower() for token in ["fee", "business", "merchant", "seller"])
-                ):
-                    links.append(urljoin(homepage, href))
-            for value in data.values():
-                links.extend(_find_fee_links(value, base))
-        elif isinstance(data, list):
-            for item in data:
-                links.extend(_find_fee_links(item, base))
-        return links
-
-    fee_links = _find_fee_links(page_data)
+    fee_links = _find_fee_links(page_data, homepage)
     for url in fee_links:
         tested.append(url)
         try:
             response = await http_client.get(url)
-        except Exception:  # nosec B112 # noqa: S112
+        except (AccessChallengeError, ContentSecurityError) as exc:
+            logger.debug("Access/security failure on fee link for %s: %s", code, exc)
+            transient_failure = True
             continue
+        except PermanentHttpError as exc:
+            if exc.status_code == 404:
+                continue
+            logger.debug("Permanent HTTP error on fee link for %s: %s", code, exc)
+            transient_failure = True
+            continue
+        except PermanentNetworkError as exc:
+            logger.debug("Permanent network error on fee link for %s: %s", code, exc)
+            transient_failure = True
+            continue
+        except (TransientNetworkError, RateLimitError, NetworkError) as exc:
+            logger.debug("Transient failure on fee link for %s: %s", code, exc)
+            transient_failure = True
+            continue
+        except ParserError as exc:
+            logger.debug("Parser error on fee link for %s: %s", code, exc)
+            parser_failure = True
+            continue
+
         try:
             page_data = extract_cms_context(response.text)
-        except ParserError:
+        except ParserError as exc:
+            logger.debug("Parser error extracting CMS from fee link for %s: %s", code, exc)
+            parser_failure = True
             continue
         if _is_fee_page(page_data, response):
             return str(response.url)
 
-    raise UnsupportedCountryError(f"No public merchant fee page found for {market.paypal_market_code}")
+    if transient_failure or parser_failure:
+        raise FeePageError(
+            f"Could not confirm a fee page for {code}; "
+            f"transient_failure={transient_failure}, parser_failure={parser_failure}"
+        )
+
+    raise UnsupportedCountryError(
+        f"No public merchant fee page found for {code}",
+        tested_urls=tested,
+    )
 
 
 def _get_nested(data: Any, *keys: str) -> Any:

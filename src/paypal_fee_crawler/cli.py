@@ -55,6 +55,7 @@ def _build_config(
     verbose: bool,
     request_delay: float,
     timestamp: str | None,
+    transient_policy: str = "fail",
 ) -> CrawlConfiguration:
     selected_countries: list[str] | None = None
     if country:
@@ -77,6 +78,7 @@ def _build_config(
         keep_diagnostics=keep_diagnostics,
         verbose=verbose,
         request_delay=request_delay,
+        transient_policy=transient_policy,
     )
 
 
@@ -105,6 +107,12 @@ def main() -> None:
 @click.option("--verbose", is_flag=True, help="Enable verbose logging.")
 @click.option("--report", type=click.Path(), help="Write machine-readable JSON report to this path.")
 @click.option("--timestamp", help="Deterministic timestamp for generated output (ISO 8601).")
+@click.option(
+    "--transient-policy",
+    type=click.Choice(["fail", "reuse-previous"]),
+    default="fail",
+    help="Behavior when a previously supported country cannot be refreshed.",
+)
 def crawl(
     output: str,
     staging_dir: str | None,
@@ -123,6 +131,7 @@ def crawl(
     verbose: bool,
     report: str | None,
     timestamp: str | None,
+    transient_policy: str,
 ) -> None:
     """Crawl PayPal fee pages and publish deterministic JSON output."""
     _configure_logging(verbose)
@@ -143,6 +152,7 @@ def crawl(
         verbose=verbose,
         request_delay=request_delay,
         timestamp=timestamp,
+        transient_policy=transient_policy,
     )
 
     async def _run() -> CrawlReport:

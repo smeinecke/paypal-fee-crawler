@@ -47,10 +47,30 @@ class TransientNetworkError(NetworkError):
         self.retry_after = retry_after
 
 
+class RateLimitError(TransientNetworkError):
+    """HTTP 429 or equivalent rate-limit response."""
+
+    pass
+
+
 class PermanentNetworkError(NetworkError):
     """Non-retryable network failure."""
 
     pass
+
+
+class AccessChallengeError(PermanentNetworkError):
+    """CAPTCHA, bot challenge, or login interstitial blocking access."""
+
+    pass
+
+
+class PermanentHttpError(PermanentNetworkError):
+    """Permanent HTTP error response (e.g. 404) with status code."""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class ParserError(CrawlerError):
@@ -83,10 +103,24 @@ class FeePageError(CrawlerError):
     pass
 
 
+class FeePageNotFoundError(FeePageError):
+    """A specific fee-page candidate returned a confirmed not-found response."""
+
+    pass
+
+
+class FeePageStructureError(FeePageError):
+    """A fee page was found but no longer has the expected CMS/fee structure."""
+
+    pass
+
+
 class UnsupportedCountryError(CrawlerError):
     """Country has no public merchant fee page."""
 
-    pass
+    def __init__(self, message: str, tested_urls: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.tested_urls = tested_urls or []
 
 
 class ContentSecurityError(CrawlerError):

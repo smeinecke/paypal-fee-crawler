@@ -5,9 +5,15 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
-from paypal_fee_crawler.models import CountryOutput, DerivedFees, Market, Source
+import pytest
+
+from paypal_fee_crawler import output as output_module
+from paypal_fee_crawler.exceptions import ValidationError as CrawlerValidationError
+from paypal_fee_crawler.models import Cell, CountryOutput, DerivedFees, Market, Row, Source, Table
 from paypal_fee_crawler.output import OutputPublisher
+from paypal_fee_crawler.validation import validate_output_tree
 
 
 def _make_output(cc: str) -> CountryOutput:
@@ -17,6 +23,20 @@ def _make_output(cc: str) -> CountryOutput:
         source=Source(
             requested_url=f"https://example.com/{cc.lower()}", canonical_url=f"https://example.com/{cc.lower()}"
         ),
+        tables=[
+            Table(
+                rows=[
+                    Row(
+                        cells=[
+                            Cell(
+                                text="2.99%",
+                                tokens=[{"raw": "2.99%", "kind": "percentage", "value": "2.99"}],
+                            )
+                        ]
+                    )
+                ]
+            )
+        ],
         derived=DerivedFees(status="unclassified"),
     )
 
@@ -80,3 +100,36 @@ def test_generated_at_present() -> None:
         assert index["generated_at"] == timestamp
         assert core["generated_at"] == timestamp
         assert manifest["generated_at"] == timestamp
+
+
+def test_commit_rolls_back_on_validation_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output_dir = Path(tmp) / "out"
+        publisher = OutputPublisher(output_dir, timestamp="2025-01-01T00:00:00+00:00")
+        outputs = {"DE": _make_output("DE")}
+        _, staging = publisher.publish(outputs, [], [])
+        changed, _ = publisher.commit(staging)
+        assert changed
+        first_snapshot = json.loads((output_dir / "json" / "de.json").read_text())
+
+        # Second publish adds a new country so the commit path runs validation.
+        outputs2 = {"DE": _make_output("DE"), "US": _make_output("US")}
+        _, staging2 = publisher.publish(outputs2, [], [])
+        call_count = 0
+
+        def _fake_validate(path: Path) -> list[str]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return validate_output_tree(path)
+            return ["Simulated live validation failure"]
+
+        with patch.object(output_module, "validate_output_tree", _fake_validate), pytest.raises(CrawlerValidationError):
+            publisher.commit(staging2)
+
+        # Live output must be identical to the first successful publication.
+        restored = json.loads((output_dir / "json" / "de.json").read_text())
+        assert restored == first_snapshot
+        assert not (output_dir / "json" / "us.json").exists()
+        # No stale backup should be left behind.
+        assert not any(str(p).endswith(".old") for p in output_dir.rglob("*"))

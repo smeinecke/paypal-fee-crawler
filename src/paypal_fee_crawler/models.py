@@ -427,6 +427,9 @@ class ChangeReport(BaseModel):
     def _compute_has_regression(cls, data: Any) -> Any:
         regression_kinds = {
             "removed_country",
+            "discovered_to_missing",
+            "supported_to_transient",
+            "supported_to_unsupported",
             "removed_table",
             "lost_core_category",
             "structural_regression",
@@ -455,6 +458,7 @@ class CrawlReport(BaseModel):
     countries_processed: int = 0
     countries_failed: list[str] = Field(default_factory=list)
     countries_unsupported: list[str] = Field(default_factory=list)
+    countries_reused: list[str] = Field(default_factory=list)
     warnings: list[ParserWarning] = Field(default_factory=list)
     change_report_path: str | None = None
     diagnostics_path: str | None = None
@@ -490,6 +494,7 @@ class CrawlConfiguration(BaseModel):
     refresh_country_manifest: bool = False
     keep_diagnostics: bool = False
     verbose: bool = False
+    transient_policy: str = "fail"
     max_response_size: int = 10 * 1024 * 1024  # 10 MB
     allowed_domains: list[str] = Field(default_factory=lambda: ["www.paypal.com", "www.paypalobjects.com"])
     legacy_fee_paths: list[str] = Field(

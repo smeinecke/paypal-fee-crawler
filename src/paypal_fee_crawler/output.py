@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
 import shutil
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +30,7 @@ from .validation import (
     generate_country_schema,
     generate_index_schema,
     generate_manifest_schema,
-    validate_all_output,
+    validate_output_tree,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,20 @@ def _is_same_file(path: Path, content: str) -> bool:
     if not path.exists():
         return False
     return path.read_text(encoding="utf-8") == content
+
+
+@dataclass
+class _JournalEntry:
+    """Single step of an atomic publication transaction."""
+
+    managed_name: str
+    live_path: Path
+    backup_path: Path
+    staged_path: Path | None
+    action: str
+    original_existed: bool
+    backup_created: bool = False
+    swapped: bool = False
 
 
 class OutputPublisher:
@@ -186,9 +200,15 @@ class OutputPublisher:
         _write_json(schemas_dir / "index-v1.schema.json", generate_index_schema())
         _write_json(schemas_dir / "manifest-v1.schema.json", generate_manifest_schema())
 
-        # Change report.
+        # Change report. Only write it when there are changes; an empty report would
+        # otherwise perturb the deterministic output tree for no-change runs. If the
+        # live output already has a change report, carry it forward unchanged so the
+        # managed path is not treated as removed.
         if change_report is not None:
-            _write_json(staging / "change-report.json", change_report.model_dump(mode="json"))
+            if change_report.changes:
+                _write_json(staging / "change-report.json", change_report.model_dump(mode="json"))
+            elif (self.output_dir / "change-report.json").exists():
+                shutil.copy2(self.output_dir / "change-report.json", staging / "change-report.json")
 
         return staging != self.output_dir, staging
 
@@ -198,7 +218,8 @@ class OutputPublisher:
         Only the paths listed in ``MANAGED_PATHS`` are touched. The output
         directory itself is never renamed, so this is safe to run at the root
         of a git repository. Staging is validated before any live path is
-        modified. If the swap fails, the previous files remain in place.
+        modified; the live tree is validated again before backups are deleted.
+        If the swap fails, the previous files are restored from the journal.
         """
         changed_files = self._list_changed_files(staging)
         if not changed_files and self._output_dir_exists_and_matches(staging):
@@ -208,59 +229,121 @@ class OutputPublisher:
 
         # Pre-publication validation: ensure staging is a valid self-consistent
         # output tree before modifying live files.
-        errors = validate_all_output(staging, schema_only=True)
+        errors = validate_output_tree(staging)
         if errors:
             self.rollback(staging)
-            raise CrawlerValidationError("Staging output failed validation:\n" + "\n".join(errors))
+            raise CrawlerValidationError("Staging output failed cross-file validation:\n" + "\n".join(errors))
 
-        backup_suffix = ".old"
-        backup_paths: list[Path] = []
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        journal: list[_JournalEntry] = []
         try:
-            self.output_dir.mkdir(parents=True, exist_ok=True)
             for name in self.MANAGED_PATHS:
                 src = staging / name
                 dst = self.output_dir / name
-                if not src.exists():
-                    # If a managed path is not in staging, remove the old one if it exists.
-                    if dst.exists():
-                        backup = dst.with_name(f"{dst.name}{backup_suffix}")
-                        if backup.exists():
-                            shutil.rmtree(backup, ignore_errors=True) if backup.is_dir() else backup.unlink(
-                                missing_ok=True
-                            )
-                        os.rename(dst, backup)
-                        backup_paths.append(backup)
-                    continue
+                backup = dst.with_name(f"{dst.name}.old")
+                entry = _JournalEntry(
+                    managed_name=name,
+                    live_path=dst,
+                    backup_path=backup,
+                    staged_path=src if src.exists() else None,
+                    action="none",
+                    original_existed=dst.exists(),
+                )
 
-                # Move old version to backup and rename staging into place.
-                if dst.exists():
-                    backup = dst.with_name(f"{dst.name}{backup_suffix}")
-                    if backup.exists():
-                        shutil.rmtree(backup, ignore_errors=True) if backup.is_dir() else backup.unlink(missing_ok=True)
+                if dst.exists() and src.exists():
+                    # Replace existing live path with staged content.
+                    self._remove_path(backup)
                     os.rename(dst, backup)
-                    backup_paths.append(backup)
-                os.rename(src, dst)
+                    entry.action = "replaced"
+                    entry.backup_created = True
+                elif dst.exists() and not src.exists():
+                    # Remove obsolete live path.
+                    self._remove_path(backup)
+                    os.rename(dst, backup)
+                    entry.action = "removed"
+                    entry.backup_created = True
+                elif not dst.exists() and src.exists():
+                    # Add a new managed path.
+                    entry.action = "added"
+                # else: neither exists -> nothing to do.
 
-            # Successful swap: remove backups.
-            for backup in backup_paths:
-                if backup.exists():
-                    if backup.is_dir():
-                        shutil.rmtree(backup, ignore_errors=True)
-                    else:
-                        backup.unlink(missing_ok=True)
-        except Exception:
-            # On failure, attempt to restore the previous paths.
-            for backup in backup_paths:
-                if backup.exists():
-                    live = backup.with_name(backup.name[: -len(backup_suffix)])
-                    if not live.exists():
-                        with contextlib.suppress(Exception):
-                            os.rename(backup, live)
-            raise
-        finally:
+                if src.exists():
+                    os.rename(src, dst)
+                    entry.swapped = True
+
+                journal.append(entry)
+
+            # Final integrity validation on the live tree before deleting backups.
+            final_errors = validate_output_tree(self.output_dir)
+            if final_errors:
+                raise CrawlerValidationError("Live output failed cross-file validation:\n" + "\n".join(final_errors))
+
+            # Successful swap: delete backups.
+            for entry in journal:
+                if entry.backup_created and entry.backup_path.exists():
+                    self._remove_path(entry.backup_path)
+
             self.rollback(staging)
+            return bool(changed_files), changed_files
 
-        return bool(changed_files), changed_files
+        except Exception as exc:
+            self._rollback_live(journal)
+            self.rollback(staging)
+            if isinstance(exc, CrawlerValidationError):
+                raise
+            raise CrawlerValidationError(f"Failed to publish output: {exc}") from exc
+
+    def _rollback_live(self, journal: list[_JournalEntry]) -> None:
+        """Restore the live managed tree to its pre-transaction state.
+
+        Rollback is performed in reverse journal order. Newly created paths are
+        removed; replaced paths are restored from their backups; removed paths
+        are restored from their backups.
+        """
+        failed: list[str] = []
+        for entry in reversed(journal):
+            if entry.action == "none" or not entry.swapped:
+                continue
+
+            live = entry.live_path
+            backup = entry.backup_path
+
+            if entry.action == "added":
+                if live.exists() and not entry.original_existed:
+                    try:
+                        self._remove_path(live)
+                    except Exception as exc:
+                        failed.append(f"Could not remove newly created {live}: {exc}")
+                continue
+
+            # Replaced or removed: remove the new live path and restore the backup.
+            try:
+                if live.exists():
+                    self._remove_path(live)
+            except Exception as exc:
+                failed.append(f"Could not remove new live path {live}: {exc}")
+                continue
+
+            if entry.backup_created and backup.exists():
+                try:
+                    os.rename(backup, live)
+                except Exception as exc:
+                    failed.append(f"Could not restore backup {backup} to {live}: {exc}")
+            elif entry.original_existed and not backup.exists():
+                failed.append(f"Backup missing for {live}; original state cannot be restored")
+
+        if failed:
+            logger.error("Rollback completed with errors:\n%s", "\n".join(failed))
+            raise CrawlerValidationError("Rollback completed with errors:\n" + "\n".join(failed))
+
+    def _remove_path(self, path: Path) -> None:
+        """Remove a file or directory tree, ignoring missing paths."""
+        if not path.exists():
+            return
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
 
     def _list_changed_files(self, staging: Path) -> list[str]:
         """Return relative paths of managed files that differ from the published output."""

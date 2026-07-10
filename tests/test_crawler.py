@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -11,7 +12,13 @@ import pytest
 
 from paypal_fee_crawler.cms_context import extract_cms_context
 from paypal_fee_crawler.crawler import Crawler
-from paypal_fee_crawler.exceptions import CountryDiscoveryError
+from paypal_fee_crawler.exceptions import (
+    CountryDiscoveryError,
+    TransientNetworkError,
+)
+from paypal_fee_crawler.exceptions import (
+    ValidationError as CrawlerValidationError,
+)
 from paypal_fee_crawler.http import HttpClient, HttpResponse
 from paypal_fee_crawler.models import CrawlConfiguration
 
@@ -85,3 +92,109 @@ def test_crawler_extracts_metadata_from_real_cms() -> None:
 def test_crawler_extracts_title_from_html() -> None:
     crawler = Crawler(CrawlConfiguration())
     assert crawler._extract_page_title("<title>Custom Title</title>", {}) == "Custom Title"
+
+
+def test_crawl_is_deterministic_without_timestamp(tmp_path: Path) -> None:
+    config = CrawlConfiguration(output_dir=str(tmp_path), countries=["DE"], request_delay=0, max_workers=1)
+    report1 = _run_crawl(config)
+    assert report1.exit_code == 0
+    report2 = _run_crawl(config)
+    assert report2.exit_code == 0
+    assert not report2.changed
+    country = json.loads((tmp_path / "json" / "de.json").read_text())
+    index = json.loads((tmp_path / "json" / "index.json").read_text())
+    assert country["generated_at"] is None
+    assert index["generated_at"] is None
+
+
+def test_crawl_is_deterministic_with_timestamp(tmp_path: Path) -> None:
+    timestamp = "2025-01-01T00:00:00+00:00"
+    config = CrawlConfiguration(
+        output_dir=str(tmp_path), countries=["DE"], request_delay=0, max_workers=1, timestamp=timestamp
+    )
+    report1 = _run_crawl(config)
+    assert report1.exit_code == 0
+    report2 = _run_crawl(config)
+    assert report2.exit_code == 0
+    assert not report2.changed
+    country = json.loads((tmp_path / "json" / "de.json").read_text())
+    assert country["generated_at"] == timestamp
+
+
+def test_default_transient_policy_blocks_publication(tmp_path: Path) -> None:
+    config = CrawlConfiguration(output_dir=str(tmp_path), countries=["DE"], request_delay=0, max_workers=1)
+    first = _run_crawl(config)
+    assert first.exit_code == 0
+
+    async def _failing_get(self: HttpClient, url: str, **kwargs: Any) -> HttpResponse:
+        if "de" in url.lower():
+            raise TransientNetworkError("Simulated transient failure")
+        return await _fake_get(self, url, **kwargs)
+
+    async def _run_failing() -> Any:
+        async with Crawler(config) as crawler:
+            with patch.object(HttpClient, "get", _failing_get):
+                return await crawler.crawl()
+
+    with pytest.raises(CrawlerValidationError):
+        asyncio.run(_run_failing())
+
+    # Live output must remain unchanged and no transient failure became unsupported.
+    manifest = json.loads((tmp_path / "meta" / "countries.json").read_text())
+    assert not manifest["unsupported"]
+
+
+def test_reuse_previous_transient_policy(tmp_path: Path) -> None:
+    config = CrawlConfiguration(
+        output_dir=str(tmp_path),
+        countries=["DE"],
+        request_delay=0,
+        max_workers=1,
+        transient_policy="reuse-previous",
+    )
+    first = _run_crawl(config)
+    assert first.exit_code == 0
+
+    async def _failing_get(self: HttpClient, url: str, **kwargs: Any) -> HttpResponse:
+        if "de" in url.lower():
+            raise TransientNetworkError("Simulated transient failure")
+        return await _fake_get(self, url, **kwargs)
+
+    async def _run_reuse() -> Any:
+        async with Crawler(config) as crawler:
+            with patch.object(HttpClient, "get", _failing_get):
+                return await crawler.crawl()
+
+    report = asyncio.run(_run_reuse())
+    assert report.exit_code == 0
+    assert "DE" in report.countries_reused
+    assert not report.changed
+    assert not report.countries_failed
+
+
+def test_crawl_detects_fee_change(tmp_path: Path) -> None:
+    config = CrawlConfiguration(output_dir=str(tmp_path), countries=["DE"], request_delay=0, max_workers=1)
+    first = _run_crawl(config)
+    assert first.exit_code == 0
+
+    async def _modified_get(self: HttpClient, url: str, **kwargs: Any) -> HttpResponse:
+        response = await _fake_get(self, url, **kwargs)
+        if url.endswith("/de/business/paypal-business-fees"):
+            modified = response.text.replace("2,99%", "3,99%")
+            return HttpResponse(
+                url=response.url,
+                status_code=response.status_code,
+                content=modified.encode("utf-8"),
+                text=modified,
+                headers=response.headers,
+            )
+        return response
+
+    async def _run_modified() -> Any:
+        async with Crawler(config) as crawler:
+            with patch.object(HttpClient, "get", _modified_get):
+                return await crawler.crawl()
+
+    second = asyncio.run(_run_modified())
+    assert second.exit_code == 0
+    assert second.changed

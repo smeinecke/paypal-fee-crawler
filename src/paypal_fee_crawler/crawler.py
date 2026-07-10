@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import logging
 import re
 from pathlib import Path
@@ -49,6 +48,7 @@ class Crawler:
         self.config = config
         self.http_client = HttpClient(config)
         self.warnings: list[ParserWarning] = []
+        self._previous_state: PreviousState | None = None
 
     async def __aenter__(self) -> Crawler:
         return self
@@ -102,15 +102,14 @@ class Crawler:
             logger.debug("Could not load previous output for %s: %s", market.paypal_market_code, exc)
             return None
 
-    def _stable_timestamp(self) -> str:
+    def _stable_timestamp(self) -> str | None:
         """Return a deterministic timestamp for this run.
 
         The output timestamp is taken from the configuration when provided; otherwise
-        the current time is used. This keeps the output stable across transient failures.
+        None is returned. This prevents runtime clock values from entering canonical
+        output by default.
         """
-        if self.config.timestamp:
-            return self.config.timestamp
-        return datetime.datetime.now(datetime.UTC).isoformat()
+        return self.config.timestamp or None
 
     def _extract_update_date(self, cms: dict[str, Any], sections: list[Any]) -> str | None:
         """Find an explicit update date in the CMS sections or metadata."""
@@ -217,30 +216,40 @@ class Crawler:
                 return language[0].strip()
         return None
 
-    async def _crawl_country(self, market: Market) -> tuple[CountryOutput | None, UnsupportedCountry | None]:
-        """Crawl a single country and return its output or unsupported record."""
+    async def _crawl_country(self, market: Market) -> tuple[CountryOutput | None, UnsupportedCountry | None, bool]:
+        """Crawl a single country and return its output, unsupported record, or transient flag.
+
+        The third return value is True when a transient (network/parser) failure
+        occurred and the caller should decide whether to reuse previous data.
+        """
         code = market.paypal_market_code
         previous = self._load_previous_country_output(market)
         try:
             fee_url = await discover_fee_page(self.http_client, market, self.config)
         except UnsupportedCountryError as exc:
             logger.info("Country %s has no fee page: %s", code, exc)
-            return None, UnsupportedCountry(
-                paypal_market_code=code,
-                iso_country_code=market.iso_country_code,
-                country_name=market.country_name,
-                tested_urls=[],
-                reason=str(exc),
-                first_confirmed_at=self._stable_timestamp(),
-                last_confirmed_at=self._stable_timestamp(),
-                temporary=False,
+            previous_unsupported = None
+            if self._previous_state is not None:
+                previous_unsupported = self._previous_state.unsupported_records.get(code)
+            if previous_unsupported is not None:
+                return None, previous_unsupported, False
+            return (
+                None,
+                UnsupportedCountry(
+                    paypal_market_code=code,
+                    iso_country_code=market.iso_country_code,
+                    country_name=market.country_name,
+                    tested_urls=exc.tested_urls,
+                    reason=str(exc),
+                    first_confirmed_at=self._stable_timestamp(),
+                    last_confirmed_at=self._stable_timestamp(),
+                    temporary=False,
+                ),
+                False,
             )
         except FeePageError as exc:
             logger.warning("Fee page discovery failed for %s: %s", code, exc)
-            # Preserve previous output if available to avoid data loss on transient failures.
-            if previous is not None:
-                return previous, None
-            return None, None
+            return None, None, True
 
         # Try to use cached source if we have previous output.
         cached = None
@@ -255,21 +264,17 @@ class Crawler:
             response = await self.http_client.get(fee_url, cached=cached)
         except NetworkError as exc:
             logger.warning("Network error for %s: %s", code, exc)
-            if previous is not None:
-                return previous, None
-            return None, None
+            return None, None, True
 
         if response.status_code == 304 and cached and cached.content_sha256 and previous is not None:
             # Reuse previous output unchanged.
-            return previous, None
+            return previous, None, False
 
         try:
             cms = extract_cms_context(response.text)
         except ParserError as exc:
             logger.warning("Parser error for %s: %s", code, exc)
-            if previous is not None:
-                return previous, None
-            return None, None
+            return None, None, True
 
         extractor = ComponentsExtractor()
         sections, tables, warnings = extractor.extract(cms)
@@ -308,13 +313,16 @@ class Crawler:
             derived=derived,
             warnings=warnings,
         )
-        return output, None
+        return output, None, False
 
     async def crawl(self) -> CrawlReport:
         """Run the full crawl and publish output."""
         output_dir = Path(self.config.output_dir) if self.config.output_dir else None
         if not output_dir:
             raise CrawlerValidationError("No output directory configured")
+
+        self._previous_state = PreviousState.load(output_dir)
+        previous_state = self._previous_state
 
         markets = await self.discover()
         if self.config.countries:
@@ -329,26 +337,42 @@ class Crawler:
         outputs: dict[str, CountryOutput] = {}
         unsupported: list[UnsupportedCountry] = []
         failed: list[str] = []
+        reused: list[str] = []
 
         async def _process(market: Market) -> None:
             async with semaphore:
+                cc = market.paypal_market_code
                 try:
-                    output, unsup = await self._crawl_country(market)
-                    if output:
-                        outputs[market.paypal_market_code] = output
-                    elif unsup:
+                    output, unsup, transient = await self._crawl_country(market)
+                    if output is not None:
+                        outputs[cc] = output
+                    elif unsup is not None:
                         unsupported.append(unsup)
+                    elif transient:
+                        if (
+                            self.config.transient_policy == "reuse-previous"
+                            and cc in previous_state.supported_countries
+                        ):
+                            previous_output = self._load_previous_country_output(market)
+                            if previous_output is not None:
+                                outputs[cc] = previous_output
+                                reused.append(cc)
+                                return
+                        failed.append(cc)
                     else:
-                        failed.append(market.paypal_market_code)
+                        failed.append(cc)
                 except Exception as exc:
-                    logger.warning("Unexpected error for %s: %s", market.paypal_market_code, exc)
-                    failed.append(market.paypal_market_code)
+                    logger.warning("Unexpected error for %s: %s", cc, exc)
+                    failed.append(cc)
 
         await asyncio.gather(*[_process(m) for m in markets])
 
         # Validate each output.
         validation_errors: list[str] = []
         for cc, output in list(outputs.items()):
+            if cc in reused:
+                # Reused previous data is already validated from a previous run.
+                continue
             errors = validate_country_output(output.model_dump(mode="json"))
             if errors:
                 validation_errors.append(f"{cc}: " + "; ".join(errors))
@@ -358,15 +382,33 @@ class Crawler:
         if not outputs:
             raise CrawlerValidationError("No country output passed validation:\n" + "\n".join(validation_errors))
 
-        # Regression checks against separate market sets.
-        previous = PreviousState.load(output_dir)
+        # Default policy: any transient failure blocks publication to avoid mixed freshness.
+        if failed and self.config.transient_policy == "fail":
+            raise CrawlerValidationError(
+                "Crawl failed on transient or validation errors (transient_policy=fail): " + ", ".join(sorted(failed))
+            )
+
+        # Regression checks against like-for-like market sets.
+        previous = previous_state
         limits = RegressionLimits(
             max_table_count_delta_ratio=0.5,
             max_row_count_delta_ratio=0.5,
             max_country_count_delta_ratio=0.1,
             allow_country_drop=self.config.allow_country_drop,
         )
-        change_report = check_regression(previous, outputs, limits)
+        current_discovered = {m.paypal_market_code for m in markets}
+        current_supported = set(outputs.keys())
+        current_unsupported = {u.paypal_market_code for u in unsupported}
+        current_transient = set(failed)
+        change_report = check_regression(
+            previous,
+            current_discovered,
+            current_supported,
+            current_unsupported,
+            current_transient,
+            outputs,
+            limits,
+        )
         try:
             enforce_regression(change_report, self.config.fail_on_regression)
         except RegressionError as exc:
@@ -383,7 +425,6 @@ class Crawler:
         try:
             _, staging = publisher.publish(outputs, markets, unsupported, change_report)
             changed, _changed_files = publisher.commit(staging)
-            publisher.rollback(staging)
         except Exception as exc:
             if staging is not None:
                 publisher.rollback(staging)
@@ -394,13 +435,10 @@ class Crawler:
         if final_errors:
             raise CrawlerValidationError("Published output failed validation:\n" + "\n".join(final_errors))
 
-        # Success always returns 0; warnings are surfaced in the report and CLI
-        # decides whether to promote them to a non-zero exit code.
+        # Determine exit code.
         exit_code = ExitCode.SUCCESS_NO_CHANGE
         if self.config.fail_on_warning and self.warnings:
             exit_code = ExitCode.PARSER_FAILURE
-        # A failure to fully process any requested country is a non-zero failure
-        # unless the previous data was preserved (in which case it is still a warning).
         if failed:
             exit_code = ExitCode.PARSER_FAILURE
 
@@ -410,5 +448,6 @@ class Crawler:
             countries_processed=len(outputs),
             countries_failed=failed,
             countries_unsupported=[u.paypal_market_code for u in unsupported],
+            countries_reused=reused,
             warnings=self.warnings,
         )

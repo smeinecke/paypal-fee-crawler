@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .exceptions import RegressionError
-from .models import ChangeReport, ChangeType, CountryManifest, CountryOutput
+from .models import ChangeReport, ChangeType, CountryManifest, CountryOutput, UnsupportedCountry
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ class PreviousState:
     country_rows: dict[str, int] = field(default_factory=dict)
     core_categories: dict[str, set[str]] = field(default_factory=dict)
     derived_status: dict[str, str] = field(default_factory=dict)
+    unsupported_records: dict[str, UnsupportedCountry] = field(default_factory=dict)
     # Backward-compatible alias for code that expects a single set.
     countries: set[str] = field(default_factory=set)
 
@@ -49,8 +50,23 @@ class PreviousState:
                 state.discovered_countries = {m.paypal_market_code for m in manifest.markets}
                 state.unsupported_countries = {u.paypal_market_code for u in manifest.unsupported}
                 state.transient_countries = {u.paypal_market_code for u in manifest.unsupported if u.temporary}
-            except Exception as exc:
+                state.unsupported_records = {u.paypal_market_code: u for u in manifest.unsupported}
+            except Exception as exc:  # nosec B112 # noqa: S112
                 logger.warning("Could not load previous country manifest: %s", exc)
+
+        unsupported_path = output_dir / "meta" / "unsupported-countries.json"
+        if unsupported_path.exists():
+            try:
+                data = json.loads(unsupported_path.read_text(encoding="utf-8"))
+                for item in data.get("unsupported", []):
+                    u = UnsupportedCountry.model_validate(item)
+                    state.unsupported_records[u.paypal_market_code] = u
+                    state.unsupported_countries.add(u.paypal_market_code)
+                    if u.temporary:
+                        state.transient_countries.add(u.paypal_market_code)
+            except Exception as exc:  # nosec B112 # noqa: S112
+                logger.warning("Could not load previous unsupported metadata: %s", exc)
+
         for path in (output_dir / "json").glob("*.json"):
             if path.name in {"index.json", "core-fees.json"}:
                 continue
@@ -96,30 +112,76 @@ def _country_output_hash(data: dict[str, Any]) -> str:
 
 def check_regression(
     previous: PreviousState,
+    current_discovered: set[str],
+    current_supported: set[str],
+    current_unsupported: set[str],
+    current_transient: set[str],
     current_outputs: dict[str, CountryOutput],
     limits: RegressionLimits,
 ) -> ChangeReport:
-    """Compare the new outputs with the previous state and return a change report.
+    """Compare the new market states with the previous state and return a change report.
 
-    Country-level regressions are evaluated against three separate baselines:
-    *discovered* (manifest), *supported* (has a JSON file), and *unsupported*.
-    Transient unsupported countries are tracked separately.
+    Every market state is compared against its equivalent previous state:
+    discovered vs discovered, supported vs supported, unsupported vs unsupported,
+    and transient vs transient. No state is compared against a different state.
     """
     changes: list[ChangeType] = []
-    current_supported = set(current_outputs.keys())
 
-    # Supported-country regression: a previously supported country is now missing.
-    removed_supported = previous.supported_countries - current_supported
-    if removed_supported and not limits.allow_country_drop:
-        for cc in sorted(removed_supported):
-            changes.append(
-                ChangeType(kind="removed_country", country_code=cc, message=f"Supported country {cc} disappeared")
+    if current_supported & current_unsupported:
+        changes.append(
+            ChangeType(
+                kind="structural_regression",
+                message="A market is both supported and unsupported in the current state",
             )
+        )
+    if current_supported & current_transient:
+        changes.append(
+            ChangeType(
+                kind="structural_regression",
+                message="A market is both supported and transient in the current state",
+            )
+        )
+    if current_unsupported & current_transient:
+        changes.append(
+            ChangeType(
+                kind="structural_regression",
+                message="A market is both unsupported and transient in the current state",
+            )
+        )
+
+    # Supported -> anything.
+    for cc in sorted(previous.supported_countries - current_supported):
+        if cc in current_transient:
+            changes.append(
+                ChangeType(
+                    kind="supported_to_transient",
+                    country_code=cc,
+                    message=f"Supported country {cc} became transient",
+                )
+            )
+        elif cc in current_unsupported:
+            changes.append(
+                ChangeType(
+                    kind="supported_to_unsupported",
+                    country_code=cc,
+                    message=f"Supported country {cc} became unsupported",
+                )
+            )
+        else:
+            if not limits.allow_country_drop:
+                changes.append(
+                    ChangeType(
+                        kind="removed_country",
+                        country_code=cc,
+                        message=f"Supported country {cc} disappeared",
+                    )
+                )
 
     if (
         not limits.allow_country_drop
         and previous.supported_countries
-        and len(removed_supported) / len(previous.supported_countries) > limits.max_country_count_delta_ratio
+        and len(previous.supported_countries - current_supported) / len(previous.supported_countries)
+        > limits.max_country_count_delta_ratio
     ):
         changes.append(
             ChangeType(
@@ -128,20 +190,50 @@ def check_regression(
             )
         )
 
-    # Discovered-country regression: a country was in the manifest but is no longer supported.
-    removed_discovered = previous.discovered_countries - current_supported
+    # Discovered -> missing.
+    removed_discovered = previous.discovered_countries - current_discovered
     if removed_discovered and not limits.allow_country_drop:
         for cc in sorted(removed_discovered):
             changes.append(
                 ChangeType(
-                    kind="removed_country", country_code=cc, message=f"Discovered country {cc} no longer supported"
+                    kind="discovered_to_missing",
+                    country_code=cc,
+                    message=f"Discovered country {cc} is no longer known",
                 )
             )
 
-    added_supported = current_supported - previous.supported_countries
-    if added_supported:
-        for cc in sorted(added_supported):
+    # Added / state transitions.
+    for cc in sorted(current_supported - previous.supported_countries):
+        if cc in previous.unsupported_countries:
+            changes.append(
+                ChangeType(
+                    kind="unsupported_to_supported",
+                    country_code=cc,
+                    message=f"Unsupported country {cc} is now supported",
+                )
+            )
+        elif cc in previous.transient_countries:
+            changes.append(
+                ChangeType(
+                    kind="transient_to_supported",
+                    country_code=cc,
+                    message=f"Transient country {cc} is now supported",
+                )
+            )
+        else:
             changes.append(ChangeType(kind="added_country", country_code=cc, message=f"Country {cc} newly supported"))
+
+    # Newly discovered but not yet supported.
+    for cc in sorted(
+        current_discovered - previous.discovered_countries - current_supported - current_unsupported - current_transient
+    ):
+        changes.append(
+            ChangeType(
+                kind="newly_discovered",
+                country_code=cc,
+                message=f"Country {cc} discovered but not yet resolved",
+            )
+        )
 
     for cc in sorted(current_supported):
         output = current_outputs[cc]
@@ -256,6 +348,9 @@ def enforce_regression(
                 if c.kind
                 in {
                     "removed_country",
+                    "discovered_to_missing",
+                    "supported_to_transient",
+                    "supported_to_unsupported",
                     "removed_table",
                     "lost_core_category",
                     "structural_regression",

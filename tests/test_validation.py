@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from paypal_fee_crawler.validation import (
     validate_all_output,
     validate_country_output,
     validate_file,
+    validate_output_tree,
 )
 
 
@@ -91,3 +93,52 @@ def test_generate_country_schema_has_id() -> None:
     schema = generate_country_schema()
     assert "$id" in schema
     assert "paypal-fees-v1.schema.json" in schema["$id"]
+
+
+def test_validate_output_tree_valid() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output_dir = Path(tmp) / "out"
+        publisher = OutputPublisher(output_dir)
+        outputs = {"DE": _make_output("DE")}
+        _, staging = publisher.publish(outputs, [], [])
+        errors = validate_output_tree(staging)
+        assert not errors
+
+
+def test_validate_output_tree_missing_file() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output_dir = Path(tmp) / "out"
+        publisher = OutputPublisher(output_dir)
+        outputs = {"DE": _make_output("DE")}
+        _, staging = publisher.publish(outputs, [], [])
+        (staging / "meta" / "schema-version.json").unlink()
+        errors = validate_output_tree(staging)
+        assert any("Missing required file" in e for e in errors)
+
+
+def test_validate_output_tree_hash_mismatch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output_dir = Path(tmp) / "out"
+        publisher = OutputPublisher(output_dir)
+        outputs = {"DE": _make_output("DE")}
+        _, staging = publisher.publish(outputs, [], [])
+        data = json.loads((staging / "json" / "de.json").read_text())
+        data["tables"][0]["rows"].append({"row_id": None, "cells": []})
+        (staging / "json" / "de.json").write_text(json.dumps(data), encoding="utf-8")
+        errors = validate_output_tree(staging)
+        assert any("hash" in e.lower() for e in errors)
+
+
+def test_validate_output_tree_overlap() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output_dir = Path(tmp) / "out"
+        publisher = OutputPublisher(output_dir)
+        outputs = {"DE": _make_output("DE")}
+        _, staging = publisher.publish(outputs, [], [])
+        manifest = json.loads((staging / "meta" / "countries.json").read_text())
+        from paypal_fee_crawler.models import UnsupportedCountry
+
+        manifest["unsupported"].append(UnsupportedCountry(paypal_market_code="DE").model_dump(mode="json"))
+        (staging / "meta" / "countries.json").write_text(json.dumps(manifest), encoding="utf-8")
+        errors = validate_output_tree(staging)
+        assert any("overlap" in e.lower() for e in errors)
