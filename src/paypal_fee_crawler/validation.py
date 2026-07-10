@@ -141,6 +141,23 @@ def generate_core_fees_schema() -> dict[str, Any]:
     """Generate the JSON schema for the consolidated core fees file."""
     schema = CoreFees.model_json_schema()
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/core-fees-v1.schema.json"
+    return schema
+
+
+def generate_index_schema() -> dict[str, Any]:
+    """Generate the JSON schema for the country index file."""
+    schema = CountryIndex.model_json_schema()
+    schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/index-v1.schema.json"
+    return schema
+
+
+def generate_manifest_schema() -> dict[str, Any]:
+    """Generate the JSON schema for the country manifest file."""
+    schema = CountryManifest.model_json_schema()
+    schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/manifest-v1.schema.json"
     return schema
 
 

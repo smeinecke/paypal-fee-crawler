@@ -63,7 +63,11 @@ def main() -> int:
         html = (FIXTURES / f"{code}.html").read_text(encoding="utf-8")
         outputs[code.upper()] = _build_output(code, html)
 
-    publisher = OutputPublisher(OUTPUT_DIR)
+    # Use the latest fixture page_updated_at as a deterministic last_updated time.
+    timestamps = [outputs[cc].source.page_updated_at for cc in outputs if outputs[cc].source.page_updated_at]
+    timestamp = max(timestamps) if timestamps else "2025-01-01T00:00:00+00:00"
+
+    publisher = OutputPublisher(OUTPUT_DIR, timestamp=timestamp)
     _, staging = publisher.publish(
         outputs,
         markets=[outputs[cc].market for cc in outputs],

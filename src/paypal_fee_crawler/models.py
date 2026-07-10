@@ -209,6 +209,7 @@ class CountryOutput(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     schema_version: int = 1
+    generated_at: str | None = None
     market: Market
     source: Source
     sections: list[Section] = Field(default_factory=list)
@@ -237,6 +238,7 @@ class CountryIndex(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     schema_version: int = 1
+    generated_at: str | None = None
     countries: list[CountryIndexEntry] = Field(default_factory=list)
 
 
@@ -283,6 +285,7 @@ class CoreFees(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     schema_version: int = 1
+    generated_at: str | None = None
     countries: list[CoreFeeEntry] = Field(default_factory=list)
 
 
@@ -293,6 +296,7 @@ class SchemaVersionInfo(BaseModel):
 
     schema_version: int = 1
     schema_path: str = "schemas/paypal-fees-v1.schema.json"
+    schemas: list[str] = Field(default_factory=lambda: ["schemas/paypal-fees-v1.schema.json"])
     description: str | None = None
 
 

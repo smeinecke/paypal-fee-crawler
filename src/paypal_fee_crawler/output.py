@@ -6,6 +6,7 @@ import json
 import logging
 import shutil
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,12 @@ from .models import (
     UnsupportedCountry,
 )
 from .regression import _country_output_hash
-from .validation import generate_core_fees_schema, generate_country_schema
+from .validation import (
+    generate_core_fees_schema,
+    generate_country_schema,
+    generate_index_schema,
+    generate_manifest_schema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +61,15 @@ def _is_same_file(path: Path, content: str) -> bool:
 class OutputPublisher:
     """Publish crawler output atomically with deterministic, schema-validated files."""
 
-    def __init__(self, output_dir: Path | str, staging_dir: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        output_dir: Path | str,
+        staging_dir: Path | str | None = None,
+        timestamp: str | None = None,
+    ) -> None:
         self.output_dir = Path(output_dir)
         self.staging_dir = Path(staging_dir) if staging_dir else None
+        self.timestamp = timestamp or datetime.now(timezone.utc).replace(microsecond=0).isoformat()  # noqa: UP017
 
     def _make_staging(self) -> Path:
         if self.staging_dir:
@@ -91,6 +103,7 @@ class OutputPublisher:
         for cc in sorted(outputs.keys()):
             output = outputs[cc]
             data = output.model_dump(mode="json")
+            data["generated_at"] = self.timestamp
             content_hash = self._compute_content_sha256(data)
             # Update source metadata with deterministic hash.
             source = dict(data["source"])
@@ -119,15 +132,15 @@ class OutputPublisher:
             )
 
         # Index and core fees.
-        index = CountryIndex(schema_version=1, countries=index_entries)
+        index = CountryIndex(schema_version=1, generated_at=self.timestamp, countries=index_entries)
         _write_json(json_dir / "index.json", index.model_dump(mode="json"))
-        core_fees = CoreFees(schema_version=1, countries=core_entries)
+        core_fees = CoreFees(schema_version=1, generated_at=self.timestamp, countries=core_entries)
         _write_json(json_dir / "core-fees.json", core_fees.model_dump(mode="json"))
 
         # Manifests and metadata.
         manifest = CountryManifest(
             schema_version=1,
-            generated_at=None,
+            generated_at=self.timestamp,
             markets=markets,
             unsupported=unsupported,
         )
@@ -141,6 +154,12 @@ class OutputPublisher:
             SchemaVersionInfo(
                 schema_version=1,
                 schema_path="schemas/paypal-fees-v1.schema.json",
+                schemas=[
+                    "schemas/paypal-fees-v1.schema.json",
+                    "schemas/core-fees-v1.schema.json",
+                    "schemas/index-v1.schema.json",
+                    "schemas/manifest-v1.schema.json",
+                ],
                 description="Initial schema for PayPal fee data",
             ).model_dump(mode="json"),
         )
@@ -148,6 +167,8 @@ class OutputPublisher:
         # Schemas.
         _write_json(schemas_dir / "paypal-fees-v1.schema.json", generate_country_schema())
         _write_json(schemas_dir / "core-fees-v1.schema.json", generate_core_fees_schema())
+        _write_json(schemas_dir / "index-v1.schema.json", generate_index_schema())
+        _write_json(schemas_dir / "manifest-v1.schema.json", generate_manifest_schema())
 
         # Change report.
         if change_report is not None:
