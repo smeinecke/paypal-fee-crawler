@@ -63,7 +63,12 @@ def _is_same_file(path: Path, content: str) -> bool:
 
 @dataclass
 class _JournalEntry:
-    """Single step of an atomic publication transaction."""
+    """One managed-path operation in the publication transaction.
+
+    The entry is appended to the journal before the first filesystem mutation.
+    This is essential: if the backup succeeds but installing the staged path
+    fails, rollback still knows how to restore the original live path.
+    """
 
     managed_name: str
     live_path: Path
@@ -72,15 +77,15 @@ class _JournalEntry:
     action: str
     original_existed: bool
     backup_created: bool = False
-    swapped: bool = False
+    live_installed: bool = False
+    finalized: bool = False
 
 
 class OutputPublisher:
     """Publish crawler output atomically with deterministic, schema-validated files."""
 
-    # Managed paths are the only ones that may be created, replaced, or removed.
-    # The output directory itself is never renamed, so this is safe to run at the
-    # root of a git repository.
+    # These are the only paths the crawler owns.  The output directory itself may
+    # be the root of a git repository and must never be renamed or deleted.
     MANAGED_PATHS = ("json", "meta", "schemas", "change-report.json")
 
     def __init__(
@@ -91,15 +96,15 @@ class OutputPublisher:
     ) -> None:
         self.output_dir = Path(output_dir)
         self.staging_dir = Path(staging_dir) if staging_dir else None
-        # If no timestamp is provided, canonical output is still deterministic;
-        # generated_at is written as null. The caller is responsible for supplying
-        # a stable run timestamp if it wants explicit timestamps in the output.
+        # If no timestamp is provided, canonical output remains deterministic;
+        # generated_at is written as null.
         self.timestamp = timestamp
 
     def _make_staging(self) -> Path:
         if self.staging_dir and self.staging_dir.is_relative_to(self.output_dir):
             # Only use a staging directory that lives inside the output tree;
-            # otherwise atomic rename of managed subdirectories cannot be guaranteed.
+            # otherwise atomic rename of managed subdirectories cannot be
+            # guaranteed on all platforms.
             self.staging_dir.mkdir(parents=True, exist_ok=True)
             return self.staging_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -120,26 +125,26 @@ class OutputPublisher:
         json_dir = staging / "json"
         meta_dir = staging / "meta"
         schemas_dir = staging / "schemas"
-
         json_dir.mkdir(parents=True, exist_ok=True)
         meta_dir.mkdir(parents=True, exist_ok=True)
         schemas_dir.mkdir(parents=True, exist_ok=True)
 
-        # Per-country files.
         index_entries: list[CountryIndexEntry] = []
         core_entries: list[CoreFeeEntry] = []
+
         for cc in sorted(outputs.keys()):
             output = outputs[cc]
             data = output.model_dump(mode="json")
             data["generated_at"] = self.timestamp
             content_hash = self._compute_content_sha256(data)
-            # Update source metadata with deterministic hash.
+
             source = dict(data["source"])
             source["content_sha256"] = content_hash
             data["source"] = source
-            # Write file.
+
             path = json_dir / f"{output.market.url_slug}.json"
             _write_json(path, data)
+
             index_entries.append(
                 CountryIndexEntry(
                     paypal_market_code=output.market.paypal_market_code,
@@ -161,13 +166,12 @@ class OutputPublisher:
                 )
             )
 
-        # Index and core fees.
         index = CountryIndex(schema_version=1, generated_at=self.timestamp, countries=index_entries)
         _write_json(json_dir / "index.json", index.model_dump(mode="json"))
+
         core_fees = CoreFees(schema_version=1, generated_at=self.timestamp, countries=core_entries)
         _write_json(json_dir / "core-fees.json", core_fees.model_dump(mode="json"))
 
-        # Manifests and metadata.
         manifest = CountryManifest(
             schema_version=1,
             generated_at=self.timestamp,
@@ -194,16 +198,13 @@ class OutputPublisher:
             ).model_dump(mode="json"),
         )
 
-        # Schemas.
         _write_json(schemas_dir / "paypal-fees-v1.schema.json", generate_country_schema())
         _write_json(schemas_dir / "core-fees-v1.schema.json", generate_core_fees_schema())
         _write_json(schemas_dir / "index-v1.schema.json", generate_index_schema())
         _write_json(schemas_dir / "manifest-v1.schema.json", generate_manifest_schema())
 
-        # Change report. Only write it when there are changes; an empty report would
-        # otherwise perturb the deterministic output tree for no-change runs. If the
-        # live output already has a change report, carry it forward unchanged so the
-        # managed path is not treated as removed.
+        # Only write a change report when it has content.  If the live output
+        # already has one, carry it forward to avoid treating it as a removal.
         if change_report is not None:
             if change_report.changes:
                 _write_json(staging / "change-report.json", change_report.model_dump(mode="json"))
@@ -213,22 +214,18 @@ class OutputPublisher:
         return staging != self.output_dir, staging
 
     def commit(self, staging: Path) -> tuple[bool, list[str]]:
-        """Atomically replace managed paths with the staging tree.
+        """Atomically replace only managed paths with the staged tree.
 
-        Only the paths listed in ``MANAGED_PATHS`` are touched. The output
-        directory itself is never renamed, so this is safe to run at the root
-        of a git repository. Staging is validated before any live path is
-        modified; the live tree is validated again before backups are deleted.
-        If the swap fails, the previous files are restored from the journal.
+        This method is safe when ``output_dir`` is the root of a git repository:
+        only ``MANAGED_PATHS`` are touched.  Staging is cross-file validated
+        before any live path is modified.  Backups remain available until the
+        live tree has also passed validation.
         """
         changed_files = self._list_changed_files(staging)
         if not changed_files and self._output_dir_exists_and_matches(staging):
-            # No change detected; discard the staging directory.
             self.rollback(staging)
             return False, []
 
-        # Pre-publication validation: ensure staging is a valid self-consistent
-        # output tree before modifying live files.
         errors = validate_output_tree(staging)
         if errors:
             self.rollback(staging)
@@ -236,101 +233,121 @@ class OutputPublisher:
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
         journal: list[_JournalEntry] = []
+        finalized = False
+
         try:
             for name in self.MANAGED_PATHS:
                 src = staging / name
                 dst = self.output_dir / name
                 backup = dst.with_name(f"{dst.name}.old")
+                src_exists = src.exists()
+                dst_exists = dst.exists()
+
+                if dst_exists and src_exists:
+                    action = "replaced"
+                elif dst_exists and not src_exists:
+                    action = "removed"
+                elif not dst_exists and src_exists:
+                    action = "added"
+                else:
+                    action = "none"
+
                 entry = _JournalEntry(
                     managed_name=name,
                     live_path=dst,
                     backup_path=backup,
-                    staged_path=src if src.exists() else None,
-                    action="none",
-                    original_existed=dst.exists(),
+                    staged_path=src if src_exists else None,
+                    action=action,
+                    original_existed=dst_exists,
                 )
 
-                if dst.exists() and src.exists():
-                    # Replace existing live path with staged content.
-                    self._remove_path(backup)
-                    os.rename(dst, backup)
-                    entry.action = "replaced"
-                    entry.backup_created = True
-                elif dst.exists() and not src.exists():
-                    # Remove obsolete live path.
-                    self._remove_path(backup)
-                    os.rename(dst, backup)
-                    entry.action = "removed"
-                    entry.backup_created = True
-                elif not dst.exists() and src.exists():
-                    # Add a new managed path.
-                    entry.action = "added"
-                # else: neither exists -> nothing to do.
-
-                if src.exists():
-                    os.rename(src, dst)
-                    entry.swapped = True
-
+                # Register before mutating anything.  If backup succeeds and the
+                # next rename fails, rollback will still restore the backup.
                 journal.append(entry)
 
-            # Final integrity validation on the live tree before deleting backups.
+                if action == "none":
+                    continue
+
+                self._remove_path(backup)
+
+                if dst_exists:
+                    os.rename(dst, backup)
+                    entry.backup_created = True
+
+                if src_exists:
+                    os.rename(src, dst)
+                    entry.live_installed = True
+
             final_errors = validate_output_tree(self.output_dir)
             if final_errors:
                 raise CrawlerValidationError("Live output failed cross-file validation:\n" + "\n".join(final_errors))
 
-            # Successful swap: delete backups.
+            finalized = True
             for entry in journal:
-                if entry.backup_created and entry.backup_path.exists():
-                    self._remove_path(entry.backup_path)
+                entry.finalized = True
 
+            self._cleanup_backups_best_effort(journal)
             self.rollback(staging)
             return bool(changed_files), changed_files
 
         except Exception as exc:
-            self._rollback_live(journal)
+            if not finalized:
+                self._rollback_live(journal)
             self.rollback(staging)
             if isinstance(exc, CrawlerValidationError):
                 raise
             raise CrawlerValidationError(f"Failed to publish output: {exc}") from exc
 
-    def _rollback_live(self, journal: list[_JournalEntry]) -> None:
-        """Restore the live managed tree to its pre-transaction state.
+    def _cleanup_backups_best_effort(self, journal: list[_JournalEntry]) -> None:
+        """Remove backups after a successful, validated commit.
 
-        Rollback is performed in reverse journal order. Newly created paths are
-        removed; replaced paths are restored from their backups; removed paths
-        are restored from their backups.
+        Backup cleanup is intentionally best-effort.  Once the live tree has
+        passed final validation, a cleanup failure must not trigger rollback of a
+        good publication.  Leftover ``*.old`` paths can be removed on a later run.
         """
+        for entry in journal:
+            if entry.backup_created and entry.backup_path.exists():
+                try:
+                    self._remove_path(entry.backup_path)
+                except Exception as exc:  # pragma: no cover - platform dependent
+                    logger.warning("Could not remove publication backup %s: %s", entry.backup_path, exc)
+
+    def _rollback_live(self, journal: list[_JournalEntry]) -> None:
+        """Restore managed live paths to their pre-transaction state."""
         failed: list[str] = []
+
         for entry in reversed(journal):
-            if entry.action == "none" or not entry.swapped:
+            if entry.action == "none":
                 continue
 
             live = entry.live_path
             backup = entry.backup_path
 
-            if entry.action == "added":
-                if live.exists() and not entry.original_existed:
+            # Remove any newly installed live path first, even when the action
+            # was ``removed`` or when installation failed halfway through.
+            if live.exists():
+                try:
+                    self._remove_path(live)
+                except Exception as exc:
+                    failed.append(f"Could not remove live path {live}: {exc}")
+                    continue
+
+            if entry.original_existed:
+                if entry.backup_created and backup.exists():
+                    try:
+                        os.rename(backup, live)
+                    except Exception as exc:
+                        failed.append(f"Could not restore backup {backup} to {live}: {exc}")
+                elif not live.exists():
+                    failed.append(f"Backup missing for {live}; original state cannot be restored")
+            else:
+                # The path did not exist before the transaction.  Ensure any
+                # installed path is gone; no backup should be restored.
+                if live.exists():
                     try:
                         self._remove_path(live)
                     except Exception as exc:
-                        failed.append(f"Could not remove newly created {live}: {exc}")
-                continue
-
-            # Replaced or removed: remove the new live path and restore the backup.
-            try:
-                if live.exists():
-                    self._remove_path(live)
-            except Exception as exc:
-                failed.append(f"Could not remove new live path {live}: {exc}")
-                continue
-
-            if entry.backup_created and backup.exists():
-                try:
-                    os.rename(backup, live)
-                except Exception as exc:
-                    failed.append(f"Could not restore backup {backup} to {live}: {exc}")
-            elif entry.original_existed and not backup.exists():
-                failed.append(f"Backup missing for {live}; original state cannot be restored")
+                        failed.append(f"Could not remove added path {live}: {exc}")
 
         if failed:
             logger.error("Rollback completed with errors:\n%s", "\n".join(failed))
@@ -346,7 +363,7 @@ class OutputPublisher:
             path.unlink(missing_ok=True)
 
     def _list_changed_files(self, staging: Path) -> list[str]:
-        """Return relative paths of managed files that differ from the published output."""
+        """Return relative paths of managed files that differ from published output."""
         changed: list[str] = []
         for name in self.MANAGED_PATHS:
             src = staging / name
@@ -367,7 +384,7 @@ class OutputPublisher:
                 content = src.read_text(encoding="utf-8")
                 if not _is_same_file(dst, content):
                     changed.append(str(rel))
-        # Also detect managed files that are present in output but missing in staging.
+
         if self.output_dir.exists():
             for name in self.MANAGED_PATHS:
                 dst = self.output_dir / name
@@ -384,7 +401,7 @@ class OutputPublisher:
                     rel = dst.relative_to(self.output_dir)
                     if not (staging / rel).exists():
                         changed.append(str(rel))
-        return changed
+        return sorted(set(changed))
 
     def _output_dir_exists_and_matches(self, staging: Path) -> bool:
         """Return whether the output directory exists and matches staging exactly."""

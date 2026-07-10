@@ -10,16 +10,15 @@ from typing import Any
 from pydantic import ValidationError
 
 from .exceptions import ValidationError as CrawlerValidationError
-from .models import (
-    CoreFees,
-    CountryIndex,
-    CountryManifest,
-    CountryOutput,
-)
+from .models import CoreFees, CountryIndex, CountryManifest, CountryOutput, DerivedFees
 from .normalize import CURRENCY_CODES, normalize_decimal_string
 from .regression import _country_output_hash
 
 logger = logging.getLogger(__name__)
+
+_MANAGED_ROOTS = {"json", "meta", "schemas", "change-report.json"}
+_PROTECTED_ROOTS = {".git", ".github", "crawler"}
+_PROTECTED_FILES = {"README.md", "README", "LICENSE", ".gitmodules"}
 
 
 def load_json_schema(path: Path | str) -> dict[str, Any]:
@@ -45,7 +44,7 @@ def _validate_table_plausibility(output: CountryOutput, errors: list[str]) -> No
         return
     if not any(table.rows for table in output.tables):
         errors.append("No table rows found")
-    # Check for at least one pricing token or plausible fee value.
+
     has_token = any(
         token.kind in {"percentage", "money", "number"}
         for table in output.tables
@@ -55,7 +54,7 @@ def _validate_table_plausibility(output: CountryOutput, errors: list[str]) -> No
     )
     if not has_token:
         errors.append("No pricing token or plausible fee value found")
-    # Check percentage limits (0-100, with a small tolerance for negative adjustments).
+
     for table in output.tables:
         for row in table.rows:
             for cell in row.cells:
@@ -70,8 +69,44 @@ def _validate_table_plausibility(output: CountryOutput, errors: list[str]) -> No
                             errors.append(f"Implausible percentage: {token.raw}")
 
 
+def _complete_derived_errors(derived: DerivedFees, label: str) -> list[str]:
+    """Return consistency errors for a ``complete`` derived-fee result.
+
+    This is the publication-time backstop for the classifier.  The classifier is
+    responsible for deciding whether a category is exposed by a page.  Once it
+    marks the result as complete, all standard core categories must be present
+    and internally consistent.
+    """
+    if derived.status != "complete":
+        return []
+
+    errors: list[str] = []
+    if not derived.standard_commercial or not derived.standard_commercial.percentage:
+        errors.append(f"{label} marked complete without standard commercial percentage")
+
+    if not derived.commercial_fixed_fees:
+        errors.append(f"{label} marked complete without fixed fees")
+    fixed_currencies = [fee.currency for fee in derived.commercial_fixed_fees]
+    if len(fixed_currencies) != len(set(fixed_currencies)):
+        errors.append(f"{label} has duplicate fixed-fee currencies")
+
+    if not derived.international_surcharges:
+        errors.append(f"{label} marked complete without international surcharges")
+    intl_regions = [surcharge.region for surcharge in derived.international_surcharges]
+    if len(intl_regions) != len(set(intl_regions)):
+        errors.append(f"{label} has duplicate international surcharge regions")
+    for surcharge in derived.international_surcharges:
+        if not surcharge.region or surcharge.percentage_points is None:
+            errors.append(f"{label} has incomplete international surcharge entry")
+
+    if not derived.currency_conversion or not derived.currency_conversion.spread_percentage:
+        errors.append(f"{label} marked complete without currency conversion spread")
+
+    return errors
+
+
 def validate_country_output(data: dict[str, Any], schema_only: bool = False) -> list[str]:
-    """Validate a single per-country JSON object against the schema and plausibility rules."""
+    """Validate a single per-country JSON object."""
     errors: list[str] = []
     try:
         output = CountryOutput.model_validate(data)
@@ -81,6 +116,7 @@ def validate_country_output(data: dict[str, Any], schema_only: bool = False) -> 
         return errors
 
     _validate_currency_codes(data, errors)
+    errors.extend(_complete_derived_errors(output.derived, f"Country {output.market.paypal_market_code}"))
     if not schema_only:
         _validate_table_plausibility(output, errors)
     return errors
@@ -99,10 +135,13 @@ def validate_country_index(data: dict[str, Any]) -> list[str]:
 def validate_core_fees(data: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     try:
-        CoreFees.model_validate(data)
+        core = CoreFees.model_validate(data)
     except ValidationError as exc:
         for error in exc.errors():
             errors.append(f"Schema validation: {error['loc']}: {error['msg']}")
+        return errors
+    for entry in core.countries:
+        errors.extend(_complete_derived_errors(entry.derived, f"Core-fee entry {entry.paypal_market_code}"))
     return errors
 
 
@@ -117,9 +156,13 @@ def validate_country_manifest(data: dict[str, Any]) -> list[str]:
 
 
 def validate_file(path: Path | str, schema_type: str, schema_only: bool = False) -> list[str]:
-    """Validate a JSON file on disk. schema_type is one of country, index, core_fees, manifest."""
+    """Validate a JSON file on disk.
+
+    ``schema_type`` is one of ``country``, ``index``, ``core_fees``, ``manifest``.
+    """
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
+
     if schema_type == "country":
         return validate_country_output(data, schema_only=schema_only)
     if schema_type == "index":
@@ -167,35 +210,75 @@ def validate_all_output(output_dir: Path | str, schema_only: bool = False) -> li
     """Validate every generated JSON file in the output directory."""
     output_dir = Path(output_dir)
     errors: list[str] = []
+
     for path in output_dir.glob("json/*.json"):
         if path.name in {"index.json", "core-fees.json"}:
             continue
         file_errors = validate_file(path, "country", schema_only=schema_only)
         if file_errors:
             errors.append(f"{path}: " + "; ".join(file_errors))
+
     index_path = output_dir / "json" / "index.json"
     if index_path.exists():
         file_errors = validate_file(index_path, "index")
         if file_errors:
             errors.append(f"{index_path}: " + "; ".join(file_errors))
+
     core_path = output_dir / "json" / "core-fees.json"
     if core_path.exists():
         file_errors = validate_file(core_path, "core_fees")
         if file_errors:
             errors.append(f"{core_path}: " + "; ".join(file_errors))
+
     manifest_path = output_dir / "meta" / "countries.json"
     if manifest_path.exists():
         file_errors = validate_file(manifest_path, "manifest")
         if file_errors:
             errors.append(f"{manifest_path}: " + "; ".join(file_errors))
+
     return errors
 
 
-def validate_output_tree(root: Path | str) -> list[str]:
-    """Validate both schemas and cross-file relationships in the output tree.
+def _safe_rel(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
 
-    This is the gate used before atomic publication. It returns a list of human-
-    readable error strings; an empty list means the tree is internally consistent.
+
+def _iter_managed_paths(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    for name in _MANAGED_ROOTS:
+        path = root / name
+        if not path.exists():
+            continue
+        if path.is_dir():
+            paths.extend(path.rglob("*"))
+        else:
+            paths.append(path)
+    return paths
+
+
+def _validate_generated_path_safety(root: Path, errors: list[str]) -> None:
+    """Validate generated paths without rejecting unrelated repo-root files."""
+    for path in _iter_managed_paths(root):
+        rel = path.relative_to(root)
+        if path.is_symlink():
+            errors.append(f"Symlink not allowed in output tree: {rel}")
+        if ".." in rel.parts:
+            errors.append(f"Path traversal detected: {rel}")
+        first = rel.parts[0] if rel.parts else ""
+        if first in _PROTECTED_ROOTS or first in _PROTECTED_FILES:
+            errors.append(f"Output targets protected repository path: {rel}")
+
+
+def validate_output_tree(root: Path | str) -> list[str]:
+    """Validate schemas and cross-file relationships in the generated tree.
+
+    ``root`` may be either a staging directory containing only generated files or
+    the root of the data git repository.  Validation intentionally ignores
+    unrelated non-managed files such as ``.git`` and ``README.md`` when they are
+    already present in the repository root.
     """
     root = Path(root)
     errors: list[str] = []
@@ -208,7 +291,7 @@ def validate_output_tree(root: Path | str) -> list[str]:
     ]
     for path in required:
         if not path.exists():
-            errors.append(f"Missing required file: {path.relative_to(root)}")
+            errors.append(f"Missing required file: {_safe_rel(path, root)}")
 
     schema_files = [
         "paypal-fees-v1.schema.json",
@@ -219,6 +302,8 @@ def validate_output_tree(root: Path | str) -> list[str]:
     for name in schema_files:
         if not (root / "schemas" / name).exists():
             errors.append(f"Missing schema file: schemas/{name}")
+
+    _validate_generated_path_safety(root, errors)
 
     if errors:
         return errors
@@ -252,6 +337,7 @@ def validate_output_tree(root: Path | str) -> list[str]:
     market_codes = [m.paypal_market_code for m in manifest.markets]
     if len(market_codes) != len(set(market_codes)):
         errors.append("Duplicate PayPal market codes in manifest")
+
     slugs = [m.url_slug for m in manifest.markets]
     if len(slugs) != len(set(slugs)):
         errors.append("Duplicate URL slugs in manifest")
@@ -296,19 +382,18 @@ def validate_output_tree(root: Path | str) -> list[str]:
             errors.append(f"Index market code {cc} disagrees with country file {country.market.paypal_market_code}")
         if not country.tables:
             errors.append(f"Country {cc} has no fee tables")
+
         expected_hash = _country_output_hash(data)
         if entry.content_sha256 != expected_hash:
             errors.append(f"Index content hash for {cc} does not match country file hash")
+
         country_errors = validate_country_output(data, schema_only=False)
         if country_errors:
             errors.append(f"{path}: " + "; ".join(country_errors))
+
         currencies = [fee.currency for fee in country.derived.commercial_fixed_fees]
         if len(currencies) != len(set(currencies)):
             errors.append(f"Duplicate fixed-fee currency entries for {cc}")
-        if country.derived.status == "complete" and (
-            not country.derived.standard_commercial or not country.derived.commercial_fixed_fees
-        ):
-            errors.append(f"Country {cc} marked complete without standard commercial and fixed fees")
 
     core_codes = {entry.paypal_market_code for entry in core.countries}
     if core_codes - supported:
@@ -316,26 +401,16 @@ def validate_output_tree(root: Path | str) -> list[str]:
     if supported - core_codes:
         for cc in sorted(supported - core_codes):
             errors.append(f"Supported country {cc} missing from core-fees file")
+
     for entry in core.countries:
         if entry.derived_status not in {"complete", "partial", "unclassified"}:
             errors.append(f"Invalid derived status in core fees for {entry.paypal_market_code}")
-        if entry.derived_status == "complete" and (
-            not entry.derived.standard_commercial or not entry.derived.commercial_fixed_fees
-        ):
-            errors.append(f"Core-fee entry {entry.paypal_market_code} marked complete without required categories")
+        if entry.derived_status != entry.derived.status:
+            errors.append(f"Core-fee status mismatch for {entry.paypal_market_code}")
+        errors.extend(_complete_derived_errors(entry.derived, f"Core-fee entry {entry.paypal_market_code}"))
 
     for cc in country_files:
         if cc not in supported:
             errors.append(f"Country file {cc} is not listed in the supported index")
-
-    for path in root.rglob("*"):
-        if path.is_symlink():
-            errors.append(f"Symlink not allowed in output tree: {path.relative_to(root)}")
-        rel = path.relative_to(root)
-        if ".." in rel.parts:
-            errors.append(f"Path traversal detected: {rel}")
-        first = rel.parts[0] if rel.parts else ""
-        if first in {".git", ".github"} or first in {"README", "LICENSE"}:
-            errors.append(f"Output targets protected repository path: {rel}")
 
     return errors
