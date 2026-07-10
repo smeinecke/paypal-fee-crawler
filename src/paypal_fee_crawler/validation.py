@@ -90,7 +90,7 @@ def _complete_derived_errors(derived: DerivedFees, label: str) -> list[str]:
     if len(fixed_currencies) != len(set(fixed_currencies)):
         errors.append(f"{label} has duplicate fixed-fee currencies")
 
-    if not derived.international_surcharges:
+    if derived.international_surcharge_exposed and not derived.international_surcharges:
         errors.append(f"{label} marked complete without international surcharges")
     intl_regions = [surcharge.region for surcharge in derived.international_surcharges]
     if len(intl_regions) != len(set(intl_regions)):
@@ -99,7 +99,9 @@ def _complete_derived_errors(derived: DerivedFees, label: str) -> list[str]:
         if not surcharge.region or surcharge.percentage_points is None:
             errors.append(f"{label} has incomplete international surcharge entry")
 
-    if not derived.currency_conversion or not derived.currency_conversion.spread_percentage:
+    if derived.currency_conversion_exposed and (
+        not derived.currency_conversion or not derived.currency_conversion.spread_percentage
+    ):
         errors.append(f"{label} marked complete without currency conversion spread")
 
     return errors

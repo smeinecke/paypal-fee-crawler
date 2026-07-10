@@ -936,6 +936,8 @@ def classify_tables(tables: list[Table]) -> DerivedFees:
         commercial_fixed_fees=fixed_fees,
         international_surcharges=surcharges,
         currency_conversion=conversion,
+        international_surcharge_exposed=intl_exposed,
+        currency_conversion_exposed=conv_exposed,
         unclassified_sections=sorted(set(other_categories)),
         classification_evidence=evidence + warnings,
     )

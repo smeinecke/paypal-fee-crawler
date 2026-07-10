@@ -63,20 +63,36 @@ def _complete_derived() -> dict[str, Any]:
             {"region": "OTHER", "percentage_points": "1.99"},
         ],
         "currency_conversion": {"spread_percentage": "3"},
+        "international_surcharge_exposed": True,
+        "currency_conversion_exposed": True,
         "classification_evidence": ["fixture"],
         "unclassified_sections": [],
     }
 
 
-def test_complete_country_requires_international_and_fx_categories() -> None:
+def test_complete_country_requires_international_and_fx_categories_when_exposed() -> None:
     derived = _complete_derived()
     derived["international_surcharges"] = []
     derived["currency_conversion"] = None
+    derived["international_surcharge_exposed"] = True
+    derived["currency_conversion_exposed"] = True
 
     errors = validate_country_output(_country(derived), schema_only=False)
 
     assert any("international surcharges" in error for error in errors)
     assert any("currency conversion" in error for error in errors)
+
+
+def test_complete_country_accepts_missing_unexposed_categories() -> None:
+    derived = _complete_derived()
+    derived["international_surcharges"] = []
+    derived["currency_conversion"] = None
+    derived["international_surcharge_exposed"] = False
+    derived["currency_conversion_exposed"] = False
+
+    errors = validate_country_output(_country(derived), schema_only=False)
+
+    assert not errors
 
 
 def test_complete_country_accepts_all_required_categories() -> None:
@@ -176,6 +192,7 @@ def test_output_tree_ignores_existing_repo_root_files(tmp_path: Path) -> None:
 def test_output_tree_rejects_complete_without_required_categories(tmp_path: Path) -> None:
     country = _country(_complete_derived())
     country["derived"]["currency_conversion"] = None
+    country["derived"]["currency_conversion_exposed"] = True
     _write_minimal_tree(tmp_path, country)
 
     errors = validate_output_tree(tmp_path)

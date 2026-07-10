@@ -243,6 +243,8 @@ class DerivedFees(BaseModel):
     commercial_fixed_fees: list[FixedFees] = Field(default_factory=list)
     international_surcharges: list[InternationalSurcharge] = Field(default_factory=list)
     currency_conversion: CurrencyConversion | None = None
+    international_surcharge_exposed: bool = False
+    currency_conversion_exposed: bool = False
     goods_and_services: CommercialFee | None = None
     micropayments: CommercialFee | None = None
     donations: CommercialFee | None = None

@@ -32,6 +32,16 @@ from .models import CrawlConfiguration, Language, Market
 
 logger = logging.getLogger(__name__)
 
+# Markets that don't have their own fee page but redirect to another market's
+# fee page.  PayPal serves these markets from the alias target's page, so we
+# use that URL directly instead of following a redirect to a non-fee page.
+FEE_PAGE_ALIASES: dict[str, str] = {
+    "GI": "https://www.paypal.com/uk/business/paypal-business-fees",
+    "GG": "https://www.paypal.com/uk/business/paypal-business-fees",
+    "IM": "https://www.paypal.com/uk/business/paypal-business-fees",
+    "JE": "https://www.paypal.com/uk/business/paypal-business-fees",
+}
+
 BOOTSTRAP_MARKETS: list[Market] = [
     Market(
         paypal_market_code="DE",
@@ -276,6 +286,25 @@ async def discover_fee_page(
     """
     code = market.paypal_market_code
     slug = market.url_slug
+
+    # Check if this market uses another market's fee page (redirect alias).
+    alias_url = FEE_PAGE_ALIASES.get(code)
+    if alias_url:
+        try:
+            response = await http_client.get(alias_url)
+            try:
+                page_data = extract_cms_context(response.text)
+                if _is_fee_page(page_data, response):
+                    return str(response.url)
+            except ParserError:
+                # No CMS context — check if it's still a valid fee-page URL.
+                response_url = str(response.url)
+                if _is_html_response(response) and _is_fee_url_path(response_url):
+                    return response_url
+        except (NetworkError, ParserError) as exc:
+            logger.debug("Alias fee page fetch failed for %s: %s", code, exc)
+        # Fall through to normal discovery if alias didn't work.
+
     candidates = [f"https://www.paypal.com/{slug}/business/paypal-business-fees"]
     for legacy in config.legacy_fee_paths:
         candidates.append(f"https://www.paypal.com/{slug}/{legacy}")

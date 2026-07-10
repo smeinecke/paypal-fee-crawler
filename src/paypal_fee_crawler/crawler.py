@@ -389,6 +389,7 @@ class Crawler:
             errors = validate_country_output(output.model_dump(mode="json"))
             if errors:
                 validation_errors.append(f"{cc}: " + "; ".join(errors))
+                logger.error("Validation errors for %s: %s", cc, "; ".join(errors))
                 failed.append(cc)
                 del outputs[cc]
 
