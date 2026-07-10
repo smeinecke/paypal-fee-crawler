@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from .cms_context import (
     ALLOWLISTED_GLOBAL_CONTEXTS,
@@ -194,12 +194,28 @@ def get_bootstrap_markets() -> list[Market]:
     return list(BOOTSTRAP_MARKETS)
 
 
+def _is_html_response(response: HttpResponse) -> bool:
+    """Return True if the response looks like an HTML document."""
+    content_type = response.headers.get("content-type", "").lower()
+    return "text/html" in content_type or "application/xhtml" in content_type
+
+
+def _is_fee_url_path(url: str) -> bool:
+    """Return True if the URL path is a known PayPal fee page path.
+
+    PayPal no longer embeds the CMS context on the public fee pages, so the
+    canonical fee URLs are accepted as valid when they return HTML even without
+    a CMS render context.
+    """
+    path = urlparse(url).path.lower().rstrip("/")
+    return path.endswith("/business/paypal-business-fees") or path.endswith("/business/fees")
+
+
 def _is_fee_page(page_data: dict[str, Any], response: HttpResponse) -> bool:
     """Validate that a page is a plausible merchant fee page."""
     if response.status_code != 200:
         return False
-    content_type = response.headers.get("content-type", "").lower()
-    if "text/html" not in content_type and "application/xhtml" not in content_type:
+    if not _is_html_response(response):
         return False
 
     page_id = get_canonical_page_id(page_data)
@@ -268,7 +284,7 @@ async def discover_fee_page(
     transient_failure = False
     parser_failure = False
 
-    for url in candidates:
+    for index, url in enumerate(candidates):
         tested.append(url)
         try:
             response = await http_client.get(url)
@@ -299,6 +315,17 @@ async def discover_fee_page(
         try:
             page_data = extract_cms_context(response.text)
         except ParserError as exc:
+            # PayPal no longer embeds the CMS context on the public fee pages. If the
+            # primary canonical fee-page URL returns HTML but has no CMS context, trust it
+            # as long as the page still belongs to this market (no cross-country redirect).
+            response_url = str(response.url)
+            if (
+                index == 0
+                and _is_html_response(response)
+                and _is_fee_url_path(response_url)
+                and urlparse(response_url).path.lower().startswith(f"/{slug}/")
+            ):
+                return response_url
             logger.debug("Parser error extracting CMS from candidate for %s: %s", code, exc)
             parser_failure = True
             continue

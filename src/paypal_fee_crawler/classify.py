@@ -45,7 +45,7 @@ class ClassificationCandidate:
 # FEETB16 = standard commercial rate table; FEETB18/306/261 = its commercial fixed-fee tables.
 _STANDARD_DOC_IDS = {"FEETB16"}
 _FIXED_DOC_IDS = {"FEETB18", "FEETB306", "FEETB261"}
-_INTERNATIONAL_DOC_IDS = {"FEETB91"}
+_INTERNATIONAL_DOC_IDS = {"FEETB91", "FEETB100", "FEETB382"}
 _CONVERSION_DOC_IDS = {"FEETB539", "FEETB128"}
 
 
@@ -394,15 +394,27 @@ _POS_INTERNATIONAL = (
 
 def _is_international_surcharge(table: Table) -> tuple[bool, float, list[str]]:
     text = _table_text(table)
+    doc_id = _table_doc_id(table)
+
+    # Known international-surcharge tables bypass the broad negative-signal filter.
+    # PayPal has added new table IDs (e.g., FEETB100 for GB, FEETB382 for DE) whose
+    # captions also contain negative-signal phrases like "service fee".
+    if doc_id in _INTERNATIONAL_DOC_IDS:
+        evidence: list[str] = [f"document_id {doc_id} is a known international-surcharge table"]
+        confidence = 0.6
+        if _contains_any(text, _POS_INTERNATIONAL):
+            confidence += 0.35
+            evidence.append("caption/section matches international-surcharge keywords")
+        header_text = _norm(" ".join(h.text for h in table.headers))
+        if _contains_any(header_text, _POS_INTERNATIONAL):
+            confidence += 0.2
+            evidence.append("headers match international-surcharge patterns")
+        return confidence >= 0.4, confidence, evidence
+
     if _contains_any(text, _NEG_INTERNATIONAL):
         return False, 0.0, []
     evidence: list[str] = []
     confidence = 0.0
-
-    doc_id = _table_doc_id(table)
-    if doc_id in _INTERNATIONAL_DOC_IDS:
-        confidence += 0.6
-        evidence.append(f"document_id {doc_id} is a known international-surcharge table")
 
     if _contains_any(text, _POS_INTERNATIONAL):
         confidence += 0.35

@@ -116,7 +116,10 @@ class HttpClient:
                         "User-Agent": self.config.user_agent or DEFAULT_USER_AGENT,
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                         "Accept-Language": "en-US,en;q=0.5",
-                        "Accept-Encoding": "gzip, deflate, br",
+                        # PayPal's edge cache returns a pre-rendered, CMS-free page when the
+                        # client advertises compression support. Requesting identity encoding
+                        # ensures the dynamic origin page with the CMS context is served.
+                        "Accept-Encoding": "identity",
                         "DNT": "1",
                         "Connection": "keep-alive",
                         "Upgrade-Insecure-Requests": "1",

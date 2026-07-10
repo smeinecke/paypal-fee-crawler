@@ -133,6 +133,31 @@ def test_discover_fee_page_for_de() -> None:
     assert "paypal.com/de" in url
 
 
+def test_discover_fee_page_accepts_html_without_cms() -> None:
+    """A real PayPal fee page now returns HTML without the CMS context."""
+
+    async def _fake_html(self: HttpClient, url: str, **kwargs: Any) -> HttpResponse:
+        return HttpResponse(
+            url=url,
+            status_code=200,
+            content=b"<html><body><table><tr><td>Fee</td></tr></table></body></html>",
+            text="<html><body><table><tr><td>Fee</td></tr></table></body></html>",
+            headers={"content-type": "text/html"},
+        )
+
+    async def _run() -> str:
+        async with HttpClient(CrawlConfiguration(max_workers=1, request_delay=0)) as client:
+            with patch.object(HttpClient, "get", _fake_html):
+                return await discover_fee_page(
+                    client,
+                    Market(paypal_market_code="DE", iso_country_code="DE", country_name="Germany"),
+                    CrawlConfiguration(),
+                )
+
+    url = asyncio.run(_run())
+    assert url.endswith("/business/paypal-business-fees")
+
+
 def test_discover_fee_page_unsupported() -> None:
     html = _load_fixture("de.html")
 

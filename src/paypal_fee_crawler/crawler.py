@@ -24,6 +24,7 @@ from .exceptions import (
 from .exceptions import (
     ValidationError as CrawlerValidationError,
 )
+from .html_tables import extract_html_locale, extract_html_pdf_url, extract_html_tables
 from .http import CachedSource, HttpClient
 from .models import (
     CountryOutput,
@@ -68,17 +69,20 @@ class Crawler:
                 raise CountryDiscoveryError("No markets discovered")
             return markets
         except CountryDiscoveryError as exc:
-            if self.config.country_manifest_path:
-                # Try to load previous manifest.
-                previous = self._load_previous_manifest()
+            # Try to load the previous manifest from the configured or default location.
+            manifest_path = self.config.country_manifest_path
+            if not manifest_path and self.config.output_dir:
+                manifest_path = str(Path(self.config.output_dir) / "meta" / "countries.json")
+            if manifest_path:
+                previous = self._load_previous_manifest(manifest_path)
                 if previous:
                     logger.warning("Discovery failed; using previous manifest: %s", exc)
                     return previous.markets
             logger.warning("Discovery failed; falling back to bootstrap list: %s", exc)
             return get_bootstrap_markets()
 
-    def _load_previous_manifest(self) -> Any | None:
-        path = Path(self.config.country_manifest_path) if self.config.country_manifest_path else None
+    def _load_previous_manifest(self, manifest_path: str | None = None) -> Any | None:
+        path = Path(manifest_path) if manifest_path else None
         if not path or not path.exists():
             return None
         try:
@@ -273,22 +277,31 @@ class Crawler:
         try:
             cms = extract_cms_context(response.text)
         except ParserError as exc:
-            logger.warning("Parser error for %s: %s", code, exc)
-            return None, None, True
+            logger.warning("CMS context missing for %s, falling back to HTML extraction: %s", code, exc)
+            cms = None
 
-        extractor = ComponentsExtractor()
-        sections, tables, warnings = extractor.extract(cms)
+        if cms is not None:
+            extractor = ComponentsExtractor()
+            sections, tables, warnings = extractor.extract(cms)
+            page_id = get_canonical_page_id(cms) or "unknown"
+            page_title = self._extract_page_title(response.text, cms)
+            page_updated = self._extract_update_date(cms, sections)
+            cms_updated = self._extract_cms_updated_at(cms)
+            page_locale = self._extract_locale(cms)
+            pdf_url = self._extract_pdf_url(cms)
+        else:
+            sections, tables, warnings = extract_html_tables(response.text, str(response.url))
+            page_id = str(response.url).rstrip("/").split("/")[-1] or "unknown"
+            page_title = self._extract_page_title(response.text, {})
+            page_updated = self._extract_update_date({}, sections)
+            cms_updated = None
+            page_locale = extract_html_locale(response.text) or market.locale
+            pdf_url = extract_html_pdf_url(response.text)
+
         self.warnings.extend(warnings)
-
         derived = classify_tables(tables)
-        page_id = get_canonical_page_id(cms) or "unknown"
-        page_title = self._extract_page_title(response.text, cms)
-        page_updated = self._extract_update_date(cms, sections)
-        cms_updated = self._extract_cms_updated_at(cms)
-        page_locale = self._extract_locale(cms)
         if page_locale and not market.locale:
             market = market.model_copy(update={"locale": page_locale})
-        pdf_url = self._extract_pdf_url(cms)
 
         source = Source(
             requested_url=fee_url,
