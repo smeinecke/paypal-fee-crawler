@@ -69,7 +69,7 @@ def _validate_table_plausibility(output: CountryOutput, errors: list[str]) -> No
                             errors.append(f"Implausible percentage: {token.raw}")
 
 
-def validate_country_output(data: dict[str, Any]) -> list[str]:
+def validate_country_output(data: dict[str, Any], schema_only: bool = False) -> list[str]:
     """Validate a single per-country JSON object against the schema and plausibility rules."""
     errors: list[str] = []
     try:
@@ -80,7 +80,8 @@ def validate_country_output(data: dict[str, Any]) -> list[str]:
         return errors
 
     _validate_currency_codes(data, errors)
-    _validate_table_plausibility(output, errors)
+    if not schema_only:
+        _validate_table_plausibility(output, errors)
     return errors
 
 
@@ -114,12 +115,12 @@ def validate_country_manifest(data: dict[str, Any]) -> list[str]:
     return errors
 
 
-def validate_file(path: Path | str, schema_type: str) -> list[str]:
+def validate_file(path: Path | str, schema_type: str, schema_only: bool = False) -> list[str]:
     """Validate a JSON file on disk. schema_type is one of country, index, core_fees, manifest."""
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     if schema_type == "country":
-        return validate_country_output(data)
+        return validate_country_output(data, schema_only=schema_only)
     if schema_type == "index":
         return validate_country_index(data)
     if schema_type == "core_fees":
@@ -161,14 +162,14 @@ def generate_manifest_schema() -> dict[str, Any]:
     return schema
 
 
-def validate_all_output(output_dir: Path | str) -> list[str]:
+def validate_all_output(output_dir: Path | str, schema_only: bool = False) -> list[str]:
     """Validate every generated JSON file in the output directory."""
     output_dir = Path(output_dir)
     errors: list[str] = []
     for path in output_dir.glob("json/*.json"):
         if path.name in {"index.json", "core-fees.json"}:
             continue
-        file_errors = validate_file(path, "country")
+        file_errors = validate_file(path, "country", schema_only=schema_only)
         if file_errors:
             errors.append(f"{path}: " + "; ".join(file_errors))
     index_path = output_dir / "json" / "index.json"

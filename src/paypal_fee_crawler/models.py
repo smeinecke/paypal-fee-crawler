@@ -221,6 +221,7 @@ class DerivedFees(BaseModel):
     chargeback: str | None = None
     dispute: str | None = None
     unclassified_sections: list[str] = Field(default_factory=list)
+    classification_evidence: list[str] = Field(default_factory=list)
 
     @field_validator("status")
     @classmethod

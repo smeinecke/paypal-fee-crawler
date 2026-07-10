@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from lxml import html
 
 from .exceptions import (
     ContentSecurityError,
@@ -146,7 +147,12 @@ class HttpClient:
             raise ContentSecurityError(f"Host not in allowlist: {parsed.hostname}")
 
     def _detect_blocking_page(self, response: HttpResponse) -> None:
-        """Raise if the response looks like a login, CAPTCHA, or generic error page."""
+        """Raise if the response looks like a login, CAPTCHA, or generic error page.
+
+        Detection is structural, not a simple substring search. A generic JavaScript
+        dependency whose URL contains the string ``captcha`` must not by itself
+        classify the page as a challenge.
+        """
         if response.status_code in (401, 403):
             raise PermanentNetworkError(f"Access denied ({response.status_code}): {response.url}")
         if response.status_code == 429:
@@ -156,33 +162,127 @@ class HttpClient:
             raise TransientNetworkError(f"Server error ({response.status_code}): {response.url}")
         if response.status_code in (502, 503, 504):
             raise TransientNetworkError(f"Gateway error ({response.status_code}): {response.url}")
-        # Structural challenge detection. A generic CAPTCHA library script (e.g.
-        # paypalobjects.com/webcaptcha/ngrlCaptcha.min.js) is present on normal
-        # PayPal pages and must not trigger a CAPTCHA classification by itself.
-        lower_text = response.text[:10000].lower()
-        challenge_signals = [
-            "captcha" in lower_text and "<form" in lower_text,
-            "captcha" in lower_text and "<iframe" in lower_text,
-            "cf-turnstile" in lower_text,
-            "challenge" in lower_text and ("<form" in lower_text or "<iframe" in lower_text),
-            "security check" in lower_text and "<form" in lower_text,
-            "verify you are human" in lower_text,
-            "<title>" in lower_text and any(
-                title in lower_text for title in ("captcha", "security check", "challenge", "robot")
-            ),
-        ]
-        # Only classify as CAPTCHA when challenge-specific structures are present.
-        if any(challenge_signals):
+        if response.status_code >= 400:
+            raise PermanentNetworkError(f"HTTP {response.status_code} for {response.url}")
+
+        title, challenge_score, login_score = self._parse_challenge_signals(response.text)
+
+        # Strong evidence: challenge title phrase plus at least one structural signal.
+        if title and self._is_challenge_title(title) and challenge_score >= 1:
             raise PermanentNetworkError(f"CAPTCHA/interstitial detected: {response.url}")
-        if (
-            "log in" in lower_text
-            and "paypal" in lower_text
-            and response.status_code in (200, 302)
-            and "<form" in lower_text
-            and "password" in lower_text
-        ):
-            # Heuristic: if the page title/text suggests login and we expected a fee page
+
+        # Multiple structural challenge signals also trigger a block.
+        if challenge_score >= 2:
+            raise PermanentNetworkError(f"CAPTCHA/interstitial detected: {response.url}")
+
+        # Login pages are classified separately.
+        if login_score >= 2 and self._looks_like_login_page(response.text):
             raise PermanentNetworkError(f"Login page detected: {response.url}")
+
+    def _parse_challenge_signals(self, text: str) -> tuple[str | None, int, int]:
+        """Parse HTML and return (title, challenge_score, login_score).
+
+        The challenge score counts independent structural signals:
+        - a known CAPTCHA form, iframe, or container
+        - a challenge-specific page identifier (class/id)
+        - a missing CMS context while the page title is suspicious
+        """
+        try:
+            tree = html.fromstring(text)
+        except Exception:
+            return None, 0, 0
+
+        title = None
+        title_node = tree.find(".//title")
+        if title_node is not None and title_node.text:
+            title = title_node.text.strip()
+
+        challenge_score = 0
+        login_score = 0
+
+        # Known challenge containers and form identifiers.
+        challenge_selectors = [
+            "//form[contains(@action, 'captcha') or contains(@id, 'captcha') or contains(@class, 'captcha')]",
+            "//form[contains(@action, 'challenge') or contains(@id, 'challenge') or contains(@class, 'challenge')]",
+            "//iframe[contains(@src, 'captcha') or contains(@name, 'captcha')]",
+            "//iframe[contains(@src, 'challenge') or contains(@name, 'challenge')]",
+            "//*[contains(@class, 'cf-turnstile') or contains(@class, 'g-recaptcha') or contains(@class, 'h-captcha')]",
+            "//*[contains(@id, 'rc-anchor-container') or contains(@class, 'recaptcha')]",
+            "//input[contains(@name, 'captcha') or contains(@id, 'captcha')]",
+            "//div[contains(@class, 'security-check') or contains(@id, 'security-check')]",
+            "//div[contains(@class, 'human-verification') or contains(@id, 'human-verification')]",
+        ]
+        for selector in challenge_selectors:
+            if tree.xpath(selector):
+                challenge_score += 1
+                break
+
+        # A known challenge page identifier in the URL path or page id.
+        body_id = tree.xpath("//body/@id")
+        body_classes = tree.xpath("//body/@class")
+        body_attrs = " ".join(body_id + body_classes).lower()
+        if any(token in body_attrs for token in ("captcha", "challenge", "security-check")):
+            challenge_score += 1
+
+        # The expected PayPal CMS context is absent.
+        scripts = tree.xpath("//script/text()")
+        has_cms_context = any("window.__CMS_ENGINE_RENDER_CONTEXT__" in (s or "") for s in scripts)
+        if not has_cms_context:
+            challenge_score += 1
+            # No CMS context is also a login/error signal.
+            login_score += 1
+
+        # Login signals.
+        login_form = tree.xpath(
+            "//form[.//input[@type='password'] or contains(@action, 'signin') or contains(@action, 'login')]"
+        )
+        if login_form:
+            login_score += 1
+        if title and self._is_login_title(title):
+            login_score += 1
+
+        return title, challenge_score, login_score
+
+    def _is_challenge_title(self, title: str) -> bool:
+        lower = title.lower()
+        return any(
+            phrase in lower
+            for phrase in (
+                "captcha",
+                "security check",
+                "verify you are human",
+                "robot check",
+                "challenge",
+                "are you human",
+                "verify your identity",
+            )
+        )
+
+    def _is_login_title(self, title: str) -> bool:
+        lower = title.lower()
+        return any(
+            phrase in lower
+            for phrase in (
+                "log in",
+                "login",
+                "sign in",
+                "signin",
+                "account login",
+            )
+        )
+
+    def _looks_like_login_page(self, text: str) -> bool:
+        """Return True if the page contains a PayPal login form."""
+        try:
+            tree = html.fromstring(text)
+        except Exception:
+            return False
+        return bool(
+            tree.xpath(
+                "//form[.//input[@type='password']]"
+                "[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'paypal')]"
+            )
+        )
 
     def _calculate_backoff(self, attempt: int) -> float:
         base = 2.0**attempt

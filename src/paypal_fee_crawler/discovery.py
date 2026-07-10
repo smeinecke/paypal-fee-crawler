@@ -106,8 +106,9 @@ def _normalize_markets(selectors: list[dict[str, Any]]) -> list[Market]:
                     languages.append(Language(code=lang_code, name=lang_name))
                     if default_locale and default_locale.startswith(lang_code):
                         preferred = lang_code
+                # Avoid invented locale strings; only keep real PayPal locale data.
                 if not default_locale and languages:
-                    default_locale = f"{paypal_code.lower()}_{paypal_code.upper()}"
+                    preferred = preferred or languages[0].code
                 markets.append(
                     Market(
                         paypal_market_code=paypal_code,
@@ -296,19 +297,57 @@ async def discover_fee_page(
     raise UnsupportedCountryError(f"No public merchant fee page found for {market.paypal_market_code}")
 
 
+def _get_nested(data: Any, *keys: str) -> Any:
+    """Safely walk a nested dict path."""
+    for key in keys:
+        if not isinstance(data, dict):
+            return None
+        data = data.get(key)
+    return data
+
+
 def get_canonical_page_id(page_data: dict[str, Any]) -> str | None:
     """Return a stable page identifier from the CMS context.
 
-    Real PayPal pages place the page ID inside ``pageReference.id`` and the
-    URI path inside ``pageContext.environment.pageURI``.
+    Real PayPal pages place the page ID inside ``pageModel.pageReference.id``,
+    ``pageContext.additionalContext.clientSideContext.pageId``, or the URI path
+    inside ``pageContext.cmsEngineContext.environment.pageURI``.
     """
     if not isinstance(page_data, dict):
         return None
-    page_ref = page_data.get("pageReference")
-    if isinstance(page_ref, dict):
-        page_id = page_ref.get("id") or page_ref.get("pageId")
-        if page_id:
-            return str(page_id)
+
+    # Top-level pageId/pageName (legacy/generated fixtures).
+    page_id = page_data.get("pageId") or page_data.get("pageName")
+    if page_id:
+        return str(page_id)
+
+    # pageModel.metadata.pageId/pageId
+    page_model = page_data.get("pageModel")
+    if isinstance(page_model, dict):
+        metadata = page_model.get("metadata")
+        if isinstance(metadata, dict):
+            page_id = metadata.get("pageId")
+            if page_id:
+                return str(page_id)
+        page_ref = page_model.get("pageReference")
+        if isinstance(page_ref, dict):
+            page_id = page_ref.get("pageId") or page_ref.get("id")
+            if page_id:
+                return str(page_id)
+
+    # pageContext.additionalContext.clientSideContext.pageId
+    page_id = _get_nested(page_data, "pageContext", "additionalContext", "clientSideContext", "pageId")
+    if page_id:
+        return str(page_id)
+
+    # pageContext.cmsEngineContext.environment.pageURI/pagePath
+    env = _get_nested(page_data, "pageContext", "cmsEngineContext", "environment")
+    if isinstance(env, dict):
+        page_uri = env.get("pageURI") or env.get("pagePath")
+        if page_uri:
+            return str(page_uri)
+
+    # Legacy pageContext.environment.pageURI
     page_context = page_data.get("pageContext")
     if isinstance(page_context, dict):
         env = page_context.get("environment") or {}
@@ -316,4 +355,4 @@ def get_canonical_page_id(page_data: dict[str, Any]) -> str | None:
             page_uri = env.get("pageURI") or env.get("pagePath")
             if page_uri:
                 return str(page_uri)
-    return page_data.get("pageId") or page_data.get("pageName")
+    return None

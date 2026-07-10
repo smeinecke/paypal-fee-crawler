@@ -119,6 +119,13 @@ class Crawler:
             value = cms.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
+        # Real PayPal pages use pageModel.update_time.
+        page_model = cms.get("pageModel")
+        if isinstance(page_model, dict):
+            for key in ("update_time", "updatedAt", "lastModified"):
+                value = page_model.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
         # Search rendered section text for locale-specific update phrases.
         phrases = (
             r"Letzte\s+Aktualisierung\s*:\s*([^\n<]+)",
@@ -163,7 +170,15 @@ class Crawler:
 
     def _extract_page_title(self, response_text: str, cms: dict[str, Any]) -> str:
         """Return a human-readable page title from the HTML or CMS context."""
-        # The real CMS context does not always contain a pageTitle; fall back to HTML.
+        # Real PayPal pages store the title inside pageModel.metadata.page__title.
+        page_model = cms.get("pageModel")
+        if isinstance(page_model, dict):
+            metadata = page_model.get("metadata") or {}
+            if isinstance(metadata, dict):
+                for key in ("page__title", "pageTitle", "title"):
+                    value = metadata.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
         cms_title = cms.get("pageTitle") or cms.get("pageName")
         if isinstance(cms_title, str) and cms_title.strip():
             return cms_title.strip()
@@ -171,6 +186,36 @@ class Crawler:
         if title_match:
             return title_match.group(1).strip()
         return "PayPal Merchant and Seller Fees"
+
+    def _extract_cms_updated_at(self, cms: dict[str, Any]) -> str | None:
+        """Return the CMS content update timestamp from the page model."""
+        page_model = cms.get("pageModel")
+        if isinstance(page_model, dict):
+            for key in ("update_time", "updatedAt", "lastModified"):
+                value = page_model.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return None
+
+    def _extract_locale(self, cms: dict[str, Any]) -> str | None:
+        """Return the page locale from the CMS context."""
+        page_context = cms.get("pageContext")
+        if isinstance(page_context, dict):
+            cms_engine = page_context.get("cmsEngineContext")
+            if isinstance(cms_engine, dict):
+                requestor = cms_engine.get("requestor")
+                if isinstance(requestor, dict):
+                    locality = requestor.get("locality")
+                    if isinstance(locality, dict):
+                        locale = locality.get("locale")
+                        if isinstance(locale, str) and locale.strip():
+                            return locale.strip()
+        page_model = cms.get("pageModel")
+        if isinstance(page_model, dict):
+            language = page_model.get("language")
+            if isinstance(language, list) and language and isinstance(language[0], str) and language[0].strip():
+                return language[0].strip()
+        return None
 
     async def _crawl_country(self, market: Market) -> tuple[CountryOutput | None, UnsupportedCountry | None]:
         """Crawl a single country and return its output or unsupported record."""
@@ -234,6 +279,10 @@ class Crawler:
         page_id = get_canonical_page_id(cms) or "unknown"
         page_title = self._extract_page_title(response.text, cms)
         page_updated = self._extract_update_date(cms, sections)
+        cms_updated = self._extract_cms_updated_at(cms)
+        page_locale = self._extract_locale(cms)
+        if page_locale and not market.locale:
+            market = market.model_copy(update={"locale": page_locale})
         pdf_url = self._extract_pdf_url(cms)
 
         source = Source(
@@ -242,7 +291,7 @@ class Crawler:
             page_id=str(page_id),
             page_title=page_title,
             page_updated_at=page_updated,
-            cms_updated_at=None,
+            cms_updated_at=cms_updated,
             pdf_url=pdf_url,
             etag=response.etag,
             last_modified=response.last_modified,

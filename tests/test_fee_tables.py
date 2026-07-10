@@ -34,7 +34,12 @@ def test_split_tables_preserved(de_real_html: str) -> None:
     captions = [t.caption for t in tables]
     # Real DE fixture splits the commercial fixed-fee table across two components
     # with the same caption. They must be preserved as separate tables.
-    assert captions.count("Gebührentabelle: Festgebühr bei geschäftlichen Transaktionen (auf Basis der empfangenen Währung)") == 2
+    assert (
+        captions.count(
+            "Gebührentabelle: Festgebühr bei geschäftlichen Transaktionen (auf Basis der empfangenen Währung)"
+        )
+        == 2
+    )
 
 
 def test_missing_fee_table_raises() -> None:

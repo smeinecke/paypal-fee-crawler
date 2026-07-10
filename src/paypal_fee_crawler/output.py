@@ -5,12 +5,13 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import shutil
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .exceptions import ValidationError as CrawlerValidationError
 from .models import (
     ChangeReport,
     CoreFeeEntry,
@@ -29,6 +30,7 @@ from .validation import (
     generate_country_schema,
     generate_index_schema,
     generate_manifest_schema,
+    validate_all_output,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,11 @@ def _is_same_file(path: Path, content: str) -> bool:
 class OutputPublisher:
     """Publish crawler output atomically with deterministic, schema-validated files."""
 
+    # Managed paths are the only ones that may be created, replaced, or removed.
+    # The output directory itself is never renamed, so this is safe to run at the
+    # root of a git repository.
+    MANAGED_PATHS = ("json", "meta", "schemas", "change-report.json")
+
     def __init__(
         self,
         output_dir: Path | str,
@@ -70,13 +77,19 @@ class OutputPublisher:
     ) -> None:
         self.output_dir = Path(output_dir)
         self.staging_dir = Path(staging_dir) if staging_dir else None
-        self.timestamp = timestamp or datetime.now(timezone.utc).replace(microsecond=0).isoformat()  # noqa: UP017
+        # If no timestamp is provided, canonical output is still deterministic;
+        # generated_at is written as null. The caller is responsible for supplying
+        # a stable run timestamp if it wants explicit timestamps in the output.
+        self.timestamp = timestamp
 
     def _make_staging(self) -> Path:
-        if self.staging_dir:
+        if self.staging_dir and self.staging_dir.is_relative_to(self.output_dir):
+            # Only use a staging directory that lives inside the output tree;
+            # otherwise atomic rename of managed subdirectories cannot be guaranteed.
             self.staging_dir.mkdir(parents=True, exist_ok=True)
             return self.staging_dir
-        return Path(tempfile.mkdtemp(prefix="paypal-fee-crawler-"))
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(prefix=".staging-", dir=str(self.output_dir)))
 
     def _compute_content_sha256(self, data: dict[str, Any]) -> str:
         return _country_output_hash(data)
@@ -180,11 +193,12 @@ class OutputPublisher:
         return staging != self.output_dir, staging
 
     def commit(self, staging: Path) -> tuple[bool, list[str]]:
-        """Atomically replace published output with the staging tree.
+        """Atomically replace managed paths with the staging tree.
 
-        Uses a directory swap so that the public directory is always in a
-        consistent state: either the old output or the new output, never a
-        partial mix. If the swap fails, the previous output remains in place.
+        Only the paths listed in ``MANAGED_PATHS`` are touched. The output
+        directory itself is never renamed, so this is safe to run at the root
+        of a git repository. Staging is validated before any live path is
+        modified. If the swap fails, the previous files remain in place.
         """
         changed_files = self._list_changed_files(staging)
         if not changed_files and self._output_dir_exists_and_matches(staging):
@@ -192,47 +206,101 @@ class OutputPublisher:
             self.rollback(staging)
             return False, []
 
-        backup_dir = self.output_dir.with_name(f"{self.output_dir.name}.old")
-        # Remove any stale backup from a previous aborted run.
-        if backup_dir.exists():
-            shutil.rmtree(backup_dir, ignore_errors=True)
+        # Pre-publication validation: ensure staging is a valid self-consistent
+        # output tree before modifying live files.
+        errors = validate_all_output(staging, schema_only=True)
+        if errors:
+            self.rollback(staging)
+            raise CrawlerValidationError("Staging output failed validation:\n" + "\n".join(errors))
 
+        backup_suffix = ".old"
+        backup_paths: list[Path] = []
         try:
-            if self.output_dir.exists():
-                self.output_dir.rename(backup_dir)
-            staging.rename(self.output_dir)
-            # Successful swap: remove the backup.
-            if backup_dir.exists():
-                shutil.rmtree(backup_dir, ignore_errors=True)
-        except Exception:
-            # On failure, attempt to restore the previous directory.
-            if backup_dir.exists() and not self.output_dir.exists():
-                with contextlib.suppress(Exception):
-                    backup_dir.rename(self.output_dir)
-            raise
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            for name in self.MANAGED_PATHS:
+                src = staging / name
+                dst = self.output_dir / name
+                if not src.exists():
+                    # If a managed path is not in staging, remove the old one if it exists.
+                    if dst.exists():
+                        backup = dst.with_name(f"{dst.name}{backup_suffix}")
+                        if backup.exists():
+                            shutil.rmtree(backup, ignore_errors=True) if backup.is_dir() else backup.unlink(
+                                missing_ok=True
+                            )
+                        os.rename(dst, backup)
+                        backup_paths.append(backup)
+                    continue
 
-        self.rollback(staging)
+                # Move old version to backup and rename staging into place.
+                if dst.exists():
+                    backup = dst.with_name(f"{dst.name}{backup_suffix}")
+                    if backup.exists():
+                        shutil.rmtree(backup, ignore_errors=True) if backup.is_dir() else backup.unlink(missing_ok=True)
+                    os.rename(dst, backup)
+                    backup_paths.append(backup)
+                os.rename(src, dst)
+
+            # Successful swap: remove backups.
+            for backup in backup_paths:
+                if backup.exists():
+                    if backup.is_dir():
+                        shutil.rmtree(backup, ignore_errors=True)
+                    else:
+                        backup.unlink(missing_ok=True)
+        except Exception:
+            # On failure, attempt to restore the previous paths.
+            for backup in backup_paths:
+                if backup.exists():
+                    live = backup.with_name(backup.name[: -len(backup_suffix)])
+                    if not live.exists():
+                        with contextlib.suppress(Exception):
+                            os.rename(backup, live)
+            raise
+        finally:
+            self.rollback(staging)
+
         return bool(changed_files), changed_files
 
     def _list_changed_files(self, staging: Path) -> list[str]:
-        """Return relative paths of files that differ from the published output."""
+        """Return relative paths of managed files that differ from the published output."""
         changed: list[str] = []
-        for src in staging.rglob("*"):
-            if not src.is_file():
+        for name in self.MANAGED_PATHS:
+            src = staging / name
+            if not src.exists():
                 continue
-            rel = src.relative_to(staging)
-            dst = self.output_dir / rel
-            content = src.read_text(encoding="utf-8")
-            if not _is_same_file(dst, content):
-                changed.append(str(rel))
-        # Also detect files that are present in output but missing in staging.
-        if self.output_dir.exists():
-            for dst in self.output_dir.rglob("*"):
-                if not dst.is_file():
-                    continue
-                rel = dst.relative_to(self.output_dir)
-                if not (staging / rel).exists():
+            if src.is_dir():
+                for src_file in src.rglob("*"):
+                    if not src_file.is_file():
+                        continue
+                    rel = src_file.relative_to(staging)
+                    dst = self.output_dir / rel
+                    content = src_file.read_text(encoding="utf-8")
+                    if not _is_same_file(dst, content):
+                        changed.append(str(rel))
+            else:
+                rel = src.relative_to(staging)
+                dst = self.output_dir / rel
+                content = src.read_text(encoding="utf-8")
+                if not _is_same_file(dst, content):
                     changed.append(str(rel))
+        # Also detect managed files that are present in output but missing in staging.
+        if self.output_dir.exists():
+            for name in self.MANAGED_PATHS:
+                dst = self.output_dir / name
+                if not dst.exists():
+                    continue
+                if dst.is_dir():
+                    for dst_file in dst.rglob("*"):
+                        if not dst_file.is_file():
+                            continue
+                        rel = dst_file.relative_to(self.output_dir)
+                        if not (staging / rel).exists():
+                            changed.append(str(rel))
+                else:
+                    rel = dst.relative_to(self.output_dir)
+                    if not (staging / rel).exists():
+                        changed.append(str(rel))
         return changed
 
     def _output_dir_exists_and_matches(self, staging: Path) -> bool:
@@ -243,5 +311,16 @@ class OutputPublisher:
 
     def rollback(self, staging: Path) -> None:
         """Clean up the staging directory on failure or when no change is published."""
-        if self.staging_dir is None and staging.exists() and staging != self.output_dir:
+        if staging.exists() and staging != self.output_dir and not self._is_managed_path(staging):
             shutil.rmtree(staging, ignore_errors=True)
+
+    def _is_managed_path(self, path: Path) -> bool:
+        """Return whether the path is one of the live managed paths."""
+        try:
+            rel = path.relative_to(self.output_dir)
+        except ValueError:
+            return False
+        parts = rel.parts
+        if not parts:
+            return False
+        return parts[0] in self.MANAGED_PATHS or (len(parts) == 1 and parts[0] in self.MANAGED_PATHS)

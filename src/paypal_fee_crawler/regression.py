@@ -48,11 +48,7 @@ class PreviousState:
                 manifest = CountryManifest.model_validate_json(manifest_path.read_text())
                 state.discovered_countries = {m.paypal_market_code for m in manifest.markets}
                 state.unsupported_countries = {u.paypal_market_code for u in manifest.unsupported}
-                state.transient_countries = {
-                    u.paypal_market_code
-                    for u in manifest.unsupported
-                    if u.temporary
-                }
+                state.transient_countries = {u.paypal_market_code for u in manifest.unsupported if u.temporary}
             except Exception as exc:
                 logger.warning("Could not load previous country manifest: %s", exc)
         for path in (output_dir / "json").glob("*.json"):

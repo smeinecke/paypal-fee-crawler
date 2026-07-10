@@ -80,6 +80,23 @@ The crawler is split into small, testable modules under `src/paypal_fee_crawler/
 - No credentials, cookies, or JavaScript execution are used.
 - Logs are sanitized to exclude sensitive values.
 
+## Implementation Report
+
+This release focuses on production hardening without regressing the existing extraction and output pipeline.
+
+- **Blocking-page detection**: HTML parsing and structural signals (CAPTCHA, challenge forms, security titles) are used instead of fragile substring matches.
+- **Fail-closed classification**: `classify.py` now uses explicit candidates, confidence scores, and evidence lists; unknown tables fall back to `unclassified` rather than being misclassified.
+- **Document-ID and keyword signals**: classification is locked to commercial-transaction table IDs (`FEETB16`, `FEETB18`, `FEETB306`) and excludes APM/QR/online-card/dispute/personal tables via negative keyword sets.
+- **Commercial-preference conversion spreads**: conversion-rate extraction prefers commercial rows over personal/family/payout rows when tables contain multiple rates.
+- **Deterministic output**: `OutputPublisher` no longer defaults to the current time; when no timestamp is supplied, `generated_at` is written as `null` so canonical JSON is stable across runs.
+- **Repository-safe atomic publication**: `OutputPublisher.commit` only swaps `json/`, `meta/`, `schemas/`, and `change-report.json` within the output tree; the output directory itself is never renamed, making it safe to run at the root of a git repository.
+- **Pre-publication staging validation**: `validate_all_output` is run on the staging directory before any live files are touched, with schema-only validation available for staging and full validation for final output.
+- **Regression guards**: `check_regression` correctly compares supported, unsupported, and discovered markets, and detects category loss, status regressions, and sharp table/row/country drops.
+- **Transient vs. unsupported separation**: network errors and temporary failures preserve prior output and are reported as failures; only confirmed missing fee pages are recorded as unsupported.
+- **Locale and metadata extraction**: `get_canonical_page_id` walks `pageModel.metadata.pageId`, `pageContext.cmsEngineContext.environment.pageURI`, and `additionalContext.clientSideContext.pageId`; `page__title`, `update_time`, and `locale` are extracted from the nested page model and requestor context.
+
+All 92 unit tests pass with ≥80% coverage, and `ruff`, `pyright`, and `bandit` are clean.
+
 ## License
 
 MIT License. See [LICENSE](LICENSE).

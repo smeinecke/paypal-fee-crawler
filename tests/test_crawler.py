@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from paypal_fee_crawler.cms_context import extract_cms_context
 from paypal_fee_crawler.crawler import Crawler
 from paypal_fee_crawler.exceptions import CountryDiscoveryError
 from paypal_fee_crawler.http import HttpClient, HttpResponse
@@ -69,3 +70,18 @@ def test_crawler_crawl_no_countries(tmp_path: Path) -> None:
     config = CrawlConfiguration(output_dir=str(tmp_path), countries=["XX"], request_delay=0, max_workers=1)
     with pytest.raises(CountryDiscoveryError):
         _run_crawl(config)
+
+
+def test_crawler_extracts_metadata_from_real_cms() -> None:
+    html = _load_fixture("paypal-de-real.html")
+    cms = extract_cms_context(html)
+    crawler = Crawler(CrawlConfiguration())
+    assert crawler._extract_page_title("<html></html>", cms) is not None
+    assert crawler._extract_cms_updated_at(cms) is not None
+    assert crawler._extract_locale(cms) is not None
+    assert crawler._extract_update_date(cms, []) is not None
+
+
+def test_crawler_extracts_title_from_html() -> None:
+    crawler = Crawler(CrawlConfiguration())
+    assert crawler._extract_page_title("<title>Custom Title</title>", {}) == "Custom Title"

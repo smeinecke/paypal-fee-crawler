@@ -17,6 +17,7 @@ from paypal_fee_crawler.discovery import (
     discover_countries,
     discover_fee_page,
     get_bootstrap_markets,
+    get_canonical_page_id,
 )
 from paypal_fee_crawler.exceptions import UnsupportedCountryError
 from paypal_fee_crawler.http import HttpClient, HttpResponse
@@ -155,3 +156,42 @@ def test_discover_fee_page_unsupported() -> None:
 
     with pytest.raises(UnsupportedCountryError):
         asyncio.run(_run())
+
+
+def test_get_canonical_page_id_from_real_cms() -> None:
+    html = _load_fixture("paypal-de-real.html")
+    cms = extract_cms_context(html)
+    page_id = get_canonical_page_id(cms)
+    assert page_id == "business/paypal-business-fees"
+
+
+def test_get_canonical_page_id_legacy_top_level() -> None:
+    assert get_canonical_page_id({"pageId": "test/page"}) == "test/page"
+    assert get_canonical_page_id({"pageName": "test/page"}) == "test/page"
+
+
+def test_get_canonical_page_id_missing() -> None:
+    assert get_canonical_page_id({}) is None
+    assert get_canonical_page_id(None) is None  # type: ignore[arg-type]
+
+
+def test_normalize_markets_locale_fallback() -> None:
+    selector = {
+        "regions": [
+            {
+                "region": "Europe",
+                "countries": [
+                    {
+                        "countryCode": "FR",
+                        "countryName": "France",
+                        "languages": [{"language": "fr", "languageName": "French"}],
+                    }
+                ],
+            }
+        ]
+    }
+    markets = _normalize_markets([selector])
+    assert len(markets) == 1
+    assert markets[0].country_code == "FR"
+    assert markets[0].locale is None
+    assert markets[0].preferred_language == "fr"
