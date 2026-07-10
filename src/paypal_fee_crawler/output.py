@@ -323,9 +323,12 @@ class OutputPublisher:
             live = entry.live_path
             backup = entry.backup_path
 
-            # Remove any newly installed live path first, even when the action
-            # was ``removed`` or when installation failed halfway through.
-            if live.exists():
+            # Only remove the live path if we know a mutation actually happened.
+            # If the journal entry was appended but neither backup nor live swap
+            # completed, the original live path must be left untouched.
+            mutation_happened = entry.live_installed or entry.backup_created
+
+            if mutation_happened and live.exists():
                 try:
                     self._remove_path(live)
                 except Exception as exc:
@@ -338,12 +341,12 @@ class OutputPublisher:
                         os.rename(backup, live)
                     except Exception as exc:
                         failed.append(f"Could not restore backup {backup} to {live}: {exc}")
-                elif not live.exists():
+                elif mutation_happened and not live.exists():
                     failed.append(f"Backup missing for {live}; original state cannot be restored")
             else:
                 # The path did not exist before the transaction.  Ensure any
                 # installed path is gone; no backup should be restored.
-                if live.exists():
+                if entry.live_installed and live.exists():
                     try:
                         self._remove_path(live)
                     except Exception as exc:
