@@ -25,11 +25,18 @@ class RegressionLimits:
 
 @dataclass
 class PreviousState:
-    countries: set[str] = field(default_factory=set)
+    """Baseline state loaded from a previous published output directory."""
+
+    discovered_countries: set[str] = field(default_factory=set)
+    supported_countries: set[str] = field(default_factory=set)
+    unsupported_countries: set[str] = field(default_factory=set)
+    transient_countries: set[str] = field(default_factory=set)
     country_tables: dict[str, int] = field(default_factory=dict)
     country_rows: dict[str, int] = field(default_factory=dict)
     core_categories: dict[str, set[str]] = field(default_factory=dict)
     derived_status: dict[str, str] = field(default_factory=dict)
+    # Backward-compatible alias for code that expects a single set.
+    countries: set[str] = field(default_factory=set)
 
     @classmethod
     def load(cls, output_dir: Path | str) -> PreviousState:
@@ -39,7 +46,13 @@ class PreviousState:
         if manifest_path.exists():
             try:
                 manifest = CountryManifest.model_validate_json(manifest_path.read_text())
-                state.countries = {m.country_code for m in manifest.markets}
+                state.discovered_countries = {m.paypal_market_code for m in manifest.markets}
+                state.unsupported_countries = {u.paypal_market_code for u in manifest.unsupported}
+                state.transient_countries = {
+                    u.paypal_market_code
+                    for u in manifest.unsupported
+                    if u.temporary
+                }
             except Exception as exc:
                 logger.warning("Could not load previous country manifest: %s", exc)
         for path in (output_dir / "json").glob("*.json"):
@@ -49,7 +62,8 @@ class PreviousState:
                 data = CountryOutput.model_validate_json(path.read_text())
             except Exception:  # nosec B112 # noqa: S112
                 continue
-            cc = data.market.country_code
+            cc = data.market.paypal_market_code
+            state.supported_countries.add(cc)
             state.country_tables[cc] = len(data.tables)
             state.country_rows[cc] = sum(len(table.rows) for table in data.tables)
             state.derived_status[cc] = data.derived.status
@@ -63,6 +77,8 @@ class PreviousState:
             if data.derived.currency_conversion:
                 categories.add("currency_conversion")
             state.core_categories[cc] = categories
+        # Backward-compatible alias includes all discovered markets.
+        state.countries = state.discovered_countries
         return state
 
 
@@ -87,33 +103,51 @@ def check_regression(
     current_outputs: dict[str, CountryOutput],
     limits: RegressionLimits,
 ) -> ChangeReport:
-    """Compare the new outputs with the previous state and return a change report."""
+    """Compare the new outputs with the previous state and return a change report.
+
+    Country-level regressions are evaluated against three separate baselines:
+    *discovered* (manifest), *supported* (has a JSON file), and *unsupported*.
+    Transient unsupported countries are tracked separately.
+    """
     changes: list[ChangeType] = []
-    current_countries = set(current_outputs.keys())
-    added = current_countries - previous.countries
-    removed = previous.countries - current_countries
+    current_supported = set(current_outputs.keys())
 
-    if removed and not limits.allow_country_drop:
-        for cc in sorted(removed):
-            changes.append(ChangeType(kind="removed_country", country_code=cc, message=f"Country {cc} disappeared"))
-
-    if added:
-        for cc in sorted(added):
-            changes.append(ChangeType(kind="added_country", country_code=cc, message=f"Country {cc} added"))
+    # Supported-country regression: a previously supported country is now missing.
+    removed_supported = previous.supported_countries - current_supported
+    if removed_supported and not limits.allow_country_drop:
+        for cc in sorted(removed_supported):
+            changes.append(
+                ChangeType(kind="removed_country", country_code=cc, message=f"Supported country {cc} disappeared")
+            )
 
     if (
         not limits.allow_country_drop
-        and previous.countries
-        and len(removed) / len(previous.countries) > limits.max_country_count_delta_ratio
+        and previous.supported_countries
+        and len(removed_supported) / len(previous.supported_countries) > limits.max_country_count_delta_ratio
     ):
         changes.append(
             ChangeType(
                 kind="sharp_country_drop",
-                message=f"Country count dropped by more than {limits.max_country_count_delta_ratio:.0%}",
+                message=f"Supported country count dropped by more than {limits.max_country_count_delta_ratio:.0%}",
             )
         )
 
-    for cc in sorted(current_countries):
+    # Discovered-country regression: a country was in the manifest but is no longer supported.
+    removed_discovered = previous.discovered_countries - current_supported
+    if removed_discovered and not limits.allow_country_drop:
+        for cc in sorted(removed_discovered):
+            changes.append(
+                ChangeType(
+                    kind="removed_country", country_code=cc, message=f"Discovered country {cc} no longer supported"
+                )
+            )
+
+    added_supported = current_supported - previous.supported_countries
+    if added_supported:
+        for cc in sorted(added_supported):
+            changes.append(ChangeType(kind="added_country", country_code=cc, message=f"Country {cc} newly supported"))
+
+    for cc in sorted(current_supported):
         output = current_outputs[cc]
         prev_tables = previous.country_tables.get(cc, 0)
         prev_rows = previous.country_rows.get(cc, 0)

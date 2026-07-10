@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import shutil
@@ -110,13 +111,14 @@ class OutputPublisher:
             source["content_sha256"] = content_hash
             data["source"] = source
             # Write file.
-            path = json_dir / f"{cc.lower()}.json"
+            path = json_dir / f"{output.market.url_slug}.json"
             _write_json(path, data)
             index_entries.append(
                 CountryIndexEntry(
-                    country_code=cc,
+                    paypal_market_code=output.market.paypal_market_code,
+                    iso_country_code=output.market.iso_country_code,
                     locale=output.market.locale,
-                    data_url=f"json/{cc.lower()}.json",
+                    data_url=f"json/{output.market.url_slug}.json",
                     source_url=output.source.canonical_url or output.source.requested_url,
                     source_updated_at=output.source.page_updated_at,
                     derived_status=output.derived.status,
@@ -125,7 +127,8 @@ class OutputPublisher:
             )
             core_entries.append(
                 CoreFeeEntry(
-                    country_code=cc,
+                    paypal_market_code=output.market.paypal_market_code,
+                    iso_country_code=output.market.iso_country_code,
                     derived_status=output.derived.status,
                     derived=output.derived,
                 )
@@ -177,30 +180,68 @@ class OutputPublisher:
         return staging != self.output_dir, staging
 
     def commit(self, staging: Path) -> tuple[bool, list[str]]:
-        """Compare staging to published output and replace files only when changed."""
-        changed_files: list[str] = []
-        # Create all output directories.
-        (self.output_dir / "json").mkdir(parents=True, exist_ok=True)
-        (self.output_dir / "meta").mkdir(parents=True, exist_ok=True)
-        (self.output_dir / "schemas").mkdir(parents=True, exist_ok=True)
+        """Atomically replace published output with the staging tree.
 
+        Uses a directory swap so that the public directory is always in a
+        consistent state: either the old output or the new output, never a
+        partial mix. If the swap fails, the previous output remains in place.
+        """
+        changed_files = self._list_changed_files(staging)
+        if not changed_files and self._output_dir_exists_and_matches(staging):
+            # No change detected; discard the staging directory.
+            self.rollback(staging)
+            return False, []
+
+        backup_dir = self.output_dir.with_name(f"{self.output_dir.name}.old")
+        # Remove any stale backup from a previous aborted run.
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
+
+        try:
+            if self.output_dir.exists():
+                self.output_dir.rename(backup_dir)
+            staging.rename(self.output_dir)
+            # Successful swap: remove the backup.
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir, ignore_errors=True)
+        except Exception:
+            # On failure, attempt to restore the previous directory.
+            if backup_dir.exists() and not self.output_dir.exists():
+                with contextlib.suppress(Exception):
+                    backup_dir.rename(self.output_dir)
+            raise
+
+        self.rollback(staging)
+        return bool(changed_files), changed_files
+
+    def _list_changed_files(self, staging: Path) -> list[str]:
+        """Return relative paths of files that differ from the published output."""
+        changed: list[str] = []
         for src in staging.rglob("*"):
             if not src.is_file():
                 continue
             rel = src.relative_to(staging)
             dst = self.output_dir / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
             content = src.read_text(encoding="utf-8")
-            if _is_same_file(dst, content):
-                continue
-            dst.write_text(content, encoding="utf-8")
-            changed_files.append(str(rel))
+            if not _is_same_file(dst, content):
+                changed.append(str(rel))
+        # Also detect files that are present in output but missing in staging.
+        if self.output_dir.exists():
+            for dst in self.output_dir.rglob("*"):
+                if not dst.is_file():
+                    continue
+                rel = dst.relative_to(self.output_dir)
+                if not (staging / rel).exists():
+                    changed.append(str(rel))
+        return changed
 
-        # Remove files in output that are no longer in staging? Only if atomic and
-        # the caller explicitly wants it; we avoid deletion to preserve prior data.
-        return bool(changed_files), changed_files
+    def _output_dir_exists_and_matches(self, staging: Path) -> bool:
+        """Return whether the output directory exists and matches staging exactly."""
+        if not self.output_dir.exists():
+            return False
+        return not self._list_changed_files(staging)
 
     def rollback(self, staging: Path) -> None:
-        """Clean up the staging directory on failure."""
-        if self.staging_dir is None and staging.exists():
+        """Clean up the staging directory on failure or when no change is published."""
+        if self.staging_dir is None and staging.exists() and staging != self.output_dir:
             shutil.rmtree(staging, ignore_errors=True)

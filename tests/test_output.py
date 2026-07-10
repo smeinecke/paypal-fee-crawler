@@ -13,7 +13,7 @@ from paypal_fee_crawler.output import OutputPublisher
 def _make_output(cc: str) -> CountryOutput:
     return CountryOutput(
         schema_version=1,
-        market=Market(country_code=cc, country_name=cc),
+        market=Market(paypal_market_code=cc, iso_country_code=cc, country_name=cc),
         source=Source(
             requested_url=f"https://example.com/{cc.lower()}", canonical_url=f"https://example.com/{cc.lower()}"
         ),

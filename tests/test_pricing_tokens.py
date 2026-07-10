@@ -96,3 +96,21 @@ def test_render_rich_text_embedded_entry() -> None:
     )
     assert cell.text == "2.99%"
     assert cell.tokens[0].kind == "percentage"
+
+
+def test_render_rich_text_embedded_entry_inline() -> None:
+    cell = render_rich_text_node(
+        {
+            "nodeType": "embedded-entry-inline",
+            "data": {
+                "target": {
+                    "sys": {"id": "tok-2", "contentType": {"sys": {"id": "cvPricingToken"}}},
+                    "fields": {"feeDataKey": "0.39 EUR", "value": "0.39 EUR", "internalName": "fixed"},
+                }
+            },
+        }
+    )
+    assert cell.text == "0.39 EUR"
+    assert cell.tokens[0].kind == "money"
+    assert cell.tokens[0].amount == "0.39"
+    assert cell.tokens[0].currency == "EUR"

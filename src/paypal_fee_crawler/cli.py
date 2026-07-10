@@ -54,6 +54,7 @@ def _build_config(
     keep_diagnostics: bool,
     verbose: bool,
     request_delay: float,
+    timestamp: str | None,
 ) -> CrawlConfiguration:
     selected_countries: list[str] | None = None
     if country:
@@ -63,6 +64,7 @@ def _build_config(
     return CrawlConfiguration(
         output_dir=output,
         staging_dir=staging_dir,
+        timestamp=timestamp,
         countries=selected_countries,
         timeout=timeout,
         max_workers=max_workers,
@@ -102,6 +104,7 @@ def main() -> None:
 @click.option("--keep-diagnostics", is_flag=True, help="Keep diagnostic artifacts on failure.")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging.")
 @click.option("--report", type=click.Path(), help="Write machine-readable JSON report to this path.")
+@click.option("--timestamp", help="Deterministic timestamp for generated output (ISO 8601).")
 def crawl(
     output: str,
     staging_dir: str | None,
@@ -119,6 +122,7 @@ def crawl(
     keep_diagnostics: bool,
     verbose: bool,
     report: str | None,
+    timestamp: str | None,
 ) -> None:
     """Crawl PayPal fee pages and publish deterministic JSON output."""
     _configure_logging(verbose)
@@ -138,6 +142,7 @@ def crawl(
         keep_diagnostics=keep_diagnostics,
         verbose=verbose,
         request_delay=request_delay,
+        timestamp=timestamp,
     )
 
     async def _run() -> CrawlReport:
@@ -225,6 +230,7 @@ def discover_countries(
 @click.option("--request-delay", default=0.5, type=float, help="Delay between requests in seconds.")
 @click.option("--user-agent", help="Custom user agent string.")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging.")
+@click.option("--timestamp", help="Deterministic timestamp for generated output (ISO 8601).")
 def crawl_country(
     country_code: str,
     output: str | None,
@@ -232,12 +238,14 @@ def crawl_country(
     request_delay: float,
     user_agent: str | None,
     verbose: bool,
+    timestamp: str | None,
 ) -> None:
     """Crawl a single PayPal market and print or save the result."""
     _configure_logging(verbose)
     config = CrawlConfiguration(
         countries=[country_code.upper()],
         output_dir=output or "./out",
+        timestamp=timestamp,
         timeout=timeout,
         request_delay=request_delay,
         user_agent=user_agent,

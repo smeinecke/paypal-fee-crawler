@@ -6,7 +6,12 @@ import logging
 from typing import Any
 from urllib.parse import urljoin
 
-from .cms_context import extract_cms_context, find_global_json_assignments
+from .cms_context import (
+    ALLOWLISTED_GLOBAL_CONTEXTS,
+    extract_all_contexts,
+    extract_cms_context,
+    find_global_json_assignments,
+)
 from .exceptions import (
     CountryDiscoveryError,
     FeePageError,
@@ -14,13 +19,15 @@ from .exceptions import (
     UnsupportedCountryError,
 )
 from .http import HttpClient, HttpResponse
+from .market_mapping import iso_country_code_for
 from .models import CrawlConfiguration, Language, Market
 
 logger = logging.getLogger(__name__)
 
 BOOTSTRAP_MARKETS: list[Market] = [
     Market(
-        country_code="DE",
+        paypal_market_code="DE",
+        iso_country_code="DE",
         country_name="Germany",
         region="europe",
         locale="de_DE",
@@ -29,7 +36,8 @@ BOOTSTRAP_MARKETS: list[Market] = [
         preferred_language="de",
     ),
     Market(
-        country_code="US",
+        paypal_market_code="US",
+        iso_country_code="US",
         country_name="United States",
         region="north_america",
         locale="en_US",
@@ -38,7 +46,8 @@ BOOTSTRAP_MARKETS: list[Market] = [
         preferred_language="en",
     ),
     Market(
-        country_code="GB",
+        paypal_market_code="GB",
+        iso_country_code="GB",
         country_name="United Kingdom",
         region="europe",
         locale="en_GB",
@@ -64,7 +73,11 @@ def _find_country_selectors(data: Any) -> list[dict[str, Any]]:
 
 
 def _normalize_markets(selectors: list[dict[str, Any]]) -> list[Market]:
-    """Convert CountrySelector data into normalized Market objects."""
+    """Convert CountrySelector data into normalized Market objects.
+
+    PayPal market codes are preserved; ISO country codes are derived via the
+    conservative mapping table.
+    """
     markets: list[Market] = []
     seen: set[str] = set()
     for selector in selectors:
@@ -73,13 +86,14 @@ def _normalize_markets(selectors: list[dict[str, Any]]) -> list[Market]:
             region_name = region.get("region") or region.get("name") or "unknown"
             countries = region.get("countries") or region.get("countryList") or []
             for country in countries:
-                code = country.get("countryCode") or country.get("code") or country.get("country")
-                if not code:
+                paypal_code = country.get("countryCode") or country.get("code") or country.get("country")
+                if not paypal_code:
                     continue
-                code = code.upper()
-                if code in seen:
+                paypal_code = paypal_code.upper()
+                if paypal_code in seen:
                     continue
-                seen.add(code)
+                seen.add(paypal_code)
+                iso_code = iso_country_code_for(paypal_code)
                 languages: list[Language] = []
                 langs = country.get("languages") or country.get("languageList") or []
                 default_locale = country.get("defaultLocale") or country.get("preferredLocale")
@@ -93,15 +107,16 @@ def _normalize_markets(selectors: list[dict[str, Any]]) -> list[Market]:
                     if default_locale and default_locale.startswith(lang_code):
                         preferred = lang_code
                 if not default_locale and languages:
-                    default_locale = f"{code.lower()}_{code.upper()}"
+                    default_locale = f"{paypal_code.lower()}_{paypal_code.upper()}"
                 markets.append(
                     Market(
-                        country_code=code,
-                        country_name=country.get("countryName") or country.get("name") or code,
+                        paypal_market_code=paypal_code,
+                        iso_country_code=iso_code,
+                        country_name=country.get("countryName") or country.get("name") or paypal_code,
                         region=str(region_name).lower().replace(" ", "_"),
                         locale=default_locale,
                         languages=languages,
-                        url_prefix=f"https://www.paypal.com/{code.lower()}",
+                        url_prefix=f"https://www.paypal.com/{paypal_code.lower()}",
                         preferred_language=preferred,
                     )
                 )
@@ -115,8 +130,9 @@ async def discover_countries(
 ) -> list[Market]:
     """Discover PayPal markets from the country selector embedded in a homepage.
 
-    Falls back to the bootstrap list if discovery fails and a fallback is allowed
-    by the caller (the caller decides whether to treat fallback as an error).
+    The country selector is searched across all allowlisted global JSON contexts
+    (CMS, footer, header) independently. Falls back to the bootstrap list if
+    discovery fails and a fallback is allowed by the caller.
     """
     try:
         response = await http_client.get(homepage_url)
@@ -125,12 +141,11 @@ async def discover_countries(
         raise CountryDiscoveryError(f"Failed to retrieve PayPal homepage: {exc}") from exc
 
     try:
-        cms = extract_cms_context(response.text)
+        all_contexts = extract_all_contexts(response.text)
     except ParserError as exc:
         logger.warning("Could not extract CMS context from homepage: %s", exc)
-        # Try to find other global JSON assignments that may contain the selector.
-        assignments = find_global_json_assignments(response.text, ["__CONFIG__", "__APP_DATA__", "window.__CONFIG__"])
-        cms = None
+        # Try to find any global JSON assignments that may contain the selector.
+        assignments = find_global_json_assignments(response.text, list(ALLOWLISTED_GLOBAL_CONTEXTS))
         for data in assignments.values():
             selectors = _find_country_selectors(data)
             if selectors:
@@ -139,13 +154,28 @@ async def discover_countries(
                     return markets
         raise CountryDiscoveryError(f"No country selector found in homepage: {exc}") from exc
 
-    selectors = _find_country_selectors(cms)
-    if not selectors:
-        raise CountryDiscoveryError("No CountrySelector component found in CMS context")
-    markets = _normalize_markets(selectors)
-    if not markets:
-        raise CountryDiscoveryError("CountrySelector found but no markets could be extracted")
-    return markets
+    contexts = all_contexts["contexts"]
+    # Search each parsed context independently; the selector may live only in the
+    # footer or header context on real pages.
+    for _name, context in contexts.items():
+        selectors = _find_country_selectors(context)
+        if selectors:
+            markets = _normalize_markets(selectors)
+            if markets:
+                return markets
+
+    # Last-resort fallback: try the CMS context itself.
+    cms = contexts.get("window.__CMS_ENGINE_RENDER_CONTEXT__")
+    if cms is not None:
+        selectors = _find_country_selectors(cms)
+        if not selectors:
+            raise CountryDiscoveryError("No CountrySelector component found in any global context")
+        markets = _normalize_markets(selectors)
+        if not markets:
+            raise CountryDiscoveryError("CountrySelector found but no markets could be extracted")
+        return markets
+
+    raise CountryDiscoveryError("No country selector found in any global context")
 
 
 def get_bootstrap_markets() -> list[Market]:
@@ -160,7 +190,8 @@ def _is_fee_page(page_data: dict[str, Any], response: HttpResponse) -> bool:
     content_type = response.headers.get("content-type", "").lower()
     if "text/html" not in content_type and "application/xhtml" not in content_type:
         return False
-    page_id = page_data.get("pageId") or page_data.get("pageName") or page_data.get("pageReference", {}).get("id")
+
+    page_id = get_canonical_page_id(page_data)
     if page_id and "business" in str(page_id).lower():
         return True
     if page_id and "fee" in str(page_id).lower():
@@ -170,7 +201,7 @@ def _is_fee_page(page_data: dict[str, Any], response: HttpResponse) -> bool:
     def _has_fee_component(data: Any) -> bool:
         if isinstance(data, dict):
             ct = data.get("componentType", "")
-            if isinstance(ct, str) and ("Fee" in ct or "fee" in str(data).lower()):
+            if isinstance(ct, str) and "Fee" in ct:
                 return True
             for value in data.values():
                 if _has_fee_component(value):
@@ -193,10 +224,10 @@ async def discover_fee_page(
 
     Returns the confirmed URL. Raises FeePageError or UnsupportedCountryError on failure.
     """
-    cc = market.country_code.lower()
-    candidates = [f"https://www.paypal.com/{cc}/business/paypal-business-fees"]
+    slug = market.url_slug
+    candidates = [f"https://www.paypal.com/{slug}/business/paypal-business-fees"]
     for legacy in config.legacy_fee_paths:
-        candidates.append(f"https://www.paypal.com/{cc}/{legacy}")
+        candidates.append(f"https://www.paypal.com/{slug}/{legacy}")
 
     tested: list[str] = []
     for url in candidates:
@@ -204,7 +235,7 @@ async def discover_fee_page(
         try:
             response = await http_client.get(url)
         except Exception as exc:
-            logger.debug("Fee page candidate failed for %s: %s", market.country_code, exc)
+            logger.debug("Fee page candidate failed for %s: %s", market.paypal_market_code, exc)
             continue
         try:
             page_data = extract_cms_context(response.text)
@@ -215,18 +246,18 @@ async def discover_fee_page(
             return str(response.url)
 
     # If the default path failed, try the homepage and search navigation for fee links.
-    homepage = f"https://www.paypal.com/{cc}"
+    homepage = f"https://www.paypal.com/{slug}"
     try:
         response = await http_client.get(homepage)
     except Exception as exc:
         raise UnsupportedCountryError(
-            f"No fee page found and homepage failed for {market.country_code}: {exc}"
+            f"No fee page found and homepage failed for {market.paypal_market_code}: {exc}"
         ) from exc
 
     try:
         page_data = extract_cms_context(response.text)
     except ParserError as exc:
-        raise FeePageError(f"Homepage for {market.country_code} has no valid CMS context: {exc}") from exc
+        raise FeePageError(f"Homepage for {market.paypal_market_code} has no valid CMS context: {exc}") from exc
 
     # Search structurally for fee/business links in navigation.
     def _find_fee_links(data: Any, base: str = "") -> list[str]:
@@ -262,14 +293,27 @@ async def discover_fee_page(
         if _is_fee_page(page_data, response):
             return str(response.url)
 
-    raise UnsupportedCountryError(f"No public merchant fee page found for {market.country_code}")
+    raise UnsupportedCountryError(f"No public merchant fee page found for {market.paypal_market_code}")
 
 
 def get_canonical_page_id(page_data: dict[str, Any]) -> str | None:
-    """Return a stable page identifier from the CMS context."""
-    if isinstance(page_data, dict):
-        page_ref = page_data.get("pageReference")
-        if isinstance(page_ref, dict):
-            return page_ref.get("id") or page_ref.get("pageId")
-        return page_data.get("pageId") or page_data.get("pageName")
-    return None
+    """Return a stable page identifier from the CMS context.
+
+    Real PayPal pages place the page ID inside ``pageReference.id`` and the
+    URI path inside ``pageContext.environment.pageURI``.
+    """
+    if not isinstance(page_data, dict):
+        return None
+    page_ref = page_data.get("pageReference")
+    if isinstance(page_ref, dict):
+        page_id = page_ref.get("id") or page_ref.get("pageId")
+        if page_id:
+            return str(page_id)
+    page_context = page_data.get("pageContext")
+    if isinstance(page_context, dict):
+        env = page_context.get("environment") or {}
+        if isinstance(env, dict):
+            page_uri = env.get("pageURI") or env.get("pagePath")
+            if page_uri:
+                return str(page_uri)
+    return page_data.get("pageId") or page_data.get("pageName")

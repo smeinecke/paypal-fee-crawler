@@ -4,10 +4,15 @@ from enum import IntEnum
 
 
 class ExitCode(IntEnum):
-    """Stable CLI exit codes."""
+    """Stable CLI exit codes.
+
+    All successful outcomes, including runs that produced changes, use exit code 0.
+    Non-zero codes are reserved for real failures so that CI and shell pipelines
+    treat a successful crawl as a success.
+    """
 
     SUCCESS_NO_CHANGE = 0
-    SUCCESS_WITH_CHANGES = 1
+    SUCCESS_WITH_CHANGES = 0
     NETWORK_FAILURE = 10
     PARSER_FAILURE = 20
     VALIDATION_FAILURE = 30

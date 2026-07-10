@@ -17,7 +17,7 @@ def _make_output(cc: str, tables: int = 0, rows: int = 0, status: str = "complet
     table_rows = [Row(cells=[Cell(text="2.99%")]) for _ in range(rows)]
     return CountryOutput(
         schema_version=1,
-        market=Market(country_code=cc, country_name=cc),
+        market=Market(paypal_market_code=cc, iso_country_code=cc, country_name=cc),
         source=Source(
             requested_url=f"https://example.com/{cc.lower()}", canonical_url=f"https://example.com/{cc.lower()}"
         ),
@@ -27,14 +27,14 @@ def _make_output(cc: str, tables: int = 0, rows: int = 0, status: str = "complet
 
 
 def test_no_regression_on_identical_run() -> None:
-    previous = PreviousState(countries={"DE"}, country_tables={"DE": 0}, country_rows={"DE": 0})
+    previous = PreviousState(supported_countries={"DE"}, country_tables={"DE": 0}, country_rows={"DE": 0})
     current = {"DE": _make_output("DE")}
     report = check_regression(previous, current, RegressionLimits())
     assert not report.has_regression
 
 
 def test_removed_country_regression() -> None:
-    previous = PreviousState(countries={"DE", "US"})
+    previous = PreviousState(supported_countries={"DE", "US"})
     current = {"DE": _make_output("DE")}
     report = check_regression(previous, current, RegressionLimits())
     assert report.has_regression
@@ -42,14 +42,14 @@ def test_removed_country_regression() -> None:
 
 
 def test_added_country_not_regression() -> None:
-    previous = PreviousState(countries={"DE"})
+    previous = PreviousState(supported_countries={"DE"})
     current = {"DE": _make_output("DE"), "US": _make_output("US")}
     report = check_regression(previous, current, RegressionLimits())
     assert not report.has_regression
 
 
 def test_enforce_regression_raises() -> None:
-    previous = PreviousState(countries={"DE"})
+    previous = PreviousState(supported_countries={"DE"})
     current = {}
     report = check_regression(previous, current, RegressionLimits())
     with pytest.raises(RegressionError):
@@ -57,7 +57,7 @@ def test_enforce_regression_raises() -> None:
 
 
 def test_allow_country_drop_flag() -> None:
-    previous = PreviousState(countries={"DE", "US"})
+    previous = PreviousState(supported_countries={"DE", "US"})
     current = {"DE": _make_output("DE")}
     limits = RegressionLimits(allow_country_drop=True)
     report = check_regression(previous, current, limits)
@@ -82,7 +82,7 @@ def test_lost_core_category_regression() -> None:
 
 
 def test_sharp_table_drop_regression() -> None:
-    previous = PreviousState(countries={"DE"}, country_tables={"DE": 10})
+    previous = PreviousState(supported_countries={"DE"}, country_tables={"DE": 10})
     current = {"DE": _make_output("DE", tables=1, rows=1)}
     report = check_regression(previous, current, RegressionLimits())
     assert report.has_regression
@@ -98,6 +98,6 @@ def test_previous_state_load_from_output() -> None:
         publisher.commit(staging)
         publisher.rollback(staging)
         previous = PreviousState.load(output_dir)
-        assert "DE" in previous.countries
+        assert "DE" in previous.supported_countries
         assert previous.country_tables.get("DE") == 1
         assert previous.country_rows.get("DE") == 2

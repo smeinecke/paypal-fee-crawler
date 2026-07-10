@@ -25,3 +25,18 @@ def us_html(fixtures_dir: Path) -> str:
 @pytest.fixture
 def gb_html(fixtures_dir: Path) -> str:
     return (fixtures_dir / "gb.html").read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def de_real_html(fixtures_dir: Path) -> str:
+    return (fixtures_dir / "paypal-de-real.html").read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def us_real_html(fixtures_dir: Path) -> str:
+    return (fixtures_dir / "paypal-us-real.html").read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def gb_real_html(fixtures_dir: Path) -> str:
+    return (fixtures_dir / "paypal-gb-real.html").read_text(encoding="utf-8")

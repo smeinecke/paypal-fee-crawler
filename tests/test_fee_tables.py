@@ -6,8 +6,8 @@ from paypal_fee_crawler.cms_context import extract_cms_context
 from paypal_fee_crawler.components import ComponentsExtractor
 
 
-def test_extract_tables_from_de_fixture(de_html: str) -> None:
-    cms = extract_cms_context(de_html)
+def test_extract_tables_from_de_fixture(de_real_html: str) -> None:
+    cms = extract_cms_context(de_real_html)
     extractor = ComponentsExtractor()
     sections, tables, warnings = extractor.extract(cms)
     assert tables
@@ -15,23 +15,26 @@ def test_extract_tables_from_de_fixture(de_html: str) -> None:
     assert sum(len(t.rows) for t in tables) > 0
 
 
-def test_fee_table_reference_resolved(de_html: str) -> None:
-    cms = extract_cms_context(de_html)
+def test_fee_table_reference_resolved(de_real_html: str) -> None:
+    cms = extract_cms_context(de_real_html)
     extractor = ComponentsExtractor()
     _, tables, _ = extractor.extract(cms)
     ids = [t.document_id for t in tables if t.document_id]
-    assert any(id and id.upper() == "FEETB-DE-05" for id in ids)
-    split_tables = [t for t in tables if t.document_id and t.document_id.upper() == "FEETB-DE-05"]
-    assert len(split_tables) == 1
-    assert len(split_tables[0].rows) >= 4
+    # Real DE fixture references this fixed-fee table in multiple places.
+    assert any(id and id.upper() == "FEETB18" for id in ids)
+    referenced_tables = [t for t in tables if t.document_id and t.document_id.upper() == "FEETB18"]
+    assert len(referenced_tables) == 1
+    assert len(referenced_tables[0].rows) >= 4
 
 
-def test_split_tables_preserved(de_html: str) -> None:
-    cms = extract_cms_context(de_html)
+def test_split_tables_preserved(de_real_html: str) -> None:
+    cms = extract_cms_context(de_real_html)
     extractor = ComponentsExtractor()
     _, tables, _ = extractor.extract(cms)
     captions = [t.caption for t in tables]
-    assert captions.count("Currency fixed fees") == 1
+    # Real DE fixture splits the commercial fixed-fee table across two components
+    # with the same caption. They must be preserved as separate tables.
+    assert captions.count("Gebührentabelle: Festgebühr bei geschäftlichen Transaktionen (auf Basis der empfangenen Währung)") == 2
 
 
 def test_missing_fee_table_raises() -> None:

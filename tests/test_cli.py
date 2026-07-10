@@ -41,8 +41,8 @@ def test_cli_inspect_fixture(fixtures_dir: Path) -> None:
 
 
 def test_cli_diff(tmp_path: Path) -> None:
-    a = {"schema_version": 1, "market": {"country_code": "DE", "country_name": "Germany"}}
-    b = {"schema_version": 1, "market": {"country_code": "DE", "country_name": "Deutschland"}}
+    a = {"schema_version": 1, "market": {"paypal_market_code": "DE", "iso_country_code": "DE", "country_name": "Germany"}}
+    b = {"schema_version": 1, "market": {"paypal_market_code": "DE", "iso_country_code": "DE", "country_name": "Deutschland"}}
     a_path = tmp_path / "a.json"
     b_path = tmp_path / "b.json"
     a_path.write_text(json.dumps(a))

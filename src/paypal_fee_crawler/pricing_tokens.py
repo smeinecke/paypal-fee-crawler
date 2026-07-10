@@ -396,8 +396,9 @@ def _render_text_node(node: dict[str, Any]) -> tuple[str, list[FeeToken], list[L
     if uri and isinstance(uri, str):
         links.append(Link(text=text, uri=uri))
 
-    # Embedded pricing token reference.
-    if node.get("nodeType") == "EmbeddedEntryBlock" or node.get("type") == "embedded-entry":
+    # Embedded pricing token reference (block or inline).
+    node_type = node.get("nodeType") or node.get("type") or ""
+    if node_type in {"EmbeddedEntryBlock", "embedded-entry", "embedded-entry-block", "embedded-entry-inline"}:
         target = node.get("data", {}).get("target", {})
         fields = target.get("fields", {})
         token_value = fields.get("feeDataKey") or fields.get("value") or fields.get("displayValue")
@@ -411,6 +412,9 @@ def _render_text_node(node: dict[str, Any]) -> tuple[str, list[FeeToken], list[L
             )
             tokens.append(token)
             text = token.raw
+        elif node_type in {"embedded-entry-inline", "EmbeddedEntryInline"}:
+            # Preserve the node type so callers know an inline token was present.
+            text = ""
 
     return text, tokens, links
 
@@ -437,7 +441,7 @@ def render_rich_text_node(node: Any) -> Cell:
         or node_type in {"list-item", "ListItem"}
     ):
         content = node.get("content") or []
-    elif node_type in {"EmbeddedEntryBlock", "embedded-entry", "embedded-entry-block"}:
+    elif node_type in {"EmbeddedEntryBlock", "embedded-entry", "embedded-entry-block", "embedded-entry-inline"}:
         text, tokens, links = _render_text_node(node)
         return Cell(text=text, tokens=tokens, links=links)
     elif "content" in node:
@@ -481,7 +485,7 @@ def render_rich_text_node(node: Any) -> Cell:
             links.extend(rendered.links)
         elif child_type in {"line-break", "linebreak", "LineBreak"}:
             text_parts.append("\n")
-        elif child_type in {"embedded-entry-block", "embedded-entry"}:
+        elif child_type in {"embedded-entry-block", "embedded-entry", "embedded-entry-inline"}:
             rendered = render_rich_text_node(child)
             if rendered.text.strip():
                 text_parts.append(rendered.text)

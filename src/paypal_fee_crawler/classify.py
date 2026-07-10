@@ -24,6 +24,17 @@ def _section_text(table: Table) -> str:
     return clean_text(" ".join(parts)).lower()
 
 
+def _all_text(table: Table) -> str:
+    """Return all searchable text from a table: section, caption, headers, and rows."""
+    parts = list(table.section_path) + [table.caption or ""]
+    for header in table.headers:
+        parts.append(header.text)
+    for row in table.rows:
+        for cell in row.cells:
+            parts.append(cell.text)
+    return clean_text(" ".join(parts)).lower()
+
+
 def _first_percentage_token(table: Table) -> str | None:
     for row in table.rows:
         for cell in row.cells:
@@ -116,19 +127,78 @@ def classify_tables(tables: list[Table]) -> DerivedFees:
     unclassified: list[str] = []
 
     for table in tables:
-        text = _section_text(table)
+        text = _all_text(table)
         if not table.rows and not table.headers:
             continue
 
-        is_commercial = any(keyword in text for keyword in ("commercial", "standard", "domestic", "goods and services"))
-        is_fixed = any(keyword in text for keyword in ("fixed fee", "fixed fees", "per transaction"))
-        is_international = any(keyword in text for keyword in ("international", "cross border", "cross-border"))
-        is_conversion = any(keyword in text for keyword in ("currency conversion", "conversion spread", "fx"))
-        is_micropayment = "micropayment" in text
-        is_donation = "donation" in text
-        is_nonprofit = "nonprofit" in text or "non-profit" in text or "charity" in text
-        is_chargeback = "chargeback" in text
-        is_dispute = "dispute" in text
+        # Commercial/standard transaction fees (locale-aware).
+        is_commercial = any(
+            keyword in text
+            for keyword in (
+                "commercial",
+                "standard",
+                "domestic",
+                "goods and services",
+                "waren und dienstleistungen",
+                "geld senden",
+                "zahlung empfangen",
+                "transaction fees",
+                "transaktionsgebühren",
+                "händlergebühren",
+                "merchant fees",
+                "payPal-gebühren",
+            )
+        )
+        # Fixed fees per transaction (locale-aware).
+        is_fixed = any(
+            keyword in text
+            for keyword in (
+                "fixed fee",
+                "fixed fees",
+                "per transaction",
+                "pro transaktion",
+                "feste gebühr",
+                "festgebühr",
+                "transaktionsgebühr",
+                "fixe gebühr",
+                "fixed charge",
+                "gebühr pro",
+            )
+        )
+        # International/cross-border payments.
+        is_international = any(
+            keyword in text
+            for keyword in (
+                "international",
+                "cross border",
+                "cross-border",
+                "auslandszahlung",
+                "grenzüberschreitend",
+                "cross-border-gebühren",
+                "internationaler geschäftsverkehr",
+            )
+        )
+        # Currency conversion / FX.
+        is_conversion = any(
+            keyword in text
+            for keyword in (
+                "currency conversion",
+                "conversion spread",
+                "fx",
+                "währungsumrechnung",
+                "währungskonvertierung",
+                "umrechnungsgebühr",
+                "wechselkursgebühr",
+            )
+        )
+        # Other categories.
+        is_micropayment = any(kw in text for kw in ("micropayment", "mikrozahlung", "kleinbetragszahlung"))
+        is_donation = any(kw in text for kw in ("donation", "spende", "charity donation"))
+        is_nonprofit = any(
+            kw in text for kw in ("nonprofit", "non-profit", "charity", "gemeinnützig", "gemeinnutzig")
+        )
+        is_chargeback = any(kw in text for kw in ("chargeback", "rückbuchung", "rückbelastung"))
+        is_dispute = any(kw in text for kw in ("dispute", "streitfall", "konfliktlösung"))
 
         if is_commercial:
             percentage = _first_percentage_token(table)

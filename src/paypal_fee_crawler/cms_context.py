@@ -14,6 +14,28 @@ logger = logging.getLogger(__name__)
 
 TARGET_ASSIGNMENT = "window.__CMS_ENGINE_RENDER_CONTEXT__"
 
+# Global contexts that are allowlisted for structured discovery. Do not add
+# arbitrary JavaScript variables here; only parse strict JSON from explicitly
+# named PayPal server-rendered objects.
+ALLOWLISTED_GLOBAL_CONTEXTS = {
+    "window.__CMS_ENGINE_RENDER_CONTEXT__",
+    "window.__GLOBAL_NAV_CONTEXT_FOOTER__",
+    "window.__GLOBAL_NAV_CONTEXT__",
+    "window.__GLOBAL_NAV_CONTEXT_HEADER__",
+}
+
+
+def _strip_assignment(text: str, name: str) -> str:
+    """Return the strict JSON payload after a global assignment, if present."""
+    idx = text.index(name)
+    after = text[idx + len(name) :].lstrip()
+    if after.startswith("="):
+        after = after[1:].lstrip()
+    after = after.rstrip()
+    if after.endswith(";"):
+        after = after[:-1].rstrip()
+    return after
+
 
 def extract_cms_context(html_text: str) -> dict[str, Any]:
     """Parse the HTML and return exactly one CMS render context object.
@@ -33,16 +55,10 @@ def extract_cms_context(html_text: str) -> dict[str, Any]:
         if not text or TARGET_ASSIGNMENT not in text:
             continue
         # Find the assignment and strip the wrapper, keeping only the JSON object.
-        idx = text.index(TARGET_ASSIGNMENT)
-        after = text[idx + len(TARGET_ASSIGNMENT) :]
-        # Remove optional whitespace and the '=' sign.
-        after = after.lstrip()
-        if after.startswith("="):
-            after = after[1:].lstrip()
-        # Remove trailing semicolon if present.
-        after = after.rstrip()
-        if after.endswith(";"):
-            after = after[:-1].rstrip()
+        try:
+            after = _strip_assignment(text, TARGET_ASSIGNMENT)
+        except ValueError:
+            continue
         try:
             data = json.loads(after)
         except json.JSONDecodeError as exc:
@@ -77,15 +93,9 @@ def find_global_json_assignments(html_text: str, variable_names: list[str]) -> d
             if name not in text:
                 continue
             try:
-                idx = text.index(name)
+                after = _strip_assignment(text, name)
             except ValueError:
                 continue
-            after = text[idx + len(name) :].lstrip()
-            if after.startswith("="):
-                after = after[1:].lstrip()
-            after = after.rstrip()
-            if after.endswith(";"):
-                after = after[:-1].rstrip()
             try:
                 data = json.loads(after)
             except json.JSONDecodeError:
@@ -93,3 +103,47 @@ def find_global_json_assignments(html_text: str, variable_names: list[str]) -> d
             if isinstance(data, dict):
                 results[name] = data
     return results
+
+
+def extract_all_contexts(html_text: str) -> dict[str, Any]:
+    """Return all successfully parsed, allowlisted global contexts.
+
+    The CMS render context is required; other contexts are optional. Malformed
+    optional contexts are reported as warnings, not fatal errors.
+    """
+    results: dict[str, Any] = {}
+    warnings: list[str] = []
+    try:
+        tree = html.fromstring(html_text)
+    except Exception as exc:
+        raise ParserError(f"Failed to parse HTML: {exc}") from exc
+
+    scripts = tree.xpath("//script")
+    for script in scripts:
+        text = script.text or ""
+        for name in ALLOWLISTED_GLOBAL_CONTEXTS:
+            if name not in text or name in results:
+                continue
+            try:
+                after = _strip_assignment(text, name)
+            except ValueError:
+                warnings.append(f"Could not strip assignment wrapper for {name}")
+                continue
+            try:
+                data = json.loads(after)
+            except json.JSONDecodeError as exc:
+                if name == TARGET_ASSIGNMENT:
+                    raise ParserError(f"Invalid JSON in CMS render context: {exc}") from exc
+                warnings.append(f"Malformed JSON in {name}: {exc}")
+                continue
+            if not isinstance(data, dict):
+                if name == TARGET_ASSIGNMENT:
+                    raise ParserError("CMS render context is not a JSON object")
+                warnings.append(f"{name} is not a JSON object")
+                continue
+            results[name] = data
+
+    if TARGET_ASSIGNMENT not in results:
+        raise ParserError("No CMS render context found in page")
+
+    return {"contexts": results, "warnings": warnings}

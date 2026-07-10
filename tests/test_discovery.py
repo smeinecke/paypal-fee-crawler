@@ -58,14 +58,13 @@ def test_bootstrap_markets() -> None:
     assert {"DE", "US", "GB"}.issubset(codes)
 
 
-def test_is_fee_page_valid() -> None:
-    text = Path(__file__).parent.joinpath("fixtures", "de.html").read_text()
-    cms = extract_cms_context(text)
+def test_is_fee_page_valid(de_html: str) -> None:
+    cms = extract_cms_context(de_html)
     resp = HttpResponse(
         url="https://www.paypal.com/de/business/paypal-business-fees",
         status_code=200,
-        content=text.encode(),
-        text=text,
+        content=de_html.encode(),
+        text=de_html,
         headers={"content-type": "text/html"},
     )
     assert _is_fee_page(cms, resp) is True
@@ -125,7 +124,7 @@ def test_discover_fee_page_for_de() -> None:
             with patch.object(HttpClient, "get", _fake_homepage):
                 return await discover_fee_page(
                     client,
-                    Market(country_code="DE", country_name="Germany"),
+                    Market(paypal_market_code="DE", iso_country_code="DE", country_name="Germany"),
                     CrawlConfiguration(),
                 )
 
@@ -150,7 +149,7 @@ def test_discover_fee_page_unsupported() -> None:
             with patch.object(HttpClient, "get", _fake_404):
                 return await discover_fee_page(
                     client,
-                    Market(country_code="XX", country_name="Unknown"),
+                    Market(paypal_market_code="XX", iso_country_code=None, country_name="Unknown"),
                     CrawlConfiguration(),
                 )
 

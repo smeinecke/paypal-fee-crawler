@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 from .classify import classify_tables
 from .cms_context import extract_cms_context
-from .components import ComponentsExtractor
+from .components import ComponentsExtractor, iter_components
 from .discovery import discover_countries, discover_fee_page, get_bootstrap_markets, get_canonical_page_id
 from .exceptions import (
     CountryDiscoveryError,
@@ -88,57 +89,141 @@ class Crawler:
             logger.warning("Could not load previous manifest: %s", exc)
             return None
 
+    def _load_previous_country_output(self, market: Market) -> CountryOutput | None:
+        """Load the previous country output from disk, if available and valid."""
+        if not self.config.output_dir:
+            return None
+        prev_path = Path(self.config.output_dir) / "json" / f"{market.url_slug}.json"
+        if not prev_path.exists():
+            return None
+        try:
+            return CountryOutput.model_validate_json(prev_path.read_text())
+        except Exception as exc:
+            logger.debug("Could not load previous output for %s: %s", market.paypal_market_code, exc)
+            return None
+
+    def _stable_timestamp(self) -> str:
+        """Return a deterministic timestamp for this run.
+
+        The output timestamp is taken from the configuration when provided; otherwise
+        the current time is used. This keeps the output stable across transient failures.
+        """
+        if self.config.timestamp:
+            return self.config.timestamp
+        return datetime.datetime.now(datetime.UTC).isoformat()
+
+    def _extract_update_date(self, cms: dict[str, Any], sections: list[Any]) -> str | None:
+        """Find an explicit update date in the CMS sections or metadata."""
+        # Try explicit metadata at the top level first.
+        for key in ("pageUpdatedAt", "lastModified", "updatedAt", "publishedAt"):
+            value = cms.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        # Search rendered section text for locale-specific update phrases.
+        phrases = (
+            r"Letzte\s+Aktualisierung\s*:\s*([^\n<]+)",
+            r"Last\s+updated\s*:\s*([^\n<]+)",
+            r"Updated\s*:\s*([^\n<]+)",
+            r"Stand\s*:\s*([^\n<]+)",
+            r"(?:Aktualisiert|Updated)\s+(?:am\s+)?([^\n<]+)",
+        )
+        for section in sections:
+            text = ""
+            if isinstance(section, dict):
+                text = section.get("body") or section.get("heading") or ""
+            else:
+                text = f"{section.heading or ''} {section.body or ''}"
+            if not isinstance(text, str):
+                text = str(text)
+            for phrase in phrases:
+                match = re.search(phrase, text, re.IGNORECASE)
+                if match:
+                    return match.group(1).strip()
+        return None
+
+    def _extract_pdf_url(self, cms: dict[str, Any]) -> str | None:
+        """Find a printable PDF fee schedule link in the CMS components."""
+        for component in iter_components(cms):
+            if not isinstance(component, dict):
+                continue
+            ct = component.get("componentType") or component.get("type") or ""
+            if ct not in {"Button", "Link", "CTALink", "CTACollection"}:
+                continue
+            for key in ("url", "mobileUrl", "href", "link"):
+                value = component.get(key)
+                if isinstance(value, str) and "pdf" in value.lower():
+                    return value
+            content = component.get("content") or component.get("fields") or {}
+            if isinstance(content, dict):
+                for key in ("url", "mobileUrl", "href", "link"):
+                    value = content.get(key)
+                    if isinstance(value, str) and "pdf" in value.lower():
+                        return value
+        return None
+
+    def _extract_page_title(self, response_text: str, cms: dict[str, Any]) -> str:
+        """Return a human-readable page title from the HTML or CMS context."""
+        # The real CMS context does not always contain a pageTitle; fall back to HTML.
+        cms_title = cms.get("pageTitle") or cms.get("pageName")
+        if isinstance(cms_title, str) and cms_title.strip():
+            return cms_title.strip()
+        title_match = re.search(r"<title[^>]*>([^<]+)</title>", response_text, re.IGNORECASE)
+        if title_match:
+            return title_match.group(1).strip()
+        return "PayPal Merchant and Seller Fees"
+
     async def _crawl_country(self, market: Market) -> tuple[CountryOutput | None, UnsupportedCountry | None]:
         """Crawl a single country and return its output or unsupported record."""
-        cc = market.country_code
+        code = market.paypal_market_code
+        previous = self._load_previous_country_output(market)
         try:
             fee_url = await discover_fee_page(self.http_client, market, self.config)
         except UnsupportedCountryError as exc:
-            logger.info("Country %s has no fee page: %s", cc, exc)
+            logger.info("Country %s has no fee page: %s", code, exc)
             return None, UnsupportedCountry(
-                country_code=cc,
+                paypal_market_code=code,
+                iso_country_code=market.iso_country_code,
                 country_name=market.country_name,
                 tested_urls=[],
                 reason=str(exc),
-                first_confirmed_at=datetime.datetime.now(datetime.UTC).isoformat(),
-                last_confirmed_at=datetime.datetime.now(datetime.UTC).isoformat(),
+                first_confirmed_at=self._stable_timestamp(),
+                last_confirmed_at=self._stable_timestamp(),
                 temporary=False,
             )
         except FeePageError as exc:
-            logger.warning("Fee page discovery failed for %s: %s", cc, exc)
+            logger.warning("Fee page discovery failed for %s: %s", code, exc)
+            # Preserve previous output if available to avoid data loss on transient failures.
+            if previous is not None:
+                return previous, None
             return None, None
 
         # Try to use cached source if we have previous output.
         cached = None
-        if self.config.output_dir:
-            prev_path = Path(self.config.output_dir) / "json" / f"{cc.lower()}.json"
-            if prev_path.exists():
-                try:
-                    prev = CountryOutput.model_validate_json(prev_path.read_text())
-                    cached = CachedSource(
-                        etag=prev.source.etag,
-                        last_modified=prev.source.last_modified,
-                        content_sha256=prev.source.content_sha256,
-                    )
-                except Exception as exc:
-                    logger.debug("Could not read cached source for %s: %s", cc, exc)
+        if previous is not None:
+            cached = CachedSource(
+                etag=previous.source.etag,
+                last_modified=previous.source.last_modified,
+                content_sha256=previous.source.content_sha256,
+            )
 
         try:
             response = await self.http_client.get(fee_url, cached=cached)
         except NetworkError as exc:
-            logger.warning("Network error for %s: %s", cc, exc)
+            logger.warning("Network error for %s: %s", code, exc)
+            if previous is not None:
+                return previous, None
             return None, None
 
-        if response.status_code == 304 and cached and cached.content_sha256 and self.config.output_dir:
-            # Reuse previous output.
-            prev_path = Path(self.config.output_dir) / "json" / f"{cc.lower()}.json"
-            if prev_path.exists():
-                return CountryOutput.model_validate_json(prev_path.read_text()), None
+        if response.status_code == 304 and cached and cached.content_sha256 and previous is not None:
+            # Reuse previous output unchanged.
+            return previous, None
 
         try:
             cms = extract_cms_context(response.text)
         except ParserError as exc:
-            logger.warning("Parser error for %s: %s", cc, exc)
+            logger.warning("Parser error for %s: %s", code, exc)
+            if previous is not None:
+                return previous, None
             return None, None
 
         extractor = ComponentsExtractor()
@@ -147,17 +232,18 @@ class Crawler:
 
         derived = classify_tables(tables)
         page_id = get_canonical_page_id(cms) or "unknown"
-        page_title = cms.get("pageTitle") or cms.get("pageName") or "PayPal Merchant and Seller Fees"
-        page_updated = cms.get("pageUpdatedAt") or cms.get("lastModified")
+        page_title = self._extract_page_title(response.text, cms)
+        page_updated = self._extract_update_date(cms, sections)
+        pdf_url = self._extract_pdf_url(cms)
 
         source = Source(
             requested_url=fee_url,
             canonical_url=str(response.url),
             page_id=str(page_id),
-            page_title=str(page_title) if page_title else None,
-            page_updated_at=str(page_updated) if page_updated else None,
+            page_title=page_title,
+            page_updated_at=page_updated,
             cms_updated_at=None,
-            pdf_url=None,
+            pdf_url=pdf_url,
             etag=response.etag,
             last_modified=response.last_modified,
             content_sha256=response.content_sha256,
@@ -165,6 +251,7 @@ class Crawler:
 
         output = CountryOutput(
             schema_version=1,
+            generated_at=self._stable_timestamp(),
             market=market,
             source=source,
             sections=sections,
@@ -183,7 +270,7 @@ class Crawler:
         markets = await self.discover()
         if self.config.countries:
             selected = {c.upper() for c in self.config.countries}
-            markets = [m for m in markets if m.country_code in selected]
+            markets = [m for m in markets if m.paypal_market_code in selected]
 
         if not markets:
             raise CountryDiscoveryError("No markets to crawl")
@@ -199,14 +286,14 @@ class Crawler:
                 try:
                     output, unsup = await self._crawl_country(market)
                     if output:
-                        outputs[market.country_code] = output
+                        outputs[market.paypal_market_code] = output
                     elif unsup:
                         unsupported.append(unsup)
                     else:
-                        failed.append(market.country_code)
+                        failed.append(market.paypal_market_code)
                 except Exception as exc:
-                    logger.warning("Unexpected error for %s: %s", market.country_code, exc)
-                    failed.append(market.country_code)
+                    logger.warning("Unexpected error for %s: %s", market.paypal_market_code, exc)
+                    failed.append(market.paypal_market_code)
 
         await asyncio.gather(*[_process(m) for m in markets])
 
@@ -222,7 +309,7 @@ class Crawler:
         if not outputs:
             raise CrawlerValidationError("No country output passed validation:\n" + "\n".join(validation_errors))
 
-        # Regression checks.
+        # Regression checks against separate market sets.
         previous = PreviousState.load(output_dir)
         limits = RegressionLimits(
             max_table_count_delta_ratio=0.5,
@@ -241,11 +328,12 @@ class Crawler:
         publisher = OutputPublisher(
             output_dir=output_dir,
             staging_dir=self.config.staging_dir,
+            timestamp=self._stable_timestamp(),
         )
         staging: Path | None = None
         try:
             _, staging = publisher.publish(outputs, markets, unsupported, change_report)
-            changed, changed_files = publisher.commit(staging)
+            changed, _changed_files = publisher.commit(staging)
             publisher.rollback(staging)
         except Exception as exc:
             if staging is not None:
@@ -257,8 +345,14 @@ class Crawler:
         if final_errors:
             raise CrawlerValidationError("Published output failed validation:\n" + "\n".join(final_errors))
 
-        exit_code = ExitCode.SUCCESS_WITH_CHANGES if changed else ExitCode.SUCCESS_NO_CHANGE
+        # Success always returns 0; warnings are surfaced in the report and CLI
+        # decides whether to promote them to a non-zero exit code.
+        exit_code = ExitCode.SUCCESS_NO_CHANGE
         if self.config.fail_on_warning and self.warnings:
+            exit_code = ExitCode.PARSER_FAILURE
+        # A failure to fully process any requested country is a non-zero failure
+        # unless the previous data was preserved (in which case it is still a warning).
+        if failed:
             exit_code = ExitCode.PARSER_FAILURE
 
         return CrawlReport(
@@ -266,6 +360,6 @@ class Crawler:
             changed=changed,
             countries_processed=len(outputs),
             countries_failed=failed,
-            countries_unsupported=[u.country_code for u in unsupported],
+            countries_unsupported=[u.paypal_market_code for u in unsupported],
             warnings=self.warnings,
         )

@@ -156,9 +156,23 @@ class HttpClient:
             raise TransientNetworkError(f"Server error ({response.status_code}): {response.url}")
         if response.status_code in (502, 503, 504):
             raise TransientNetworkError(f"Gateway error ({response.status_code}): {response.url}")
-        # Light-weight detection based on common markers. Avoid parsing full HTML here.
+        # Structural challenge detection. A generic CAPTCHA library script (e.g.
+        # paypalobjects.com/webcaptcha/ngrlCaptcha.min.js) is present on normal
+        # PayPal pages and must not trigger a CAPTCHA classification by itself.
         lower_text = response.text[:10000].lower()
-        if "captcha" in lower_text or "recaptcha" in lower_text or "cf-turnstile" in lower_text:
+        challenge_signals = [
+            "captcha" in lower_text and "<form" in lower_text,
+            "captcha" in lower_text and "<iframe" in lower_text,
+            "cf-turnstile" in lower_text,
+            "challenge" in lower_text and ("<form" in lower_text or "<iframe" in lower_text),
+            "security check" in lower_text and "<form" in lower_text,
+            "verify you are human" in lower_text,
+            "<title>" in lower_text and any(
+                title in lower_text for title in ("captcha", "security check", "challenge", "robot")
+            ),
+        ]
+        # Only classify as CAPTCHA when challenge-specific structures are present.
+        if any(challenge_signals):
             raise PermanentNetworkError(f"CAPTCHA/interstitial detected: {response.url}")
         if (
             "log in" in lower_text

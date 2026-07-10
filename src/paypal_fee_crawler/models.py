@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
 from .exceptions import ExitCode
+from .market_mapping import normalize_paypal_market_code
 
 
 class Language(BaseModel):
@@ -19,17 +20,48 @@ class Language(BaseModel):
 
 
 class Market(BaseModel):
-    """A discovered PayPal market/country."""
+    """A discovered PayPal market/country.
+
+    PayPal market codes (e.g. ``C2`` for China) are kept separate from ISO
+    3166-1 alpha-2 country codes. The ``country_code`` property is preserved
+    for backward compatibility and returns the ISO code when known, otherwise
+    the raw PayPal market code.
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    country_code: str = Field(pattern=r"^[A-Z]{2}$")
+    paypal_market_code: str
     country_name: str
+    iso_country_code: str | None = None
     region: str | None = None
     locale: str | None = None
     languages: list[Language] = Field(default_factory=list)
     url_prefix: str | None = None
     preferred_language: str | None = None
+
+    @field_validator("paypal_market_code")
+    @classmethod
+    def _validate_paypal_market_code(cls, value: str) -> str:
+        return normalize_paypal_market_code(value)
+
+    @field_validator("iso_country_code")
+    @classmethod
+    def _validate_iso_country_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or len(value) != 2 or not value.isalpha():
+            raise ValueError(f"Invalid ISO country code: {value!r}")
+        return value.upper()
+
+    @computed_field
+    @property
+    def country_code(self) -> str:
+        return self.iso_country_code or self.paypal_market_code
+
+    @computed_field
+    @property
+    def url_slug(self) -> str:
+        return self.paypal_market_code.lower()
 
 
 class Source(BaseModel):
@@ -90,6 +122,7 @@ class Row(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    row_id: str | None = None
     cells: list[Cell] = Field(default_factory=list)
 
 
@@ -113,10 +146,15 @@ class Table(BaseModel):
     component_id: str | None = None
     caption: str | None = None
     section_path: list[str] = Field(default_factory=list)
+    parent_path: list[str] = Field(default_factory=list)
+    source_order: int = 0
     column_count: int | None = None
+    declared_column_count: int | None = None
     headers: list[TableHeader] = Field(default_factory=list)
     rows: list[Row] = Field(default_factory=list)
     source_table_ids: list[str] = Field(default_factory=list)
+    reference_id: str | None = None
+    table_id: str | None = None
 
 
 class Section(BaseModel):
@@ -223,13 +261,33 @@ class CountryIndexEntry(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    country_code: str
+    paypal_market_code: str
+    iso_country_code: str | None = None
     locale: str | None = None
     data_url: str
     source_url: str
     source_updated_at: str | None = None
     derived_status: str | None = None
     content_sha256: str | None = None
+
+    @field_validator("paypal_market_code")
+    @classmethod
+    def _validate_paypal_market_code(cls, value: str) -> str:
+        return normalize_paypal_market_code(value)
+
+    @field_validator("iso_country_code")
+    @classmethod
+    def _validate_iso_country_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or len(value) != 2 or not value.isalpha():
+            raise ValueError(f"Invalid ISO country code: {value!r}")
+        return value.upper()
+
+    @computed_field
+    @property
+    def country_code(self) -> str:
+        return self.iso_country_code or self.paypal_market_code
 
 
 class CountryIndex(BaseModel):
@@ -247,7 +305,8 @@ class UnsupportedCountry(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    country_code: str
+    paypal_market_code: str
+    iso_country_code: str | None = None
     country_name: str | None = None
     tested_urls: list[str] = Field(default_factory=list)
     reason: str | None = None
@@ -255,6 +314,25 @@ class UnsupportedCountry(BaseModel):
     last_confirmed_at: str | None = None
     last_status: int | None = None
     temporary: bool = False
+
+    @field_validator("paypal_market_code")
+    @classmethod
+    def _validate_paypal_market_code(cls, value: str) -> str:
+        return normalize_paypal_market_code(value)
+
+    @field_validator("iso_country_code")
+    @classmethod
+    def _validate_iso_country_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or len(value) != 2 or not value.isalpha():
+            raise ValueError(f"Invalid ISO country code: {value!r}")
+        return value.upper()
+
+    @computed_field
+    @property
+    def country_code(self) -> str:
+        return self.iso_country_code or self.paypal_market_code
 
 
 class CountryManifest(BaseModel):
@@ -274,9 +352,29 @@ class CoreFeeEntry(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    country_code: str
+    paypal_market_code: str
+    iso_country_code: str | None = None
     derived_status: str
     derived: DerivedFees
+
+    @field_validator("paypal_market_code")
+    @classmethod
+    def _validate_paypal_market_code(cls, value: str) -> str:
+        return normalize_paypal_market_code(value)
+
+    @field_validator("iso_country_code")
+    @classmethod
+    def _validate_iso_country_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or len(value) != 2 or not value.isalpha():
+            raise ValueError(f"Invalid ISO country code: {value!r}")
+        return value.upper()
+
+    @computed_field
+    @property
+    def country_code(self) -> str:
+        return self.iso_country_code or self.paypal_market_code
 
 
 class CoreFees(BaseModel):
@@ -375,6 +473,7 @@ class CrawlConfiguration(BaseModel):
 
     output_dir: str | None = None
     staging_dir: str | None = None
+    timestamp: str | None = None
     countries: list[str] | None = None
     timeout: float = 30.0
     connect_timeout: float = 10.0
