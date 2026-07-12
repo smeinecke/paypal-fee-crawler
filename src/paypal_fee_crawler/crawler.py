@@ -299,7 +299,7 @@ class Crawler:
             pdf_url = extract_html_pdf_url(response.text)
 
         self.warnings.extend(warnings)
-        derived = classify_tables(tables)
+        derived = classify_tables(tables, market_code=market.paypal_market_code)
         if page_locale and not market.locale:
             market = market.model_copy(update={"locale": page_locale})
 

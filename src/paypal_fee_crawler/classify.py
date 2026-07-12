@@ -43,10 +43,10 @@ class ClassificationCandidate:
 # Strong document-id signals. These are corroborated with table content and are
 # not treated as sufficient on their own.
 # FEETB16 = standard commercial rate table; FEETB18/306/261 = its commercial fixed-fee tables.
-_STANDARD_DOC_IDS = {"FEETB16"}
-_FIXED_DOC_IDS = {"FEETB18", "FEETB306", "FEETB261"}
-_INTERNATIONAL_DOC_IDS = {"FEETB91", "FEETB100", "FEETB382"}
-_CONVERSION_DOC_IDS = {"FEETB539", "FEETB128"}
+_STANDARD_DOC_IDS = {"FEETB16", "FEETB359"}
+_FIXED_DOC_IDS = {"FEETB18", "FEETB306", "FEETB261", "FEETB872", "FEETB871", "FEETB354", "FEETB363", "FEETB440", "FEETB441"}
+_INTERNATIONAL_DOC_IDS = {"FEETB91", "FEETB100", "FEETB382", "FEETB153", "FEETB533"}
+_CONVERSION_DOC_IDS = {"FEETB539", "FEETB128", "FEETB159", "FEETB160", "FEETB154", "FEETB156", "FEETB157", "FEETB338"}
 
 
 # ----------------------------- text helpers ---------------------------------
@@ -119,12 +119,29 @@ _NEG_STANDARD = (
     "currency",
     "währung",
     "international",
+    "internacional",
+    "internacionales",
+    "medzinárodné",
+    "medzinárodných",
+    "medzinárodná",
+    "medzinárodný",
+    "medzinarodne",
+    "medzinarodnych",
+    "zahraničné",
+    "zahranicne",
+    "transacciones internacionales",
+    "medzinárodné transakcie",
+    "medzinárodných transakcií",
+    "zahraničné transakcie",
     "ausland",
     "cross border",
     "cross-border",
     "conversion",
+    "conversiones",
+    "conversión",
     "umrechnung",
     "wechselkurs",
+    "prepočet",
     "donation",
     "spende",
     "charity",
@@ -148,15 +165,62 @@ _NEG_STANDARD = (
     "additional service fee",
     "additional percentage-based fee",
     "zusatzgebühr",
+    "príspevky",
+    "príspevkov",
+    "príspevok",
+    "donación",
+    "donaciones",
+    "donativo",
+    "caridad",
+    "beneficencia",
+    "charitatívnych",
+    "charitatívne",
+    "charitatívny",
+    "alternatívny spôsob platby",
+    "alternativny sposob platby",
+    "alternatívny spôsob",
+    "alternativny sposob",
+    "kryptomien",
+    "kryptomeny",
+    "criptomonedas",
+    "cripto",
+    "retiro",
+    "retirar",
+    "retirada",
+    "prevod",
+    "prevodu",
+    "výber",
+    "výberu",
+    "withdrawal",
+    "contracargo",
+    "vrátenie sumy",
+    "vratenie sumy",
 )
 
 _POS_STANDARD = (
     "standard",
+    "štandardná",
+    "estándar",
+    "estandar",
     "commercial",
+    "comercial",
+    "comerciales",
+    "comercio",
+    "komerčné",
+    "komercne",
+    "komerčná",
+    "komerčný",
     "domestic",
+    "domácich",
+    "domacej",
+    "inland",
     "inland",
     "transaktion",
     "transaction",
+    "transacciones",
+    "transacción",
+    "transakcií",
+    "transakcie",
     "merchant",
     "händler",
     "händlergebühren",
@@ -166,6 +230,21 @@ _POS_STANDARD = (
     "receiving domestic",
     "zahlungsempfang",
     "payPal-gebühren",
+    "comisión",
+    "comision",
+    "poplatok",
+    "poplatkov",
+    "poplatky",
+    "prijímanie",
+    "prijimanie",
+    "platieb",
+    "platieb",
+    "platby",
+    "sadzba",
+    "tarifa",
+    "tasas",
+    "nacionales",
+    "domestic",
 )
 
 _POS_STANDARD_HEADER = (
@@ -175,6 +254,12 @@ _POS_STANDARD_HEADER = (
     "gebühr",
     "fee",
     "transaktion",
+    "sadzba",
+    "comisión",
+    "comision",
+    "tarifa",
+    "poplatok",
+    "poplatkov",
 )
 
 
@@ -224,6 +309,11 @@ _NEG_FIXED = (
     "inaktive",
     "micropayment",
     "mikrozahlung",
+    "mikroplatby",
+    "mikro",
+    "mikroplatieb",
+    "micropago",
+    "micropagos",
     "point of sale",
     "international",
     "ausland",
@@ -244,6 +334,9 @@ _NEG_FIXED = (
     "alternative payment",
     "qr code",
     "qr-code",
+    "qr",
+    "kód qr",
+    "kod qr",
     "invoicing",
     "rechnungskauf",
     "interchange",
@@ -262,7 +355,103 @@ _NEG_FIXED = (
     "waren und dienstleistungen",
     "ratepay",
     "payout",
+    "payouts",
     "hyperwallet",
+    "príspevky",
+    "príspevkov",
+    "príspevok",
+    "príspevkami",
+    "príspevk",
+    "donación",
+    "donaciones",
+    "donativo",
+    "caridad",
+    "beneficencia",
+    "charitatívnych",
+    "charitatívne",
+    "charitatívny",
+    "charitatívn",
+    "alternatívny spôsob platby",
+    "alternativny sposob platby",
+    "alternatívny spôsob",
+    "alternativny sposob",
+    "kryptomien",
+    "kryptomeny",
+    "criptomonedas",
+    "cripto",
+    "retiro",
+    "retirar",
+    "retirada",
+    "prevod",
+    "prevodu",
+    "výber",
+    "výberu",
+    "withdrawal",
+    "vyplatení",
+    "vyplatenie",
+    "vyplatenia",
+    "vyplata",
+    "výplata",
+    "contracargo",
+    "vrátenie sumy",
+    "vratenie sumy",
+    "spor",
+    "spory",
+    "sporov",
+    "disputa",
+    "disputas",
+    "overenie",
+    "overenia",
+    "priradenie",
+    "karty",
+    "verificación",
+    "verificacion",
+    "verifizierung",
+    "asociación",
+    "asociacion",
+    "confirmación",
+    "confirmacion",
+    "neaktívny",
+    "neaktivny",
+    "inactivo",
+    "inactive account",
+    "maximálna",
+    "maximálne",
+    "maximalna",
+    "maximalne",
+    "minimálna",
+    "minimálne",
+    "minimalna",
+    "minimalne",
+    "mínimo",
+    "mínima",
+    "máximo",
+    "máxima",
+    "mínim",
+    "máxim",
+    "minimum",
+    "maximum",
+    "ostatné",
+    "ostatne",
+    "otros",
+    "otras",
+    "ďalšie",
+    "dalsie",
+    "dodatočné",
+    "dodatocne",
+    "additional",
+    "adicional",
+    "elektronické šeky",
+    "elektronicke seky",
+    "e-check",
+    "echeck",
+    "služby",
+    "sluzby",
+    "service fee",
+    "servicegebühr",
+    "poplatok za služby",
+    "comisiones por contracargo",
+    "comisión por contracargo",
 )
 
 _POS_FIXED = (
@@ -273,13 +462,42 @@ _POS_FIXED = (
     "fixed charge",
     "per transaction",
     "pro transaktion",
+    "por transacciones",
+    "por transacción",
+    "za transakcie",
+    "za transakcií",
     "based on currency",
     "auf basis der empfangenen währung",
     "währung",
     "currency",
+    "moneda",
+    "divisa",
+    "meny",
+    "mena",
+    "mien",
     "commercial",
     "geschäftlich",
     "business transaction",
+    "comercial",
+    "comerciales",
+    "komerčné",
+    "komercne",
+    "komerčná",
+    "komerčný",
+    "transacciones",
+    "transacción",
+    "transakcií",
+    "transakcie",
+    "fija",
+    "fijo",
+    "fixný",
+    "fixná",
+    "fixné",
+    "comisión",
+    "comision",
+    "poplatok",
+    "poplatkov",
+    "poplatky",
 )
 
 
@@ -373,10 +591,53 @@ _NEG_INTERNATIONAL = (
     "point of sale",
     "card present",
     "manual card",
+    "príspevky",
+    "príspevkov",
+    "príspevok",
+    "príspevkami",
+    "príspevk",
+    "donación",
+    "donaciones",
+    "donativo",
+    "caridad",
+    "beneficencia",
+    "charitatívnych",
+    "charitatívne",
+    "charitatívny",
+    "charitatívn",
+    "kryptomien",
+    "kryptomeny",
+    "criptomonedas",
+    "cripto",
+    "prepočet",
+    "prepocet",
+    "conversión",
+    "zostatku",
+    "zostatok",
+    "prijímanie platieb",
+    "prijimanie platieb",
+    "krajiny kupujúcich",
+    "krajiny kupujucich",
+    "kupujúcich",
+    "kupujucich",
+    "služby",
+    "sluzby",
+    "poplatok za služby",
+    "poplatok za sluzby",
 )
 
 _POS_INTERNATIONAL = (
     "international",
+    "internacional",
+    "internacionales",
+    "medzinárodné",
+    "medzinárodných",
+    "medzinárodná",
+    "medzinárodný",
+    "medzinarodne",
+    "medzinarodnych",
+    "zahraničné",
+    "zahranicne",
     "cross border",
     "cross-border",
     "ausland",
@@ -384,11 +645,53 @@ _POS_INTERNATIONAL = (
     "grenzüberschreitend",
     "zusatzgebühr",
     "additional percentage",
+    "adicional",
+    "adicionales",
+    "dodatočný",
+    "dodatočná",
+    "dodatočné",
+    "dodatocny",
+    "dodatocna",
+    "dodatocne",
+    "percentuálny",
+    "percentuálna",
+    "percentuálne",
+    "percentualny",
     "payer region",
     "markt/region",
     "market/region",
     "markt/das gebiet",
     "region",
+    "región",
+    "trh",
+    "trhy",
+    "oblasť",
+    "oblast",
+    "mercado",
+    "mercados",
+    "krajina",
+    "krajiny",
+    "teritórium",
+    "teritorium",
+    "vendedor",
+    "comprador",
+    "predávajúci",
+    "predavajuci",
+    "kupujúci",
+    "kupujuci",
+    "odosielateľ",
+    "odosielatel",
+    "príjemca",
+    "prijemca",
+    "odberateľ",
+    "odberatel",
+    "recepción",
+    "prijímanie",
+    "prijimanie",
+    "transacciones internacionales",
+    "medzinárodné transakcie",
+    "medzinárodných transakcií",
+    "zahraničné transakcie",
 )
 
 
@@ -452,6 +755,41 @@ _NEG_CONVERSION = (
     "max cap",
     "minimum fee",
     "maximum fee",
+    "príspevky",
+    "príspevkov",
+    "príspevok",
+    "príspevkami",
+    "príspevk",
+    "donación",
+    "donaciones",
+    "donativo",
+    "caridad",
+    "beneficencia",
+    "charitatívnych",
+    "charitatívne",
+    "charitatívny",
+    "charitatívn",
+    "kryptomien",
+    "kryptomeny",
+    "criptomonedas",
+    "cripto",
+    "prevod",
+    "prevodu",
+    "výber",
+    "výberu",
+    "withdrawal",
+    "retiro",
+    "retirar",
+    "retirada",
+    "contracargo",
+    "vrátenie sumy",
+    "vratenie sumy",
+    "comisión fija",
+    "fija",
+    "fixný poplatok",
+    "fixny poplatok",
+    "fixná",
+    "fixne",
 )
 
 _POS_CONVERSION = (
@@ -461,9 +799,34 @@ _POS_CONVERSION = (
     "umrechnung",
     "wechselkurs",
     "conversion",
+    "conversiones",
+    "conversión",
     "spread",
     "base exchange rate",
     "basiswechselkurs",
+    "moneda",
+    "divisa",
+    "divisas",
+    "prepočet",
+    "prepocet",
+    "prepočet meny",
+    "zmena",
+    "zmena meny",
+    "zmenárne",
+    "meny",
+    "mena",
+    "mien",
+    "devízový",
+    "devízový kurz",
+    "výmenný",
+    "výmenný kurz",
+    "vymenny kurz",
+    "tipo de cambio",
+    "tipos de cambio",
+    "cambio",
+    "tasas de cambio",
+    "foreign exchange",
+    "exchange rate",
 )
 
 
@@ -499,10 +862,30 @@ def _is_currency_conversion(table: Table) -> tuple[bool, float, list[str]]:
 
 _OTHER_KEYWORDS = {
     "micropayment": ("micropayment", "mikrozahlung", "kleinbetragszahlung"),
-    "donation": ("donation", "spende", "charity donation"),
-    "nonprofit": ("nonprofit", "non-profit", "gemeinnützig", "gemeinnutzig"),
+    "donation": (
+        "donation",
+        "spende",
+        "charity donation",
+        "príspevky",
+        "príspevkov",
+        "príspevok",
+        "donación",
+        "donaciones",
+        "donativo",
+        "caridad",
+        "beneficencia",
+    ),
+    "nonprofit": ("nonprofit", "non-profit", "gemeinnützig", "gemeinnutzig", "charitatívnych", "charitatívne"),
     "chargeback": ("chargeback", "rückbuchung", "rückabwicklung", "rücklastschrift"),
     "dispute": ("dispute", "streitfall", "konfliktlösung"),
+    "alternative": (
+        "alternative",
+        "alternatívny",
+        "alternativny",
+        "alternatívny spôsob",
+        "alternatívny spôsob platby",
+        "alternativny sposob platby",
+    ),
 }
 
 
@@ -520,13 +903,33 @@ def _other_category(table: Table) -> str | None:
 # Row labels for a standard commercial transaction fee row.
 _STD_ROW_INCLUDE = (
     "standard",
+    "štandardná",
+    "standardna",
+    "estándar",
+    "estandar",
     "payPal checkout",
     "checkout",
     "commercial",
+    "comercial",
+    "comerciales",
+    "comercio",
+    "komerčné",
+    "komercne",
+    "komerčná",
+    "komerčný",
     "transaction",
+    "transaktion",
+    "transacciones",
+    "transacción",
+    "transakcií",
+    "transakcie",
+    "transakciou",
     "payments",
     "payment",
     "zahlung",
+    "platby",
+    "platieb",
+    "platba",
     "nutzer",
     "user",
     "online",
@@ -537,12 +940,64 @@ _STD_ROW_INCLUDE = (
     "alle anderen",
     "nutzer",
     "advanced",
+    "all",
+    "all other",
+    "all transactions",
+    "all commercial",
+    "all commercial transactions",
+    "all payment",
+    "all payments",
+    "todos",
+    "todas",
+    "demás",
+    "demas",
+    "otros",
+    "otras",
+    "mercados",
+    "países",
+    "paises",
+    "všetky",
+    "vsetky",
+    "ostatné",
+    "ostatne",
+    "obchodné",
+    "obchodne",
+    "trhy",
+    "trhov",
+    "krajín",
+    "krajiny",
+    "teritórií",
+    "teritorii",
+    "oblastí",
+    "oblasti",
+    "todos los demás",
+    "todos los demas",
+    "todos los demás mercados",
+    "todos los demas mercados",
+    "todas las demás",
+    "todas las demas",
+    "todas las demás mercados",
+    "todas las demas mercados",
+    "všetky ostatné",
+    "vsetky ostatne",
+    "všetky ostatné trhy",
+    "vsetky ostatne trhy",
+    "všetky ostatné komerčné",
+    "vsetky ostatne komercne",
+    "všetky ostatné transakcie",
+    "vsetky ostatne transakcie",
+    "resto del mundo",
+    "resto de los mercados",
+    "restantes",
+    "restante",
 )
 
 _STD_ROW_EXCLUDE = (
     "qr",
     "qr-code",
     "qr code",
+    "kód qr",
+    "kod qr",
     "charity",
     "nonprofit",
     "non-profit",
@@ -574,15 +1029,52 @@ _STD_ROW_EXCLUDE = (
     "goods and services",
 )
 
+# Localized "all other markets / transactions" labels used when the standard table
+# lists rows by market group rather than by payment type.
+_STD_ROW_FALLBACK = (
+    "all other",
+    "alle anderen",
+    "todos los demás",
+    "todos los demas",
+    "todos los demás mercados",
+    "todos los demas mercados",
+    "todas las demás",
+    "todas las demas",
+    "todas las demás mercados",
+    "todas las demas mercados",
+    "všetky ostatné",
+    "vsetky ostatne",
+    "všetky ostatné trhy",
+    "vsetky ostatne trhy",
+    "všetky ostatné komerčné",
+    "vsetky ostatne komercne",
+    "všetky ostatné transakcie",
+    "vsetky ostatne transakcie",
+    "toutes les autres",
+    "tutte le altre",
+    "todos los demás casos",
+    "todos los demas casos",
+    "rest of the world",
+    "rest of world",
+    "rest of the markets",
+    "rest of markets",
+)
+
 
 def _cell_text_starts_with(cell: Cell) -> str:
     return _norm(cell.text.split()[0]) if cell.text.split() else ""
 
 
-def _extract_standard_percentage(table: Table) -> tuple[str | None, list[str]]:
-    """Return the most confident standard-commercial percentage in a table."""
+def _extract_standard_percentage(table: Table, market_code: str | None = None) -> tuple[str | None, list[str]]:
+    """Return the most confident standard-commercial percentage in a table.
+
+    If the table lists rows by market or region group (e.g. PayPal's localized
+    country tables), we fall back to the row containing the target market code or
+    a localized "all other markets" row.
+    """
     evidence: list[str] = []
     matched_percentages: list[str] = []
+    fallback_percentages: list[str] = []
     for row in table.rows:
         pct = _first_percentage_in_row(row)
         if not pct:
@@ -591,12 +1083,28 @@ def _extract_standard_percentage(table: Table) -> tuple[str | None, list[str]]:
         all_text = _row_text(row)
         if _contains_any(first_cell_text, _STD_ROW_EXCLUDE) or _contains_any(all_text, _STD_ROW_EXCLUDE):
             continue
-        if _contains_any(first_cell_text, _STD_ROW_INCLUDE) or _contains_any(all_text, _STD_ROW_INCLUDE):
+        is_include = _contains_any(first_cell_text, _STD_ROW_INCLUDE) or _contains_any(all_text, _STD_ROW_INCLUDE)
+        # Fallback: the row explicitly references the market being crawled
+        # or a localized "all other markets" catch-all.
+        is_fallback = (
+            bool(market_code and (market_code in first_cell_text or market_code in all_text))
+            or _contains_any(first_cell_text, _STD_ROW_FALLBACK)
+            or _contains_any(all_text, _STD_ROW_FALLBACK)
+        )
+        if is_include:
             matched_percentages.append(pct)
+        if is_fallback:
+            fallback_percentages.append(pct)
 
-    if not matched_percentages:
+    if not matched_percentages and not fallback_percentages:
         evidence.append("no standard-commercial row matched")
         return None, evidence
+
+    # Prefer the country-specific or all-other fallback row; otherwise fall back to
+    # the broad keyword-based matches.
+    if fallback_percentages:
+        evidence.append("standard percentage selected from market/all-other fallback row")
+        matched_percentages = fallback_percentages
 
     counter = Counter(matched_percentages)
     selected = counter.most_common(1)[0][0]
@@ -621,7 +1129,15 @@ def _normalize_region(text: str) -> str | None:
     if not t:
         return None
 
-    if "european economic" in t or "european economic area" in t or "ewr" in t or "eea" in t or "e.u" in t or t == "eu":
+    if (
+        "european economic" in t
+        or "european economic area" in t
+        or "ewr" in t
+        or "eea" in t
+        or "ehp" in t
+        or "e.u" in t
+        or t == "eu"
+    ):
         return "EEA"
     if (
         "united kingdom" in t
@@ -631,9 +1147,20 @@ def _normalize_region(text: str) -> str | None:
         or "great britain" in t
         or "britain" in t
         or "england" in t
+        or "spojené kráľovstvo" in t
+        or "spojene kralovstvo" in t
+        or "royaume-uni" in t
     ):
         return "GB"
-    if "united states" in t or "usa" in t or "u.s" in t or t == "us" or "canada" in t:
+    if (
+        "united states" in t
+        or "usa" in t
+        or "u.s" in t
+        or t == "us"
+        or "canada" in t
+        or "spojené štáty" in t
+        or "spojene staty" in t
+    ):
         return "US_CA"
     if "all" in t and "other" in t:
         return "OTHER"
@@ -641,14 +1168,37 @@ def _normalize_region(text: str) -> str | None:
         return "OTHER"
     if "all commercial" in t or "all payment" in t or "commercial transactions" in t:
         return "OTHER"
-    if "other" in t or "andere" in t or "rest" in t:
+    if (
+        "other" in t
+        or "andere" in t
+        or "rest" in t
+        or ("todos" in t and ("demás" in t or "demas" in t))
+        or ("todas" in t and ("demás" in t or "demas" in t))
+        or ("všetky" in t and ("ostatné" in t or "ostatne" in t))
+        or ("vsetky" in t and ("ostatne" in t or "ostatne" in t))
+        or "todos los mercados" in t
+        or "todas las mercados" in t
+        or "všetky trhy" in t
+        or "vsetky trhy" in t
+        or "restantes" in t
+        or "otros mercados" in t
+        or "otras mercados" in t
+    ):
         return "OTHER"
     return None
 
 
-def _extract_international_surcharges(table: Table) -> list[InternationalSurcharge]:
-    """Extract region->percentage rows from an international-surcharge table."""
+def _extract_international_surcharges(
+    table: Table, market_code: str | None = None
+) -> list[InternationalSurcharge]:
+    """Extract region->percentage rows from an international-surcharge table.
+
+    When the table lists rows by market group, the row containing the market
+    being crawled is preferred; if the market is not present, the row that
+    contains a localized "all other" label is used.
+    """
     surcharges: list[InternationalSurcharge] = []
+    fallback_rows: list[tuple[str, str]] = []
     for row in table.rows:
         percentage: str | None = None
         for cell in row.cells:
@@ -661,15 +1211,31 @@ def _extract_international_surcharges(table: Table) -> list[InternationalSurchar
         if not percentage:
             continue
 
-        region: str | None = None
-        # The region is usually the first non-empty cell, but we scan all cells.
-        for cell in row.cells:
-            region = _normalize_region(cell.text)
-            if region:
-                break
+        row_text = _row_text(row)
+        first_cell_text = _norm(row.cells[0].text) if row.cells else ""
 
+        # Prefer the row explicitly referencing the target market.
+        if market_code and market_code in first_cell_text:
+            region = _normalize_region(first_cell_text) or "OTHER"
+            return [InternationalSurcharge(region=region, percentage_points=percentage)]
+
+        # Collect localized "all other" rows as fallback.
+        if _contains_any(first_cell_text, _STD_ROW_FALLBACK):
+            fallback_rows.append((first_cell_text, percentage))
+            continue
+
+        # The region is determined by the first cell only (avoiding columns that
+        # are always buyer/receiver market labels like "all markets").
+        region = _normalize_region(first_cell_text)
         if region:
             surcharges.append(InternationalSurcharge(region=region, percentage_points=percentage))
+
+    if fallback_rows:
+        # Use the first "all other" row found.
+        first_fallback_text, first_fallback_pct = fallback_rows[0]
+        region = _normalize_region(first_fallback_text) or "OTHER"
+        surcharges.append(InternationalSurcharge(region=region, percentage_points=first_fallback_pct))
+
     return surcharges
 
 
@@ -688,6 +1254,14 @@ def _extract_conversion_spread(table: Table) -> str | None:
         "payout",
         "auszahlung",
         "privat",
+        "amigos",
+        "familia",
+        "osobné",
+        "osobne",
+        "súkromné",
+        "sukromne",
+        "osobný",
+        "osobny",
     )
     commercial_indicators = (
         "all other",
@@ -698,6 +1272,33 @@ def _extract_conversion_spread(table: Table) -> str | None:
         "basiswechselkurs",
         "above the base",
         "über dem basis",
+        "todos los demás",
+        "todos los demas",
+        "všetky ostatné",
+        "vsetky ostatne",
+        "todos los casos",
+        "todos los demas casos",
+        "všetky ostatné prípady",
+        "vsetky ostatne pripady",
+        "firemný",
+        "firemny",
+        "firemné",
+        "firemne",
+        "obchodné",
+        "obchodne",
+        "comercial",
+        "comerciales",
+        "comercio",
+        "komerčné",
+        "komercne",
+        "base exchange rate",
+        "základného výmenného kurzu",
+        "zakladneho vymenneho kurzu",
+        "nad rámec",
+        "nad ramec",
+        "nad rámec základného",
+        "above base",
+        "above the base exchange rate",
     )
 
     commercial_values: list[str] = []
@@ -757,12 +1358,13 @@ def _aggregate_fixed_fees(
 
 def _aggregate_international_surcharges(
     candidates: list[ClassificationCandidate],
+    market_code: str | None = None,
 ) -> tuple[list[InternationalSurcharge], list[str], list[str]]:
     evidence: list[str] = []
     warnings: list[str] = []
     all_surcharges: list[InternationalSurcharge] = []
     for candidate in candidates:
-        surcharges = _extract_international_surcharges(candidate.table)
+        surcharges = _extract_international_surcharges(candidate.table, market_code)
         if surcharges:
             all_surcharges.extend(surcharges)
             evidence.append(
@@ -836,7 +1438,7 @@ def _classify_table(table: Table) -> ClassificationCandidate | None:
     return None
 
 
-def classify_tables(tables: list[Table]) -> DerivedFees:
+def classify_tables(tables: list[Table], market_code: str | None = None) -> DerivedFees:
     """Derive core fees from normalized tables with explicit confidence and evidence."""
     evidence: list[str] = []
     warnings: list[str] = []
@@ -874,7 +1476,7 @@ def classify_tables(tables: list[Table]) -> DerivedFees:
         # Prefer the highest-confidence candidate; on ties, preserve source order.
         standard_candidates.sort(key=lambda c: c.confidence, reverse=True)
         selected = standard_candidates[0]
-        standard_percentage, pct_evidence = _extract_standard_percentage(selected.table)
+        standard_percentage, pct_evidence = _extract_standard_percentage(selected.table, market_code)
         if standard_percentage:
             evidence.extend(pct_evidence)
             evidence.append(f"standard_commercial table {selected.table.document_id or selected.table.caption}")
@@ -886,7 +1488,7 @@ def classify_tables(tables: list[Table]) -> DerivedFees:
 
     # International surcharges.
     surcharges, intl_evidence, intl_warnings = _aggregate_international_surcharges(
-        by_category[FeeCategory.INTERNATIONAL_SURCHARGE]
+        by_category[FeeCategory.INTERNATIONAL_SURCHARGE], market_code
     )
     evidence.extend(intl_evidence)
     warnings.extend(intl_warnings)

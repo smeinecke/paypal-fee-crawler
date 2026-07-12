@@ -314,10 +314,13 @@ def normalize_pricing_token(
 
     token = _parse_number_token(text)
     if token is None:
-        # If the raw text contains a currency code at the end, try again with a stricter split.
+        # If the raw text contains a currency code at the end or start, try again with a stricter split.
         parts = text.split()
-        if len(parts) >= 2 and parts[-1].upper() in CURRENCY_CODES:
-            token = _parse_number_token(f"{parts[0]} {parts[-1].upper()}")
+        if len(parts) >= 2:
+            if parts[-1].upper() in CURRENCY_CODES:
+                token = _parse_number_token(f"{parts[0]} {parts[-1].upper()}")
+            elif parts[0].upper() in CURRENCY_CODES:
+                token = _parse_number_token(f"{parts[-1]} {parts[0].upper()}")
     if token is None:
         token = FeeToken(raw=raw_text, kind="text")
 
@@ -336,7 +339,7 @@ def normalize_pricing_token(
 
 
 _TOKENIZE_RE = re.compile(
-    r"(?P<operator>[+\-])?\s*(?P<value>[0-9]+(?:[.,][0-9]+)?)\s*(?P<currency>[A-Z]{3})?\s*(?P<suffix>%)?"
+    r"(?:(?P<currency_pre>[A-Z]{3})\s+)?(?P<operator>[+\-])?\s*(?P<value>[0-9]+(?:[.,][0-9]+)?)\s*(?P<currency_post>[A-Z]{3})?\s*(?P<suffix>%)?"
 )
 
 
@@ -350,7 +353,7 @@ def tokenize_text(text: str) -> list[FeeToken]:
             continue
         seen.add(raw)
         # Avoid matching isolated numbers without context.
-        if not match.group("suffix") and not match.group("currency") and not match.group("operator"):
+        if not match.group("suffix") and not match.group("currency_pre") and not match.group("currency_post") and not match.group("operator"):
             # Still accept if the surrounding text contains a % or currency nearby.
             start, end = match.start(), match.end()
             window = text[max(0, start - 10) : min(len(text), end + 10)]
@@ -359,14 +362,17 @@ def tokenize_text(text: str) -> list[FeeToken]:
         # Build a clean token string so operators sit next to values for normalize_pricing_token.
         operator = match.group("operator")
         value = match.group("value")
-        currency = match.group("currency")
+        currency_pre = match.group("currency_pre")
+        currency_post = match.group("currency_post")
         suffix = match.group("suffix")
-        parts = [operator, value] if operator else [value]
-        if currency:
-            parts.append(currency)
+        parts: list[str | None] = [operator, value] if operator else [value]
+        if currency_pre:
+            parts.insert(0, currency_pre)
+        if currency_post:
+            parts.append(currency_post)
         if suffix:
             parts.append(suffix)
-        clean_raw = "".join(parts)
+        clean_raw = "".join(str(p) for p in parts if p is not None)
         token = normalize_pricing_token(clean_raw)
         if token.kind != "text":
             tokens.append(token)
