@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
@@ -517,11 +518,20 @@ class CrawlReport(BaseModel):
         return data
 
 
+class ClassifierMode(StrEnum):
+    """Active classifier mode for a crawl."""
+
+    LEGACY = "legacy"
+    SHADOW = "shadow"
+    STRUCTURAL = "structural"
+
+
 class CrawlConfiguration(BaseModel):
     """Runtime crawl configuration."""
 
     model_config = ConfigDict(frozen=True)
 
+    classifier_mode: ClassifierMode = ClassifierMode.LEGACY
     output_dir: str | None = None
     staging_dir: str | None = None
     timestamp: str | None = None

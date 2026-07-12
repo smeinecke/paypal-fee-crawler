@@ -24,7 +24,7 @@ from .exceptions import (
 from .exceptions import (
     ValidationError as CrawlerValidationError,
 )
-from .models import CrawlConfiguration, CrawlReport
+from .models import ClassifierMode, CrawlConfiguration, CrawlReport
 from .validation import validate_all_output
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,7 @@ def _build_config(
     request_delay: float,
     timestamp: str | None,
     transient_policy: str = "fail",
+    classifier_mode: ClassifierMode = ClassifierMode.LEGACY,
 ) -> CrawlConfiguration:
     selected_countries: list[str] | None = None
     if country:
@@ -79,6 +80,7 @@ def _build_config(
         verbose=verbose,
         request_delay=request_delay,
         transient_policy=transient_policy,
+        classifier_mode=classifier_mode,
     )
 
 
@@ -105,6 +107,12 @@ def main() -> None:
 @click.option("--refresh-country-manifest", is_flag=True, help="Refresh country manifest even on discovery failure.")
 @click.option("--keep-diagnostics", is_flag=True, help="Keep diagnostic artifacts on failure.")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging.")
+@click.option(
+    "--classifier-mode",
+    type=click.Choice([m.value for m in ClassifierMode]),
+    default=ClassifierMode.LEGACY.value,
+    help="Active classifier mode: legacy, shadow, or structural.",
+)
 @click.option("--report", type=click.Path(), help="Write machine-readable JSON report to this path.")
 @click.option("--timestamp", help="Deterministic timestamp for generated output (ISO 8601).")
 @click.option(
@@ -129,6 +137,7 @@ def crawl(
     refresh_country_manifest: bool,
     keep_diagnostics: bool,
     verbose: bool,
+    classifier_mode: str,
     report: str | None,
     timestamp: str | None,
     transient_policy: str,
@@ -153,6 +162,7 @@ def crawl(
         request_delay=request_delay,
         timestamp=timestamp,
         transient_policy=transient_policy,
+        classifier_mode=ClassifierMode(classifier_mode),
     )
 
     async def _run() -> CrawlReport:

@@ -7,6 +7,7 @@ from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
 
+from . import scoring
 from .models import (
     Cell,
     CommercialFee,
@@ -18,16 +19,9 @@ from .models import (
     Table,
 )
 from .normalize import clean_text
+from .scoring import FeeCategory
 
 logger = logging.getLogger(__name__)
-
-
-class FeeCategory(StrEnum):
-    STANDARD_COMMERCIAL = "standard_commercial"
-    FIXED_FEE = "fixed_fee"
-    INTERNATIONAL_SURCHARGE = "international_surcharge"
-    CURRENCY_CONVERSION = "currency_conversion"
-    OTHER = "other"
 
 
 @dataclass(frozen=True)
@@ -1211,7 +1205,6 @@ def _extract_international_surcharges(
         if not percentage:
             continue
 
-        row_text = _row_text(row)
         first_cell_text = _norm(row.cells[0].text) if row.cells else ""
 
         # Prefer the row explicitly referencing the target market.
@@ -1438,11 +1431,18 @@ def _classify_table(table: Table) -> ClassificationCandidate | None:
     return None
 
 
-def classify_tables(tables: list[Table], market_code: str | None = None) -> DerivedFees:
-    """Derive core fees from normalized tables with explicit confidence and evidence."""
-    evidence: list[str] = []
-    warnings: list[str] = []
+def classify_tables(tables: list[Table], market_code: str | None = None, locale: str | None = None) -> DerivedFees:
+    """Derive core fees from normalized tables using the legacy classifier.
 
+    ``locale`` is accepted for API compatibility but is not used by the legacy
+    classifier.
+    """
+    candidates, other_categories = _classify_all_tables(tables)
+    return _derive_from_candidates(candidates, market_code, other_categories)
+
+
+def _classify_all_tables(tables: list[Table]) -> tuple[list[ClassificationCandidate], list[str]]:
+    """Classify each table using the legacy predicates and collect candidates."""
     candidates: list[ClassificationCandidate] = []
     other_categories: list[str] = []
 
@@ -1455,8 +1455,18 @@ def classify_tables(tables: list[Table], market_code: str | None = None) -> Deri
             category = _other_category(table)
             if category:
                 other_categories.append(category)
-        else:
-            evidence.extend(candidate.evidence)
+
+    return candidates, other_categories
+
+
+def _derive_from_candidates(
+    candidates: list[ClassificationCandidate],
+    market_code: str | None,
+    other_categories: list[str],
+) -> DerivedFees:
+    """Extract fees from a list of already-classified candidates."""
+    evidence: list[str] = []
+    warnings: list[str] = []
 
     # Group by category.
     by_category: dict[FeeCategory, list[ClassificationCandidate]] = {
@@ -1468,12 +1478,13 @@ def classify_tables(tables: list[Table], market_code: str | None = None) -> Deri
     for candidate in candidates:
         if candidate.category in by_category:
             by_category[candidate.category].append(candidate)
+        if candidate.category != FeeCategory.OTHER:
+            evidence.extend(candidate.evidence)
 
     # Standard commercial.
     standard_percentage: str | None = None
     standard_candidates = by_category[FeeCategory.STANDARD_COMMERCIAL]
     if standard_candidates:
-        # Prefer the highest-confidence candidate; on ties, preserve source order.
         standard_candidates.sort(key=lambda c: c.confidence, reverse=True)
         selected = standard_candidates[0]
         standard_percentage, pct_evidence = _extract_standard_percentage(selected.table, market_code)
@@ -1542,4 +1553,122 @@ def classify_tables(tables: list[Table], market_code: str | None = None) -> Deri
         currency_conversion_exposed=conv_exposed,
         unclassified_sections=sorted(set(other_categories)),
         classification_evidence=evidence + warnings,
+    )
+
+
+class ObservationKind(StrEnum):
+    LOW_MARGIN = "low_margin"
+    LEXICAL_ONLY_DECISION = "lexical_only_decision"
+    EXTRACTION_CONFLICT = "extraction_conflict"
+    UNKNOWN_DOCUMENT_ID = "unknown_document_id"
+    UNKNOWN_FINGERPRINT = "unknown_fingerprint"
+
+
+@dataclass(frozen=True)
+class ClassificationObservation:
+    kind: ObservationKind
+    category: FeeCategory | None = None
+    table_id: str | None = None
+    message: str = ""
+
+
+@dataclass(frozen=True)
+class ClassificationRun:
+    derived: DerivedFees
+    table_decisions: tuple[scoring.ClassificationDecision, ...]
+    observations: tuple[ClassificationObservation, ...]
+    classifier_version: str
+
+
+def classify_legacy(
+    tables: list[Table],
+    market_code: str | None = None,
+    locale: str | None = None,
+) -> ClassificationRun:
+    """Run the legacy classifier and wrap the result in a common internal format."""
+    candidates, other_categories = _classify_all_tables(tables)
+    derived = _derive_from_candidates(candidates, market_code, other_categories)
+    return ClassificationRun(
+        derived=derived,
+        table_decisions=(),
+        observations=(),
+        classifier_version="legacy",
+    )
+
+
+def classify_structural(
+    tables: list[Table],
+    market_code: str | None = None,
+    locale: str | None = None,
+) -> ClassificationRun:
+    """Run the structural scoring classifier and produce derived fees.
+
+    This function uses the scoring engine in ``scoring.py`` to select a category
+    for each table, then extracts values using the existing extraction helpers.
+    """
+    candidates: list[ClassificationCandidate] = []
+    decisions: list[scoring.ClassificationDecision] = []
+    observations: list[ClassificationObservation] = []
+
+    for table in tables:
+        if not table.rows and not table.headers:
+            continue
+
+        scores = scoring.score_all_categories(table, market_code, locale)
+        decision = scoring.select_category(scores)
+        decisions.append(decision)
+
+        if decision.status == "selected" and decision.selected_category is not None:
+            score = decision.ranked_scores[0].score
+            candidate = ClassificationCandidate(
+                table=table,
+                category=decision.selected_category,
+                confidence=score / scoring.MAX_CATEGORY_SCORE,
+                evidence=[s.detail or s.code for s in decision.ranked_scores[0].signals],
+            )
+            candidates.append(candidate)
+
+            if score < scoring.MINIMUM_SCORE + scoring.MINIMUM_MARGIN:
+                observations.append(
+                    ClassificationObservation(
+                        kind=ObservationKind.LOW_MARGIN,
+                        category=decision.selected_category,
+                        table_id=table.document_id or table.table_id,
+                        message=f"selected with low margin: {score}",
+                    )
+                )
+
+            signal_sources = {s.source for s in decision.ranked_scores[0].signals}
+            if signal_sources == {scoring.EvidenceSource.LEXICAL}:
+                observations.append(
+                    ClassificationObservation(
+                        kind=ObservationKind.LEXICAL_ONLY_DECISION,
+                        category=decision.selected_category,
+                        table_id=table.document_id or table.table_id,
+                        message="selected based only on lexical evidence",
+                    )
+                )
+
+            if decision.selected_category is scoring.FeeCategory.CURRENCY_CONVERSION and not {
+                scoring.EvidenceCode.KNOWN_DOCUMENT_ID,
+                scoring.EvidenceCode.METADATA_KEY_MATCH,
+                scoring.EvidenceCode.INTERNAL_NAME_MATCH,
+                scoring.EvidenceCode.KNOWN_FINGERPRINT,
+            } & {s.code for s in decision.ranked_scores[0].signals}:
+                observations.append(
+                    ClassificationObservation(
+                        kind=ObservationKind.UNKNOWN_FINGERPRINT,
+                        category=decision.selected_category,
+                        table_id=table.document_id or table.table_id,
+                        message="conversion selected without approved registry evidence",
+                    )
+                )
+
+    other_categories: list[str] = []
+    derived = _derive_from_candidates(candidates, market_code, other_categories)
+    return ClassificationRun(
+        derived=derived,
+        table_decisions=tuple(decisions),
+        observations=tuple(observations),
+        classifier_version="structural-1",
     )

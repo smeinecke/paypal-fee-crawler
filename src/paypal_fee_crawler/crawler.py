@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .classify import classify_tables
+from .classify import classify_legacy, classify_structural
 from .cms_context import extract_cms_context
 from .components import ComponentsExtractor, iter_components
 from .discovery import discover_countries, discover_fee_page, get_bootstrap_markets, get_canonical_page_id
@@ -27,6 +27,7 @@ from .exceptions import (
 from .html_tables import extract_html_locale, extract_html_pdf_url, extract_html_tables
 from .http import CachedSource, HttpClient
 from .models import (
+    ClassifierMode,
     CountryOutput,
     CrawlConfiguration,
     CrawlReport,
@@ -299,7 +300,29 @@ class Crawler:
             pdf_url = extract_html_pdf_url(response.text)
 
         self.warnings.extend(warnings)
-        derived = classify_tables(tables, market_code=market.paypal_market_code)
+        if self.config.classifier_mode == ClassifierMode.STRUCTURAL:
+            derived = classify_structural(
+                tables, market_code=market.paypal_market_code, locale=page_locale
+            ).derived
+        elif self.config.classifier_mode == ClassifierMode.SHADOW:
+            legacy_run = classify_legacy(
+                tables, market_code=market.paypal_market_code, locale=page_locale
+            )
+            structural_run = classify_structural(
+                tables, market_code=market.paypal_market_code, locale=page_locale
+            )
+            if legacy_run.derived != structural_run.derived:
+                self.warnings.append(
+                    ParserWarning(
+                        code="classifier_diff",
+                        message="Structural classifier produced different derived fees than legacy",
+                    )
+                )
+            derived = legacy_run.derived
+        else:
+            derived = classify_legacy(
+                tables, market_code=market.paypal_market_code, locale=page_locale
+            ).derived
         if page_locale and not market.locale:
             market = market.model_copy(update={"locale": page_locale})
 

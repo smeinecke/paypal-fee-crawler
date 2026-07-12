@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from paypal_fee_crawler.classify import classify_tables
+from paypal_fee_crawler import scoring
+from paypal_fee_crawler.classify import classify_legacy, classify_structural, classify_tables
 from paypal_fee_crawler.models import Row, Table
 from paypal_fee_crawler.pricing_tokens import render_rich_text_node
 
@@ -43,3 +44,133 @@ def test_classify_unclassified_when_uncertain() -> None:
     ]
     derived = classify_tables(tables)
     assert derived.status == "unclassified"
+
+
+def test_classify_structural_standard_commercial() -> None:
+    tables = [
+        _table("Commercial transaction fees", [["Commercial transactions", "2.99% + 0.39 EUR"]]),
+        _table("Fixed fee by received currency", [["EUR", "0.39 EUR"], ["USD", "0.49 USD"]]),
+    ]
+    run = classify_structural(tables)
+    assert run.derived.status == "complete"
+    assert run.derived.standard_commercial is not None
+    assert run.derived.standard_commercial.percentage == "2.99"
+    assert any(fee.currency == "EUR" for fee in run.derived.commercial_fixed_fees)
+    assert run.classifier_version == "structural-1"
+
+
+def test_classify_structural_international_surcharge() -> None:
+    tables = [
+        _table("International surcharge", [["EEA", "0%"], ["GB", "+1.29%"], ["Other", "+1.99%"]]),
+    ]
+    run = classify_structural(tables)
+    assert run.derived.status == "partial"
+    regions = {s.region: s.percentage_points for s in run.derived.international_surcharges}
+    assert regions.get("GB") == "1.29"
+    assert regions.get("OTHER") == "1.99"
+
+
+def test_classify_structural_unclassified_when_uncertain() -> None:
+    tables = [_table("Random table", [["A", "B"], ["C", "D"]])]
+    run = classify_structural(tables)
+    assert run.derived.status == "unclassified"
+
+
+def test_classify_legacy_returns_run() -> None:
+    tables = [
+        _table("Commercial transaction fees", [["Commercial transactions", "2.99% + 0.39 EUR"]]),
+        _table("Fixed fee by received currency", [["EUR", "0.39 EUR"], ["USD", "0.49 USD"]]),
+    ]
+    run = classify_legacy(tables)
+    assert run.classifier_version == "legacy"
+    assert run.derived.status == "complete"
+
+
+def test_score_standard_commercial_vector() -> None:
+    table = _table("Commercial transaction fees", [["Commercial transactions", "2.99% + 0.39 EUR"]])
+    result = scoring.score_standard_commercial(table)
+    assert result.category == scoring.FeeCategory.STANDARD_COMMERCIAL
+    assert result.score >= scoring.MINIMUM_SCORE
+    assert result.eligible
+    assert any(s.code == scoring.EvidenceCode.HAS_PERCENTAGE_COLUMN for s in result.signals)
+    assert any(s.code == scoring.EvidenceCode.HAS_MIXED_PERCENT_MONEY_ROW for s in result.signals)
+
+
+def test_score_fixed_fee_vector() -> None:
+    table = _table("Fixed fee by received currency", [["EUR", "0.39 EUR"], ["USD", "0.49 USD"]])
+    result = scoring.score_fixed_fee(table)
+    assert result.category == scoring.FeeCategory.FIXED_FEE
+    assert result.score >= scoring.MINIMUM_SCORE
+    assert result.eligible
+    assert any(s.code == scoring.EvidenceCode.HAS_MONEY_COLUMN for s in result.signals)
+    assert any(s.code == scoring.EvidenceCode.HAS_MULTIPLE_CURRENCIES for s in result.signals)
+
+
+def test_score_international_surcharge_vector() -> None:
+    table = _table("International surcharge", [["EEA", "0%"], ["GB", "+1.29%"], ["Other", "+1.99%"]])
+    result = scoring.score_international_surcharge(table)
+    assert result.category == scoring.FeeCategory.INTERNATIONAL_SURCHARGE
+    assert result.score >= scoring.MINIMUM_SCORE
+    assert result.eligible
+    assert any(s.code == scoring.EvidenceCode.HAS_PERCENTAGE_COLUMN for s in result.signals)
+
+
+def test_select_category_ambiguous() -> None:
+    results = (
+        scoring.ScoreResult(scoring.FeeCategory.STANDARD_COMMERCIAL, 55, (), ()),
+        scoring.ScoreResult(scoring.FeeCategory.FIXED_FEE, 50, (), ()),
+        scoring.ScoreResult(scoring.FeeCategory.INTERNATIONAL_SURCHARGE, 0, (), ()),
+        scoring.ScoreResult(scoring.FeeCategory.CURRENCY_CONVERSION, 0, (), ()),
+    )
+    decision = scoring.select_category(results)
+    assert decision.status == "unclassified"
+    assert decision.selected_category is None
+
+
+def test_select_category_margin_ambiguous() -> None:
+    results = (
+        scoring.ScoreResult(scoring.FeeCategory.STANDARD_COMMERCIAL, 80, (), ()),
+        scoring.ScoreResult(scoring.FeeCategory.FIXED_FEE, 70, (), ()),
+        scoring.ScoreResult(scoring.FeeCategory.INTERNATIONAL_SURCHARGE, 0, (), ()),
+        scoring.ScoreResult(scoring.FeeCategory.CURRENCY_CONVERSION, 0, (), ()),
+    )
+    decision = scoring.select_category(results)
+    assert decision.status == "ambiguous"
+    assert decision.selected_category is None
+
+
+def test_select_category_selected() -> None:
+    results = (
+        scoring.ScoreResult(scoring.FeeCategory.STANDARD_COMMERCIAL, 80, (), ()),
+        scoring.ScoreResult(scoring.FeeCategory.FIXED_FEE, 50, (), ()),
+        scoring.ScoreResult(scoring.FeeCategory.INTERNATIONAL_SURCHARGE, 0, (), ()),
+        scoring.ScoreResult(scoring.FeeCategory.CURRENCY_CONVERSION, 0, (), ()),
+    )
+    decision = scoring.select_category(results)
+    assert decision.status == "selected"
+    assert decision.selected_category == scoring.FeeCategory.STANDARD_COMMERCIAL
+    assert decision.winner_margin == 30
+
+
+def test_market_code_matches_respects_boundaries() -> None:
+    assert scoring.market_code_matches("US", "US")
+    assert scoring.market_code_matches("US-CA", "US")
+    assert scoring.market_code_matches("US_CA", "US")
+    assert scoring.market_code_matches("US$", "US")
+    assert not scoring.market_code_matches("business", "US")
+    assert not scoring.market_code_matches("usaus", "US")
+
+
+def test_market_code_matches_aliases() -> None:
+    assert scoring.market_code_matches("UK", "GB")
+    assert scoring.market_code_matches("uk", "GB")
+    assert not scoring.market_code_matches("united kingdom", "GB")
+
+
+def test_region_from_text_grouped_regions() -> None:
+    assert scoring.region_from_text("US") == "US_CA"
+    assert scoring.region_from_text("Canada") == "US_CA"
+    assert scoring.region_from_text("USA") == "US_CA"
+    assert scoring.region_from_text("GB") == "GB"
+    assert scoring.region_from_text("EEA") == "EEA"
+    assert scoring.region_from_text("Other") == "OTHER"
