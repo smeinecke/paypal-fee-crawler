@@ -566,7 +566,9 @@ class Crawler:
         current_supported = set(outputs.keys())
         current_unsupported = {u.paypal_market_code for u in unsupported}
         current_transient = set(failed)
-        classifier_version = CLASSIFIER_VERSION if self.config.classifier_mode == ClassifierMode.STRUCTURAL else "legacy"
+        classifier_version = (
+            CLASSIFIER_VERSION if self.config.classifier_mode == ClassifierMode.STRUCTURAL else "legacy"
+        )
         classifier_metadata = ClassifierMetadata(
             classifier_mode=self.config.classifier_mode.value,
             classifier_version=classifier_version,
