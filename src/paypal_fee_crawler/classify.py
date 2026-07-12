@@ -1458,7 +1458,7 @@ def classify_tables(tables: list[Table], market_code: str | None = None, locale:
     classifier.
     """
     candidates, other_categories = _classify_all_tables(tables)
-    return _derive_from_candidates(candidates, market_code, other_categories)
+    return _derive_from_candidates(candidates, market_code, other_categories)[0]
 
 
 def _classify_all_tables(tables: list[Table]) -> tuple[list[ClassificationCandidate], list[str]]:
@@ -1483,7 +1483,7 @@ def _derive_from_candidates(
     candidates: list[ClassificationCandidate],
     market_code: str | None,
     other_categories: list[str],
-) -> DerivedFees:
+) -> tuple[DerivedFees, list[str], list[str]]:
     """Extract fees from a list of already-classified candidates."""
     evidence: list[str] = []
     warnings: list[str] = []
@@ -1558,21 +1558,23 @@ def _derive_from_candidates(
     else:
         status = "partial"
 
-    return DerivedFees(
-        status=status,
-        standard_commercial=CommercialFee(
-            percentage=standard_percentage,
-            fixed_fee_reference="commercial_fixed_fees" if fixed_fees else None,
-        )
-        if standard_percentage
-        else None,
-        commercial_fixed_fees=fixed_fees,
-        international_surcharges=surcharges,
-        currency_conversion=conversion,
-        international_surcharge_exposed=intl_exposed,
-        currency_conversion_exposed=conv_exposed,
-        unclassified_sections=sorted(set(other_categories)),
-        classification_evidence=evidence + warnings,
+    return (
+        DerivedFees(
+            status=status,
+            standard_commercial=CommercialFee(
+                percentage=standard_percentage,
+                fixed_fee_reference="commercial_fixed_fees" if fixed_fees else None,
+            )
+            if standard_percentage
+            else None,
+            commercial_fixed_fees=fixed_fees,
+            international_surcharges=surcharges,
+            currency_conversion=conversion,
+            international_surcharge_exposed=intl_exposed,
+            currency_conversion_exposed=conv_exposed,
+        ),
+        evidence,
+        warnings,
     )
 
 
@@ -1580,10 +1582,11 @@ def _derive_structural_from_candidates(
     candidates: list[ClassificationCandidate],
     market_code: str | None = None,
     other_categories: list[str] | None = None,
-) -> tuple[DerivedFees, tuple[ClassificationObservation, ...]]:
+) -> tuple[DerivedFees, tuple[ClassificationObservation, ...], list[str], list[str]]:
     """Build DerivedFees using the new schema-driven extraction helpers.
 
-    Returns the derived fees plus any extraction-level observations.
+    Returns the derived fees, extraction-level observations, and top-level
+    evidence/warning strings for diagnostics.
     """
     observations: list[ClassificationObservation] = []
     evidence: list[str] = []
@@ -1755,10 +1758,8 @@ def _derive_structural_from_candidates(
         currency_conversion=conversion,
         international_surcharge_exposed=intl_exposed,
         currency_conversion_exposed=conv_exposed,
-        unclassified_sections=sorted(set(other_categories or [])),
-        classification_evidence=evidence + warnings,
     )
-    return derived, tuple(observations)
+    return derived, tuple(observations), evidence, warnings
 
 
 def _table_decision_from_structural(
@@ -1841,6 +1842,8 @@ class ClassificationRun:
     table_decisions: tuple[TableDecision, ...]
     observations: tuple[ClassificationObservation, ...]
     classifier_version: str
+    unclassified_sections: tuple[str, ...] = ()
+    evidence: tuple[str, ...] = ()
 
 
 CLASSIFIER_VERSION = "structural-1"
@@ -1853,13 +1856,15 @@ def classify_legacy(
 ) -> ClassificationRun:
     """Run the legacy classifier and wrap the result in a common internal format."""
     candidates, other_categories = _classify_all_tables(tables)
-    derived = _derive_from_candidates(candidates, market_code, other_categories)
+    derived, evidence, warnings = _derive_from_candidates(candidates, market_code, other_categories)
     table_decisions = tuple(_table_decision_from_legacy(candidate) for candidate in candidates)
     return ClassificationRun(
         derived=derived,
         table_decisions=table_decisions,
         observations=(),
         classifier_version="legacy",
+        unclassified_sections=tuple(sorted(set(other_categories))),
+        evidence=tuple(sorted(set(evidence + warnings))),
     )
 
 
@@ -1951,10 +1956,14 @@ def classify_structural(
                 )
 
     other_categories: list[str] = []
-    derived, extract_observations = _derive_structural_from_candidates(candidates, market_code, other_categories)
+    derived, extract_observations, evidence, warnings = _derive_structural_from_candidates(
+        candidates, market_code, other_categories
+    )
     return ClassificationRun(
         derived=derived,
         table_decisions=tuple(table_decisions),
         observations=tuple(observations + list(extract_observations)),
         classifier_version=CLASSIFIER_VERSION,
+        unclassified_sections=tuple(sorted(set(other_categories))),
+        evidence=tuple(sorted(set(evidence + warnings))),
     )

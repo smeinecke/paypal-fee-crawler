@@ -252,8 +252,6 @@ class DerivedFees(BaseModel):
     nonprofit: CommercialFee | None = None
     chargeback: str | None = None
     dispute: str | None = None
-    unclassified_sections: list[str] = Field(default_factory=list)
-    classification_evidence: list[str] = Field(default_factory=list)
 
     @field_validator("status")
     @classmethod
@@ -275,7 +273,7 @@ class ParserWarning(BaseModel):
 
 
 class CountryOutput(BaseModel):
-    """Per-country normalized output."""
+    """Per-country normalized output (internal; may carry classifier diagnostics)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -287,6 +285,239 @@ class CountryOutput(BaseModel):
     tables: list[Table] = Field(default_factory=list)
     derived: DerivedFees = Field(default_factory=DerivedFees)
     warnings: list[ParserWarning] = Field(default_factory=list)
+
+
+class PublicSource(BaseModel):
+    """Public source provenance for a crawled fee page."""
+
+    model_config = ConfigDict(frozen=True)
+
+    requested_url: str
+    canonical_url: str | None = None
+    page_title: str | None = None
+    page_updated_at: str | None = None
+    cms_updated_at: str | None = None
+    pdf_url: str | None = None
+    content_sha256: str | None = None
+
+    @classmethod
+    def from_internal(cls, source: Source) -> PublicSource:
+        return cls(
+            requested_url=source.requested_url,
+            canonical_url=source.canonical_url,
+            page_title=source.page_title,
+            page_updated_at=source.page_updated_at,
+            cms_updated_at=source.cms_updated_at,
+            pdf_url=source.pdf_url,
+            content_sha256=source.content_sha256,
+        )
+
+
+class PublicWarning(BaseModel):
+    """Public parser warning without implementation context."""
+
+    model_config = ConfigDict(frozen=True)
+
+    code: str
+    message: str
+
+    @classmethod
+    def from_internal(cls, warning: ParserWarning) -> PublicWarning:
+        return cls(code=warning.code, message=warning.message)
+
+
+class PublicFeeToken(BaseModel):
+    """Public pricing token without classifier metadata."""
+
+    model_config = ConfigDict(frozen=True)
+
+    raw: str
+    kind: str = Field(default="text")
+    value: str | None = None
+    amount: str | None = None
+    currency: str | None = None
+    operator: str | None = None
+
+    @classmethod
+    def from_internal(cls, token: FeeToken) -> PublicFeeToken:
+        return cls(
+            raw=token.raw,
+            kind=token.kind,
+            value=token.value,
+            amount=token.amount,
+            currency=token.currency,
+            operator=token.operator,
+        )
+
+
+class PublicCell(BaseModel):
+    """Public rendered table cell."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str
+    tokens: list[PublicFeeToken] = Field(default_factory=list)
+    links: list[Link] = Field(default_factory=list)
+
+    @classmethod
+    def from_internal(cls, cell: Cell) -> PublicCell:
+        return cls(
+            text=cell.text,
+            tokens=[PublicFeeToken.from_internal(t) for t in cell.tokens],
+            links=list(cell.links),
+        )
+
+
+class PublicRow(BaseModel):
+    """Public table row."""
+
+    model_config = ConfigDict(frozen=True)
+
+    cells: list[PublicCell] = Field(default_factory=list)
+
+    @classmethod
+    def from_internal(cls, row: Row) -> PublicRow:
+        return cls(cells=[PublicCell.from_internal(c) for c in row.cells])
+
+
+class PublicTableHeader(BaseModel):
+    """Public table header cell."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str
+    tokens: list[PublicFeeToken] = Field(default_factory=list)
+    links: list[Link] = Field(default_factory=list)
+
+    @classmethod
+    def from_internal(cls, header: TableHeader) -> PublicTableHeader:
+        return cls(
+            text=header.text,
+            tokens=[PublicFeeToken.from_internal(t) for t in header.tokens],
+            links=list(header.links),
+        )
+
+
+class PublicTable(BaseModel):
+    """Public normalized fee table."""
+
+    model_config = ConfigDict(frozen=True)
+
+    document_id: str | None = None
+    caption: str | None = None
+    section_path: list[str] = Field(default_factory=list)
+    column_count: int | None = None
+    declared_column_count: int | None = None
+    headers: list[PublicTableHeader] = Field(default_factory=list)
+    rows: list[PublicRow] = Field(default_factory=list)
+
+    @classmethod
+    def from_internal(cls, table: Table) -> PublicTable:
+        return cls(
+            document_id=table.document_id,
+            caption=table.caption,
+            section_path=list(table.section_path),
+            column_count=table.column_count,
+            declared_column_count=table.declared_column_count,
+            headers=[PublicTableHeader.from_internal(h) for h in table.headers],
+            rows=[PublicRow.from_internal(r) for r in table.rows],
+        )
+
+
+class PublicSection(BaseModel):
+    """Public page section."""
+
+    model_config = ConfigDict(frozen=True)
+
+    heading: str | None = None
+    body: str | None = None
+    section_path: list[str] = Field(default_factory=list)
+
+    @classmethod
+    def from_internal(cls, section: Section) -> PublicSection:
+        return cls(
+            heading=section.heading,
+            body=section.body,
+            section_path=list(section.section_path),
+        )
+
+
+class PublicDerivedFees(BaseModel):
+    """Public derived core fees without classifier diagnostics."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str = Field(default="unclassified")
+    standard_commercial: CommercialFee | None = None
+    commercial_fixed_fees: list[FixedFees] = Field(default_factory=list)
+    international_surcharges: list[InternationalSurcharge] = Field(default_factory=list)
+    currency_conversion: CurrencyConversion | None = None
+    international_surcharge_exposed: bool = False
+    currency_conversion_exposed: bool = False
+    goods_and_services: CommercialFee | None = None
+    micropayments: CommercialFee | None = None
+    donations: CommercialFee | None = None
+    nonprofit: CommercialFee | None = None
+    chargeback: str | None = None
+    dispute: str | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _status_allowed(cls, value: str) -> str:
+        allowed = {"complete", "partial", "unclassified", "failed"}
+        if value not in allowed:
+            raise ValueError(f"status must be one of {allowed}")
+        return value
+
+    @classmethod
+    def from_internal(cls, derived: DerivedFees) -> PublicDerivedFees:
+        return cls(**derived.model_dump())
+
+
+class PublicCountryOutput(BaseModel):
+    """Public consumer-facing country output."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: int = 2
+    generated_at: str | None = None
+    market: Market
+    source: PublicSource
+    sections: list[PublicSection] = Field(default_factory=list)
+    tables: list[PublicTable] = Field(default_factory=list)
+    derived: PublicDerivedFees
+    warnings: list[PublicWarning] = Field(default_factory=list)
+
+    @classmethod
+    def from_internal(cls, output: CountryOutput) -> PublicCountryOutput:
+        return cls(
+            schema_version=2,
+            generated_at=output.generated_at,
+            market=output.market,
+            source=PublicSource.from_internal(output.source),
+            sections=[PublicSection.from_internal(s) for s in output.sections],
+            tables=[PublicTable.from_internal(t) for t in output.tables],
+            derived=PublicDerivedFees.from_internal(output.derived),
+            warnings=[PublicWarning.from_internal(w) for w in output.warnings],
+        )
+
+
+class CrawlCacheEntry(BaseModel):
+    """Internal HTTP cache entry for a single market."""
+
+    model_config = ConfigDict(frozen=True)
+
+    etag: str | None = None
+    last_modified: str | None = None
+    content_sha256: str | None = None
+
+
+class CrawlCache(BaseModel):
+    """Internal per-market HTTP cache used for conditional requests."""
+
+    model_config = ConfigDict(frozen=True)
+
+    markets: dict[str, CrawlCacheEntry] = Field(default_factory=dict)
 
 
 class CountryIndexEntry(BaseModel):
@@ -333,7 +564,7 @@ class CountryIndex(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    schema_version: int = 1
+    schema_version: int = 2
     generated_at: str | None = None
     countries: list[CountryIndexEntry] = Field(default_factory=list)
 
@@ -383,7 +614,7 @@ class CountryManifest(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    schema_version: int = 1
+    schema_version: int = 2
     generated_at: str | None = None
     markets: list[Market] = Field(default_factory=list)
     unsupported: list[UnsupportedCountry] = Field(default_factory=list)
@@ -430,7 +661,7 @@ class CoreFees(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    schema_version: int = 1
+    schema_version: int = 2
     generated_at: str | None = None
     countries: list[CoreFeeEntry] = Field(default_factory=list)
 
@@ -440,9 +671,16 @@ class SchemaVersionInfo(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    schema_version: int = 1
-    schema_path: str = "schemas/paypal-fees-v1.schema.json"
-    schemas: list[str] = Field(default_factory=lambda: ["schemas/paypal-fees-v1.schema.json"])
+    schema_version: int = 2
+    schema_path: str = "schemas/paypal-fees-v2.schema.json"
+    schemas: list[str] = Field(
+        default_factory=lambda: [
+            "schemas/paypal-fees-v2.schema.json",
+            "schemas/core-fees-v2.schema.json",
+            "schemas/index-v2.schema.json",
+            "schemas/manifest-v2.schema.json",
+        ]
+    )
     description: str | None = None
 
 

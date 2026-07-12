@@ -10,7 +10,7 @@ from paypal_fee_crawler.validation import validate_country_output, validate_outp
 
 def _country(derived: dict[str, Any]) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": None,
         "market": {
             "paypal_market_code": "DE",
@@ -29,7 +29,6 @@ def _country(derived: dict[str, Any]) -> dict[str, Any]:
         "tables": [
             {
                 "document_id": "FEETB16",
-                "source_order": 1,
                 "headers": [],
                 "rows": [
                     {
@@ -65,8 +64,6 @@ def _complete_derived() -> dict[str, Any]:
         "currency_conversion": {"spread_percentage": "3"},
         "international_surcharge_exposed": True,
         "currency_conversion_exposed": True,
-        "classification_evidence": ["fixture"],
-        "unclassified_sections": [],
     }
 
 
@@ -113,7 +110,7 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     _write_json(
         root / "json" / "index.json",
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "generated_at": None,
             "countries": [
                 {
@@ -132,7 +129,7 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     _write_json(
         root / "json" / "core-fees.json",
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "generated_at": None,
             "countries": [
                 {
@@ -147,7 +144,7 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     _write_json(
         root / "meta" / "countries.json",
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "generated_at": None,
             "markets": [
                 {
@@ -163,12 +160,12 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
             "fee_page_urls": {},
         },
     )
-    _write_json(root / "meta" / "schema-version.json", {"schema_version": 1})
+    _write_json(root / "meta" / "schema-version.json", {"schema_version": 2, "schema_path": "schemas/paypal-fees-v2.schema.json"})
     for schema_name in [
-        "paypal-fees-v1.schema.json",
-        "core-fees-v1.schema.json",
-        "index-v1.schema.json",
-        "manifest-v1.schema.json",
+        "paypal-fees-v2.schema.json",
+        "core-fees-v2.schema.json",
+        "index-v2.schema.json",
+        "manifest-v2.schema.json",
     ]:
         _write_json(root / "schemas" / schema_name, {"type": "object"})
 

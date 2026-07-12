@@ -10,7 +10,14 @@ from typing import Any
 from pydantic import ValidationError
 
 from .exceptions import ValidationError as CrawlerValidationError
-from .models import CoreFees, CountryIndex, CountryManifest, CountryOutput, DerivedFees
+from .models import (
+    CoreFees,
+    CountryIndex,
+    CountryManifest,
+    CountryOutput,
+    DerivedFees,
+    PublicCountryOutput,
+)
 from .normalize import CURRENCY_CODES, normalize_decimal_string
 from .regression import _country_output_hash
 
@@ -178,9 +185,9 @@ def validate_file(path: Path | str, schema_type: str, schema_only: bool = False)
 
 def generate_country_schema() -> dict[str, Any]:
     """Generate the JSON schema for per-country output."""
-    schema = CountryOutput.model_json_schema()
+    schema = PublicCountryOutput.model_json_schema()
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/paypal-fees-v1.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/paypal-fees-v2.schema.json"
     return schema
 
 
@@ -188,7 +195,7 @@ def generate_core_fees_schema() -> dict[str, Any]:
     """Generate the JSON schema for the consolidated core fees file."""
     schema = CoreFees.model_json_schema()
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/core-fees-v1.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/core-fees-v2.schema.json"
     return schema
 
 
@@ -196,7 +203,7 @@ def generate_index_schema() -> dict[str, Any]:
     """Generate the JSON schema for the country index file."""
     schema = CountryIndex.model_json_schema()
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/index-v1.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/index-v2.schema.json"
     return schema
 
 
@@ -204,7 +211,7 @@ def generate_manifest_schema() -> dict[str, Any]:
     """Generate the JSON schema for the country manifest file."""
     schema = CountryManifest.model_json_schema()
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/manifest-v1.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/manifest-v2.schema.json"
     return schema
 
 
@@ -296,10 +303,10 @@ def validate_output_tree(root: Path | str) -> list[str]:
             errors.append(f"Missing required file: {_safe_rel(path, root)}")
 
     schema_files = [
-        "paypal-fees-v1.schema.json",
-        "core-fees-v1.schema.json",
-        "index-v1.schema.json",
-        "manifest-v1.schema.json",
+        "paypal-fees-v2.schema.json",
+        "core-fees-v2.schema.json",
+        "index-v2.schema.json",
+        "manifest-v2.schema.json",
     ]
     for name in schema_files:
         if not (root / "schemas" / name).exists():

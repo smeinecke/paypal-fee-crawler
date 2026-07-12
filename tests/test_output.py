@@ -52,10 +52,10 @@ def test_publish_generates_expected_files() -> None:
         assert (staging / "json" / "core-fees.json").exists()
         assert (staging / "meta" / "countries.json").exists()
         assert (staging / "meta" / "unsupported-countries.json").exists()
-        assert (staging / "schemas" / "paypal-fees-v1.schema.json").exists()
-        assert (staging / "schemas" / "core-fees-v1.schema.json").exists()
-        assert (staging / "schemas" / "index-v1.schema.json").exists()
-        assert (staging / "schemas" / "manifest-v1.schema.json").exists()
+        assert (staging / "schemas" / "paypal-fees-v2.schema.json").exists()
+        assert (staging / "schemas" / "core-fees-v2.schema.json").exists()
+        assert (staging / "schemas" / "index-v2.schema.json").exists()
+        assert (staging / "schemas" / "manifest-v2.schema.json").exists()
 
 
 def test_commit_detects_no_change_on_second_run() -> None:

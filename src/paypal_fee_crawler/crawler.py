@@ -110,6 +110,29 @@ class Crawler:
             logger.debug("Could not load previous output for %s: %s", market.paypal_market_code, exc)
             return None
 
+    def _load_crawl_cache(self, market: Market) -> CachedSource | None:
+        """Load cached HTTP headers for conditional requests from a sidecar file."""
+        if not self.config.output_dir:
+            return None
+        cache_path = Path(self.config.output_dir) / "meta" / "crawl-cache.json"
+        if not cache_path.exists():
+            return None
+        try:
+            from .models import CrawlCache
+
+            cache = CrawlCache.model_validate_json(cache_path.read_text())
+            entry = cache.markets.get(market.paypal_market_code)
+            if entry is None:
+                return None
+            return CachedSource(
+                etag=entry.etag,
+                last_modified=entry.last_modified,
+                content_sha256=entry.content_sha256,
+            )
+        except Exception as exc:
+            logger.debug("Could not load crawl cache for %s: %s", market.paypal_market_code, exc)
+            return None
+
     def _stable_timestamp(self) -> str | None:
         """Return a deterministic timestamp for this run.
 
@@ -226,12 +249,14 @@ class Crawler:
 
     async def _crawl_country(
         self, market: Market
-    ) -> tuple[CountryOutput | None, dict[str, Any] | None, UnsupportedCountry | None, bool]:
-        """Crawl a single country and return its output, shadow run, unsupported record, or transient flag.
+    ) -> tuple[CountryOutput | None, dict[str, Any] | None, UnsupportedCountry | None, bool, Any]:
+        """Crawl a single country and return its output, shadow run, unsupported record, transient flag, and diagnostic run.
 
         The shadow run is returned as a dict only when ``classifier_mode`` is
         ``SHADOW``.  The last return value is True when a transient (network/parser)
         failure occurred and the caller should decide whether to reuse previous data.
+        The diagnostic run contains the internal ``ClassificationRun`` for diagnostics
+        sidecars when ``keep_diagnostics`` is enabled.
         """
         code = market.paypal_market_code
         previous = self._load_previous_country_output(market)
@@ -243,7 +268,7 @@ class Crawler:
             if self._previous_state is not None:
                 previous_unsupported = self._previous_state.unsupported_records.get(code)
             if previous_unsupported is not None:
-                return None, None, previous_unsupported, False
+                return None, None, previous_unsupported, False, None
             return (
                 None,
                 None,
@@ -258,14 +283,16 @@ class Crawler:
                     temporary=False,
                 ),
                 False,
+                None,
             )
         except FeePageError as exc:
             logger.warning("Fee page discovery failed for %s: %s", code, exc)
-            return None, None, None, True
+            return None, None, None, True, None
 
-        # Try to use cached source if we have previous output.
-        cached = None
-        if previous is not None:
+        # Try to use cached source headers. Prefer the dedicated crawl-cache sidecar;
+        # fall back to the previous output source for migration.
+        cached = self._load_crawl_cache(market)
+        if cached is None and previous is not None:
             cached = CachedSource(
                 etag=previous.source.etag,
                 last_modified=previous.source.last_modified,
@@ -276,11 +303,11 @@ class Crawler:
             response = await self.http_client.get(fee_url, cached=cached)
         except NetworkError as exc:
             logger.warning("Network error for %s: %s", code, exc)
-            return None, None, None, True
+            return None, None, None, True, None
 
         if response.status_code == 304 and cached and cached.content_sha256 and previous is not None:
             # Reuse previous output unchanged.
-            return previous, None, None, False
+            return previous, None, None, False, None
 
         try:
             cms = extract_cms_context(response.text)
@@ -310,13 +337,16 @@ class Crawler:
 
         self.warnings.extend(warnings)
         shadow_run: dict[str, Any] | None = None
+        diagnostic_run: Any = None
         if self.config.classifier_mode == ClassifierMode.STRUCTURAL:
-            derived = classify_structural(
+            run = classify_structural(
                 structural_input,
                 market_code=market.paypal_market_code,
                 locale=page_locale,
                 registry=self._registry,
-            ).derived
+            )
+            derived = run.derived
+            diagnostic_run = run
         elif self.config.classifier_mode == ClassifierMode.SHADOW:
             legacy_run = classify_legacy(tables, market_code=market.paypal_market_code, locale=page_locale)
             structural_run = classify_structural(
@@ -339,7 +369,9 @@ class Crawler:
                 "comparison": compare_runs(legacy_run, structural_run, market),
             }
         else:
-            derived = classify_legacy(tables, market_code=market.paypal_market_code, locale=page_locale).derived
+            run = classify_legacy(tables, market_code=market.paypal_market_code, locale=page_locale)
+            derived = run.derived
+            diagnostic_run = run
         if page_locale and not market.locale:
             market = market.model_copy(update={"locale": page_locale})
 
@@ -366,7 +398,7 @@ class Crawler:
             derived=derived,
             warnings=warnings,
         )
-        return output, shadow_run, None, False
+        return output, shadow_run, None, False, diagnostic_run
 
     async def crawl(self) -> CrawlReport:
         """Run the full crawl and publish output."""
@@ -388,6 +420,7 @@ class Crawler:
         # Limit concurrency.
         semaphore = asyncio.Semaphore(self.config.max_workers)
         outputs: dict[str, CountryOutput] = {}
+        diagnostics: dict[str, Any] = {}
         shadow_runs: dict[str, dict[str, Any]] = {}
         unsupported: list[UnsupportedCountry] = []
         failed: list[str] = []
@@ -397,9 +430,11 @@ class Crawler:
             async with semaphore:
                 cc = market.paypal_market_code
                 try:
-                    output, shadow, unsup, transient = await self._crawl_country(market)
+                    output, shadow, unsup, transient, diagnostic_run = await self._crawl_country(market)
                     if output is not None:
                         outputs[cc] = output
+                        if diagnostic_run is not None:
+                            diagnostics[cc] = diagnostic_run
                         if shadow is not None:
                             shadow_runs[cc] = shadow
                     elif unsup is not None:
@@ -477,11 +512,17 @@ class Crawler:
             output_dir=output_dir,
             staging_dir=self.config.staging_dir,
             timestamp=self._stable_timestamp(),
+            keep_diagnostics=self.config.keep_diagnostics,
         )
         staging: Path | None = None
         try:
             _, staging = publisher.publish(
-                outputs, markets, unsupported, change_report, shadow_runs=shadow_runs or None
+                outputs,
+                markets,
+                unsupported,
+                change_report,
+                shadow_runs=shadow_runs or None,
+                diagnostics=diagnostics or None,
             )
             changed, _changed_files = publisher.commit(staging)
         except Exception as exc:
@@ -501,7 +542,12 @@ class Crawler:
         if failed:
             exit_code = ExitCode.PARSER_FAILURE
 
-        diagnostics_path = str(output_dir / "meta" / "classification-shadow.json") if shadow_runs else None
+        if shadow_runs:
+            diagnostics_path = str(output_dir / "meta" / "classification-shadow.json")
+        elif self.config.keep_diagnostics and diagnostics:
+            diagnostics_path = str(output_dir / "meta" / "diagnostics")
+        else:
+            diagnostics_path = None
         return CrawlReport(
             exit_code=exit_code,
             changed=changed,

@@ -24,7 +24,10 @@ from .models import (
     CountryIndexEntry,
     CountryManifest,
     CountryOutput,
+    CrawlCache,
+    CrawlCacheEntry,
     Market,
+    PublicCountryOutput,
     SchemaVersionInfo,
     UnsupportedCountry,
 )
@@ -116,12 +119,14 @@ class OutputPublisher:
         output_dir: Path | str,
         staging_dir: Path | str | None = None,
         timestamp: str | None = None,
+        keep_diagnostics: bool = False,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.staging_dir = Path(staging_dir) if staging_dir else None
         # If no timestamp is provided, canonical output remains deterministic;
         # generated_at is written as null.
         self.timestamp = timestamp
+        self.keep_diagnostics = keep_diagnostics
 
     def _make_staging(self) -> Path:
         if self.staging_dir and self.staging_dir.is_relative_to(self.output_dir):
@@ -143,6 +148,7 @@ class OutputPublisher:
         unsupported: list[UnsupportedCountry],
         change_report: ChangeReport | None = None,
         shadow_runs: dict[str, Any] | None = None,
+        diagnostics: dict[str, Any] | None = None,
     ) -> tuple[bool, Path]:
         """Write all output files to a staging directory and return (changed, staging_path)."""
         staging = self._make_staging()
@@ -155,19 +161,26 @@ class OutputPublisher:
 
         index_entries: list[CountryIndexEntry] = []
         core_entries: list[CoreFeeEntry] = []
+        cache_entries: dict[str, CrawlCacheEntry] = {}
 
         for cc in sorted(outputs.keys()):
             output = outputs[cc]
-            data = output.model_dump(mode="json")
-            data["generated_at"] = self.timestamp
-            content_hash = self._compute_content_sha256(data)
-
-            source = dict(data["source"])
-            source["content_sha256"] = content_hash
-            data["source"] = source
+            public = PublicCountryOutput.from_internal(output)
+            public = public.model_copy(update={"generated_at": self.timestamp})
 
             path = json_dir / f"{output.market.url_slug}.json"
-            _write_json(path, data)
+            country_data = public.model_dump(mode="json", exclude_none=True)
+            country_data["generated_at"] = public.generated_at
+            content_hash = self._compute_content_sha256(country_data)
+            country_data["source"]["content_sha256"] = content_hash
+            _write_json(path, country_data)
+
+            if output.source.etag or output.source.last_modified:
+                cache_entries[output.market.paypal_market_code] = CrawlCacheEntry(
+                    etag=output.source.etag,
+                    last_modified=output.source.last_modified,
+                    content_sha256=output.source.content_sha256,
+                )
 
             index_entries.append(
                 CountryIndexEntry(
@@ -190,42 +203,58 @@ class OutputPublisher:
                 )
             )
 
-        index = CountryIndex(schema_version=1, generated_at=self.timestamp, countries=index_entries)
-        _write_json(json_dir / "index.json", index.model_dump(mode="json"))
+        index = CountryIndex(generated_at=self.timestamp, countries=index_entries)
+        index_data = index.model_dump(mode="json", exclude_none=True)
+        index_data["generated_at"] = index.generated_at
+        _write_json(json_dir / "index.json", index_data)
 
-        core_fees = CoreFees(schema_version=1, generated_at=self.timestamp, countries=core_entries)
-        _write_json(json_dir / "core-fees.json", core_fees.model_dump(mode="json"))
+        core_fees = CoreFees(generated_at=self.timestamp, countries=core_entries)
+        core_data = core_fees.model_dump(mode="json", exclude_none=True)
+        core_data["generated_at"] = core_fees.generated_at
+        _write_json(json_dir / "core-fees.json", core_data)
 
         manifest = CountryManifest(
-            schema_version=1,
             generated_at=self.timestamp,
             markets=markets,
             unsupported=unsupported,
         )
-        _write_json(meta_dir / "countries.json", manifest.model_dump(mode="json"))
+        manifest_data = manifest.model_dump(mode="json", exclude_none=True)
+        manifest_data["generated_at"] = manifest.generated_at
+        _write_json(meta_dir / "countries.json", manifest_data)
         _write_json(
             meta_dir / "unsupported-countries.json",
-            {"schema_version": 1, "unsupported": [u.model_dump(mode="json") for u in unsupported]},
+            {"schema_version": 2, "unsupported": [u.model_dump(mode="json", exclude_none=True) for u in unsupported]},
         )
         _write_json(
             meta_dir / "schema-version.json",
             SchemaVersionInfo(
-                schema_version=1,
-                schema_path="schemas/paypal-fees-v1.schema.json",
-                schemas=[
-                    "schemas/paypal-fees-v1.schema.json",
-                    "schemas/core-fees-v1.schema.json",
-                    "schemas/index-v1.schema.json",
-                    "schemas/manifest-v1.schema.json",
-                ],
-                description="Initial schema for PayPal fee data",
-            ).model_dump(mode="json"),
+                description="Public schema for PayPal fee data v2",
+            ).model_dump(mode="json", exclude_none=True),
         )
 
-        _write_json(schemas_dir / "paypal-fees-v1.schema.json", generate_country_schema())
-        _write_json(schemas_dir / "core-fees-v1.schema.json", generate_core_fees_schema())
-        _write_json(schemas_dir / "index-v1.schema.json", generate_index_schema())
-        _write_json(schemas_dir / "manifest-v1.schema.json", generate_manifest_schema())
+        _write_json(schemas_dir / "paypal-fees-v2.schema.json", generate_country_schema())
+        _write_json(schemas_dir / "core-fees-v2.schema.json", generate_core_fees_schema())
+        _write_json(schemas_dir / "index-v2.schema.json", generate_index_schema())
+        _write_json(schemas_dir / "manifest-v2.schema.json", generate_manifest_schema())
+
+        if cache_entries:
+            _write_json(
+                meta_dir / "crawl-cache.json",
+                CrawlCache(markets=cache_entries).model_dump(mode="json", exclude_none=True),
+            )
+
+        if self.keep_diagnostics and diagnostics:
+            diagnostics_dir = meta_dir / "diagnostics"
+            diagnostics_dir.mkdir(parents=True, exist_ok=True)
+            for cc in sorted(diagnostics.keys()):
+                _write_json(
+                    diagnostics_dir / f"{cc.lower()}.json",
+                    {
+                        "schema_version": 2,
+                        "generated_at": self.timestamp,
+                        "run": _to_jsonable(diagnostics[cc]),
+                    },
+                )
 
         # Only write a change report when it has content.  If the live output
         # already has one, carry it forward to avoid treating it as a removal.
@@ -238,7 +267,7 @@ class OutputPublisher:
         if shadow_runs:
             _write_json(
                 meta_dir / "classification-shadow.json",
-                {"schema_version": 1, "generated_at": self.timestamp, "countries": _to_jsonable(shadow_runs)},
+                {"schema_version": 2, "generated_at": self.timestamp, "countries": _to_jsonable(shadow_runs)},
             )
 
         return staging != self.output_dir, staging
