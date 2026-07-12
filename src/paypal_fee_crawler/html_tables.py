@@ -57,7 +57,9 @@ def _extract_table_rows(table: html.HtmlElement) -> tuple[list[TableHeader], lis
         if header_row is not None:
             headers = [_header_cell(th) for th in header_row.iter("th")]
 
-    tbody = table.find("tbody") or table
+    tbody = table.find("tbody")
+    if tbody is None:
+        tbody = table
     body_rows = tbody.findall("tr")
 
     if not headers and body_rows:

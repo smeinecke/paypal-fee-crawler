@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 from .classify import CLASSIFIER_VERSION, ClassificationRun, TableDecision, classify_legacy, classify_structural
 from .models import CountryOutput, CurrencyConversion, DerivedFees, FixedFees, InternationalSurcharge, Market, Table
@@ -174,21 +175,57 @@ def _table_decision_key(d: TableDecision) -> str:
     return "unknown"
 
 
+def _decision_dict(decisions: tuple[TableDecision, ...]) -> dict[str, TableDecision]:
+    return {_table_decision_key(d): d for d in decisions}
+
+
+def _decision_category(decision: TableDecision | None) -> str | None:
+    return decision.selected_category.value if decision and decision.selected_category else None
+
+
+def _decision_blockers(decision: TableDecision | None) -> tuple[str, ...]:
+    return tuple(sorted({b.value for b in decision.blockers})) if decision else ()
+
+
+def _decision_evidence(decision: TableDecision | None) -> tuple[str, ...]:
+    return tuple(sorted(decision.evidence_codes)) if decision else ()
+
+
+def _table_decision_change(
+    legacy: TableDecision | None,
+    structural: TableDecision | None,
+    kind: str,
+) -> TableDecisionChange:
+    identity = structural or legacy
+    if identity is None:
+        raise ValueError("At least one table decision is required")
+    return TableDecisionChange(
+        table_id=identity.table_id,
+        document_id=identity.document_id,
+        component_id=identity.component_id,
+        fingerprint=identity.fingerprint,
+        legacy_category=_decision_category(legacy),
+        structural_category=_decision_category(structural),
+        legacy_score=legacy.selected_score if legacy else None,
+        structural_score=structural.selected_score if structural else None,
+        legacy_blockers=_decision_blockers(legacy),
+        structural_blockers=_decision_blockers(structural),
+        legacy_evidence=_decision_evidence(legacy),
+        structural_evidence=_decision_evidence(structural),
+        kind=kind,
+    )
+
+
 def _compare_table_decisions(
     legacy: tuple[TableDecision, ...],
     structural: tuple[TableDecision, ...],
 ) -> tuple[TableDecisionChange, ...]:
     """Compare per-table classification decisions between legacy and structural."""
-    legacy_by_key: dict[str, TableDecision] = {}
-    structural_by_key: dict[str, TableDecision] = {}
-    for d in legacy:
-        legacy_by_key[_table_decision_key(d)] = d
-    for d in structural:
-        structural_by_key[_table_decision_key(d)] = d
+    legacy_by_key = _decision_dict(legacy)
+    structural_by_key = _decision_dict(structural)
 
     changes: list[TableDecisionChange] = []
-    all_keys = set(legacy_by_key) | set(structural_by_key)
-    for key in sorted(all_keys):
+    for key in sorted(set(legacy_by_key) | set(structural_by_key)):
         legacy_decision = legacy_by_key.get(key)
         structural_decision = structural_by_key.get(key)
         if legacy_decision is None or structural_decision is None:
@@ -196,58 +233,82 @@ def _compare_table_decisions(
             if present is None or present.selected_category is None:
                 continue
             kind = "new" if legacy_decision is None else "missing"
-            changes.append(
-                TableDecisionChange(
-                    table_id=present.table_id,
-                    document_id=present.document_id,
-                    component_id=present.component_id,
-                    fingerprint=present.fingerprint,
-                    legacy_category=legacy_decision.selected_category.value
-                    if legacy_decision and legacy_decision.selected_category
-                    else None,
-                    structural_category=structural_decision.selected_category.value
-                    if structural_decision and structural_decision.selected_category
-                    else None,
-                    legacy_score=legacy_decision.selected_score if legacy_decision else None,
-                    structural_score=structural_decision.selected_score if structural_decision else None,
-                    legacy_blockers=tuple(sorted({b.value for b in legacy_decision.blockers}))
-                    if legacy_decision
-                    else (),
-                    structural_blockers=tuple(sorted({b.value for b in structural_decision.blockers}))
-                    if structural_decision
-                    else (),
-                    legacy_evidence=tuple(sorted(legacy_decision.evidence_codes)) if legacy_decision else (),
-                    structural_evidence=tuple(sorted(structural_decision.evidence_codes))
-                    if structural_decision
-                    else (),
-                    kind=kind,
-                )
-            )
+            changes.append(_table_decision_change(legacy_decision, structural_decision, kind))
             continue
 
-        legacy_cat = legacy_decision.selected_category.value if legacy_decision.selected_category else None
-        structural_cat = structural_decision.selected_category.value if structural_decision.selected_category else None
+        legacy_cat = _decision_category(legacy_decision)
+        structural_cat = _decision_category(structural_decision)
         if legacy_cat == structural_cat:
             continue
         kind = "new" if legacy_cat is None else "missing" if structural_cat is None else "changed"
-        changes.append(
-            TableDecisionChange(
-                table_id=legacy_decision.table_id,
-                document_id=legacy_decision.document_id,
-                component_id=legacy_decision.component_id,
-                fingerprint=legacy_decision.fingerprint,
-                legacy_category=legacy_cat,
-                structural_category=structural_cat,
-                legacy_score=legacy_decision.selected_score,
-                structural_score=structural_decision.selected_score,
-                legacy_blockers=tuple(sorted({b.value for b in legacy_decision.blockers})),
-                structural_blockers=tuple(sorted({b.value for b in structural_decision.blockers})),
-                legacy_evidence=tuple(sorted(legacy_decision.evidence_codes)),
-                structural_evidence=tuple(sorted(structural_decision.evidence_codes)),
-                kind=kind,
-            )
-        )
+        changes.append(_table_decision_change(legacy_decision, structural_decision, kind))
     return tuple(changes)
+
+
+def _change_kind(legacy: Any | None, structural: Any | None) -> str:
+    if legacy is None and structural is not None:
+        return "new"
+    if legacy is not None and structural is None:
+        return "missing"
+    return "conflict"
+
+
+def _append_simple_value_change(
+    field: str,
+    legacy: Any | None,
+    structural: Any | None,
+    changes: list[ValueChange],
+) -> None:
+    if legacy == structural:
+        return
+    kind = _change_kind(legacy, structural) if legacy is None or structural is None else "changed"
+    changes.append(ValueChange(field, legacy, structural, kind))
+
+
+def _compare_dict_mappings(
+    legacy: dict[str, Any],
+    structural: dict[str, Any],
+    key_label: str,
+    changes: list[ValueChange],
+) -> None:
+    for key in sorted(set(legacy) | set(structural)):
+        legacy_value = legacy.get(key)
+        structural_value = structural.get(key)
+        if legacy_value == structural_value:
+            continue
+        kind = _change_kind(legacy_value, structural_value)
+        changes.append(ValueChange(f"{key_label}.{key}", legacy_value, structural_value, kind))
+
+
+def _compare_value_changes(
+    legacy: DerivedFees,
+    structural: DerivedFees,
+) -> list[ValueChange]:
+    changes: list[ValueChange] = []
+
+    legacy_pct = legacy.standard_commercial.percentage if legacy.standard_commercial else None
+    structural_pct = structural.standard_commercial.percentage if structural.standard_commercial else None
+    _append_simple_value_change("standard_commercial.percentage", legacy_pct, structural_pct, changes)
+
+    legacy_fixed = dict(_fixed_fees_set(legacy.commercial_fixed_fees))
+    structural_fixed = dict(_fixed_fees_set(structural.commercial_fixed_fees))
+    _compare_dict_mappings(legacy_fixed, structural_fixed, "fixed_fee", changes)
+
+    _compare_dict_mappings(
+        _surcharges_set(legacy.international_surcharges),
+        _surcharges_set(structural.international_surcharges),
+        "international_surcharge",
+        changes,
+    )
+
+    _append_simple_value_change(
+        "currency_conversion.spread_percentage",
+        _conversion_spread(legacy.currency_conversion),
+        _conversion_spread(structural.currency_conversion),
+        changes,
+    )
+
+    return changes
 
 
 def compare_runs(
@@ -262,60 +323,8 @@ def compare_runs(
     legacy = legacy_run.derived
     structural = structural_run.derived
 
-    value_changes: list[ValueChange] = []
+    value_changes = _compare_value_changes(legacy, structural)
     table_decision_changes = _compare_table_decisions(legacy_run.table_decisions, structural_run.table_decisions)
-
-    legacy_pct = legacy.standard_commercial.percentage if legacy.standard_commercial else None
-    structural_pct = structural.standard_commercial.percentage if structural.standard_commercial else None
-    if legacy_pct != structural_pct:
-        if legacy_pct is None and structural_pct is not None:
-            kind = "new"
-        elif legacy_pct is not None and structural_pct is None:
-            kind = "missing"
-        else:
-            kind = "changed"
-        value_changes.append(ValueChange("standard_commercial.percentage", legacy_pct, structural_pct, kind))
-
-    legacy_fixed = _fixed_fees_set(legacy.commercial_fixed_fees)
-    structural_fixed = _fixed_fees_set(structural.commercial_fixed_fees)
-    all_currencies = {c for c, _ in legacy_fixed | structural_fixed}
-    for currency in sorted(all_currencies):
-        legacy_amount = next((a for c, a in legacy_fixed if c == currency), None)
-        structural_amount = next((a for c, a in structural_fixed if c == currency), None)
-        if legacy_amount != structural_amount:
-            if legacy_amount is None:
-                kind = "new"
-            elif structural_amount is None:
-                kind = "missing"
-            else:
-                kind = "conflict"
-            value_changes.append(ValueChange(f"fixed_fee.{currency}", legacy_amount, structural_amount, kind))
-
-    legacy_surcharges = _surcharges_set(legacy.international_surcharges)
-    structural_surcharges = _surcharges_set(structural.international_surcharges)
-    all_regions = set(legacy_surcharges) | set(structural_surcharges)
-    for region in sorted(all_regions):
-        legacy_pct = legacy_surcharges.get(region)
-        structural_pct = structural_surcharges.get(region)
-        if legacy_pct != structural_pct:
-            if legacy_pct is None:
-                kind = "new"
-            elif structural_pct is None:
-                kind = "missing"
-            else:
-                kind = "conflict"
-            value_changes.append(ValueChange(f"international_surcharge.{region}", legacy_pct, structural_pct, kind))
-
-    legacy_conv = _conversion_spread(legacy.currency_conversion)
-    structural_conv = _conversion_spread(structural.currency_conversion)
-    if legacy_conv != structural_conv:
-        if legacy_conv is None and structural_conv is not None:
-            kind = "new"
-        elif legacy_conv is not None and structural_conv is None:
-            kind = "missing"
-        else:
-            kind = "changed"
-        value_changes.append(ValueChange("currency_conversion.spread_percentage", legacy_conv, structural_conv, kind))
 
     legacy_cats = _selected_categories_from_decisions(legacy_run)
     structural_cats = _selected_categories_from_decisions(structural_run)

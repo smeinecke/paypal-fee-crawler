@@ -61,67 +61,85 @@ class PreviousState:
     def load(cls, output_dir: Path | str) -> PreviousState:
         output_dir = Path(output_dir)
         state = cls()
-        manifest_path = output_dir / "meta" / "countries.json"
-        if manifest_path.exists():
-            try:
-                manifest = CountryManifest.model_validate_json(manifest_path.read_text())
-                state.discovered_countries = {m.paypal_market_code for m in manifest.markets}
-                state.unsupported_countries = {u.paypal_market_code for u in manifest.unsupported}
-                state.transient_countries = {u.paypal_market_code for u in manifest.unsupported if u.temporary}
-                state.unsupported_records = {u.paypal_market_code: u for u in manifest.unsupported}
-            except Exception as exc:  # nosec B112 # noqa: S112
-                logger.warning("Could not load previous country manifest: %s", exc)
-
-        unsupported_path = output_dir / "meta" / "unsupported-countries.json"
-        if unsupported_path.exists():
-            try:
-                data = json.loads(unsupported_path.read_text(encoding="utf-8"))
-                for item in data.get("unsupported", []):
-                    u = UnsupportedCountry.model_validate(item)
-                    state.unsupported_records[u.paypal_market_code] = u
-                    state.unsupported_countries.add(u.paypal_market_code)
-                    if u.temporary:
-                        state.transient_countries.add(u.paypal_market_code)
-            except Exception as exc:  # nosec B112 # noqa: S112
-                logger.warning("Could not load previous unsupported metadata: %s", exc)
-
-        accepted_path = output_dir / "meta" / "accepted-regressions.json"
-        if accepted_path.exists():
-            try:
-                state.accepted_regressions = AcceptedRegressions.model_validate_json(accepted_path.read_text())
-            except Exception as exc:  # nosec B112 # noqa: S112
-                logger.warning("Could not load accepted regressions: %s", exc)
-
-        classifier_path = output_dir / "meta" / "classifier-version.json"
-        if classifier_path.exists():
-            try:
-                state.classifier_metadata = ClassifierMetadata.model_validate_json(classifier_path.read_text())
-            except Exception as exc:  # nosec B112 # noqa: S112
-                logger.warning("Could not load previous classifier metadata: %s", exc)
-
-        index_path = output_dir / "json" / "index.json"
-        if index_path.exists():
-            try:
-                index = CountryIndex.model_validate_json(index_path.read_text())
-                state.supported_countries = {entry.paypal_market_code for entry in index.countries}
-            except Exception as exc:  # nosec B112 # noqa: S112
-                logger.warning("Could not load previous country index: %s", exc)
-
-        state_path = output_dir / "meta" / "crawl-state.json"
-        if state_path.exists():
-            try:
-                crawl_state = CrawlState.model_validate_json(state_path.read_text())
-                for cc, entry in crawl_state.markets.items():
-                    state.country_tables[cc] = entry.table_count
-                    state.country_rows[cc] = entry.row_count
-                    state.derived_status[cc] = entry.derived_status or "unclassified"
-                    state.core_categories[cc] = set(entry.selected_categories)
-            except Exception as exc:  # nosec B112 # noqa: S112
-                logger.warning("Could not load previous crawl state: %s", exc)
-
+        _load_manifest(state, output_dir / "meta" / "countries.json")
+        _load_unsupported(state, output_dir / "meta" / "unsupported-countries.json")
+        _load_accepted_regressions(state, output_dir / "meta" / "accepted-regressions.json")
+        _load_classifier(state, output_dir / "meta" / "classifier-version.json")
+        _load_index(state, output_dir / "json" / "index.json")
+        _load_crawl_state(state, output_dir / "meta" / "crawl-state.json")
         # Backward-compatible alias includes all discovered markets.
         state.countries = state.discovered_countries
         return state
+
+
+def _load_manifest(state: PreviousState, manifest_path: Path) -> None:
+    if not manifest_path.exists():
+        return
+    try:
+        manifest = CountryManifest.model_validate_json(manifest_path.read_text())
+        state.discovered_countries = {m.paypal_market_code for m in manifest.markets}
+        state.unsupported_countries = {u.paypal_market_code for u in manifest.unsupported}
+        state.transient_countries = {u.paypal_market_code for u in manifest.unsupported if u.temporary}
+        state.unsupported_records = {u.paypal_market_code: u for u in manifest.unsupported}
+    except Exception as exc:  # nosec B112 # noqa: S112
+        logger.warning("Could not load previous country manifest: %s", exc)
+
+
+def _load_unsupported(state: PreviousState, unsupported_path: Path) -> None:
+    if not unsupported_path.exists():
+        return
+    try:
+        data = json.loads(unsupported_path.read_text(encoding="utf-8"))
+        for item in data.get("unsupported", []):
+            u = UnsupportedCountry.model_validate(item)
+            state.unsupported_records[u.paypal_market_code] = u
+            state.unsupported_countries.add(u.paypal_market_code)
+            if u.temporary:
+                state.transient_countries.add(u.paypal_market_code)
+    except Exception as exc:  # nosec B112 # noqa: S112
+        logger.warning("Could not load previous unsupported metadata: %s", exc)
+
+
+def _load_accepted_regressions(state: PreviousState, accepted_path: Path) -> None:
+    if not accepted_path.exists():
+        return
+    try:
+        state.accepted_regressions = AcceptedRegressions.model_validate_json(accepted_path.read_text())
+    except Exception as exc:  # nosec B112 # noqa: S112
+        logger.warning("Could not load accepted regressions: %s", exc)
+
+
+def _load_classifier(state: PreviousState, classifier_path: Path) -> None:
+    if not classifier_path.exists():
+        return
+    try:
+        state.classifier_metadata = ClassifierMetadata.model_validate_json(classifier_path.read_text())
+    except Exception as exc:  # nosec B112 # noqa: S112
+        logger.warning("Could not load previous classifier metadata: %s", exc)
+
+
+def _load_index(state: PreviousState, index_path: Path) -> None:
+    if not index_path.exists():
+        return
+    try:
+        index = CountryIndex.model_validate_json(index_path.read_text())
+        state.supported_countries = {entry.paypal_market_code for entry in index.countries}
+    except Exception as exc:  # nosec B112 # noqa: S112
+        logger.warning("Could not load previous country index: %s", exc)
+
+
+def _load_crawl_state(state: PreviousState, state_path: Path) -> None:
+    if not state_path.exists():
+        return
+    try:
+        crawl_state = CrawlState.model_validate_json(state_path.read_text())
+        for cc, entry in crawl_state.markets.items():
+            state.country_tables[cc] = entry.table_count
+            state.country_rows[cc] = entry.row_count
+            state.derived_status[cc] = entry.derived_status or "unclassified"
+            state.core_categories[cc] = set(entry.selected_categories)
+    except Exception as exc:  # nosec B112 # noqa: S112
+        logger.warning("Could not load previous crawl state: %s", exc)
 
 
 def _country_output_hash(data: dict[str, Any]) -> str:
@@ -160,47 +178,36 @@ def _is_accepted(
     return False
 
 
-def check_regression(
-    previous: PreviousState,
-    current_discovered: set[str],
+def _check_structural_regressions(
     current_supported: set[str],
     current_unsupported: set[str],
     current_transient: set[str],
-    current_outputs: dict[str, CountryOutput],
-    limits: RegressionLimits,
-    current_classifier_metadata: ClassifierMetadata | None = None,
-) -> ChangeReport:
-    """Compare the new market states with the previous state and return a change report.
-
-    Every market state is compared against its equivalent previous state:
-    discovered vs discovered, supported vs supported, unsupported vs unsupported,
-    and transient vs transient. No state is compared against a different state.
-    """
+) -> list[ChangeType]:
     changes: list[ChangeType] = []
+    pairs = [
+        (current_supported, current_unsupported, "supported", "unsupported"),
+        (current_supported, current_transient, "supported", "transient"),
+        (current_unsupported, current_transient, "unsupported", "transient"),
+    ]
+    for set_a, set_b, name_a, name_b in pairs:
+        if set_a & set_b:
+            changes.append(
+                _change_type(
+                    kind="structural_regression",
+                    message=f"A market is both {name_a} and {name_b} in the current state",
+                )
+            )
+    return changes
 
-    if current_supported & current_unsupported:
-        changes.append(
-            _change_type(
-                kind="structural_regression",
-                message="A market is both supported and unsupported in the current state",
-            )
-        )
-    if current_supported & current_transient:
-        changes.append(
-            _change_type(
-                kind="structural_regression",
-                message="A market is both supported and transient in the current state",
-            )
-        )
-    if current_unsupported & current_transient:
-        changes.append(
-            _change_type(
-                kind="structural_regression",
-                message="A market is both unsupported and transient in the current state",
-            )
-        )
 
-    # Supported -> anything.
+def _check_removed_supported(
+    previous: PreviousState,
+    current_supported: set[str],
+    current_transient: set[str],
+    current_unsupported: set[str],
+    limits: RegressionLimits,
+) -> list[ChangeType]:
+    changes: list[ChangeType] = []
     for cc in sorted(previous.supported_countries - current_supported):
         if cc in current_transient:
             changes.append(
@@ -218,16 +225,23 @@ def check_regression(
                     message=f"Supported country {cc} became unsupported",
                 )
             )
-        else:
-            if not limits.allow_country_drop:
-                changes.append(
-                    _change_type(
-                        kind="removed_country",
-                        country_code=cc,
-                        message=f"Supported country {cc} disappeared",
-                    )
+        elif not limits.allow_country_drop:
+            changes.append(
+                _change_type(
+                    kind="removed_country",
+                    country_code=cc,
+                    message=f"Supported country {cc} disappeared",
                 )
+            )
+    return changes
 
+
+def _check_sharp_country_drop(
+    previous: PreviousState,
+    current_supported: set[str],
+    limits: RegressionLimits,
+) -> list[ChangeType]:
+    changes: list[ChangeType] = []
     if (
         not limits.allow_country_drop
         and previous.supported_countries
@@ -240,8 +254,15 @@ def check_regression(
                 message=f"Supported country count dropped by more than {limits.max_country_count_delta_ratio:.0%}",
             )
         )
+    return changes
 
-    # Discovered -> missing.
+
+def _check_removed_discovered(
+    previous: PreviousState,
+    current_discovered: set[str],
+    limits: RegressionLimits,
+) -> list[ChangeType]:
+    changes: list[ChangeType] = []
     removed_discovered = previous.discovered_countries - current_discovered
     if removed_discovered and not limits.allow_country_drop:
         for cc in sorted(removed_discovered):
@@ -252,8 +273,14 @@ def check_regression(
                     message=f"Discovered country {cc} is no longer known",
                 )
             )
+    return changes
 
-    # Added / state transitions.
+
+def _check_added_supported(
+    previous: PreviousState,
+    current_supported: set[str],
+) -> list[ChangeType]:
+    changes: list[ChangeType] = []
     for cc in sorted(current_supported - previous.supported_countries):
         if cc in previous.unsupported_countries:
             changes.append(
@@ -272,9 +299,24 @@ def check_regression(
                 )
             )
         else:
-            changes.append(_change_type(kind="added_country", country_code=cc, message=f"Country {cc} newly supported"))
+            changes.append(
+                _change_type(
+                    kind="added_country",
+                    country_code=cc,
+                    message=f"Country {cc} newly supported",
+                )
+            )
+    return changes
 
-    # Newly discovered but not yet supported.
+
+def _check_newly_discovered(
+    previous: PreviousState,
+    current_discovered: set[str],
+    current_supported: set[str],
+    current_unsupported: set[str],
+    current_transient: set[str],
+) -> list[ChangeType]:
+    changes: list[ChangeType] = []
     for cc in sorted(
         current_discovered - previous.discovered_countries - current_supported - current_unsupported - current_transient
     ):
@@ -285,94 +327,143 @@ def check_regression(
                 message=f"Country {cc} discovered but not yet resolved",
             )
         )
+    return changes
 
+
+def _check_table_change(
+    prev_tables: int,
+    table_count: int,
+    cc: str,
+    limits: RegressionLimits,
+) -> ChangeType | None:
+    if prev_tables > 0 and table_count == 0:
+        return _change_type(
+            kind="removed_all_tables",
+            country_code=cc,
+            before=prev_tables,
+            after=table_count,
+            message=f"All tables removed for {cc}",
+        )
+    if prev_tables > 0 and table_count < prev_tables:
+        ratio = (prev_tables - table_count) / prev_tables
+        kind = "sharp_table_drop" if ratio > limits.max_table_count_delta_ratio else "table_count_decreased"
+        return _change_type(
+            kind=kind,
+            country_code=cc,
+            before=prev_tables,
+            after=table_count,
+            message=f"Table count for {cc} dropped by {ratio:.0%}"
+            if kind == "sharp_table_drop"
+            else f"Table count for {cc} decreased",
+        )
+    if table_count > prev_tables:
+        return _change_type(
+            kind="new_table",
+            country_code=cc,
+            before=prev_tables,
+            after=table_count,
+            message=f"Table count for {cc} increased",
+        )
+    return None
+
+
+def _check_row_change(
+    prev_rows: int,
+    row_count: int,
+    cc: str,
+    limits: RegressionLimits,
+) -> ChangeType | None:
+    if prev_rows > 0 and row_count < prev_rows:
+        ratio = (prev_rows - row_count) / prev_rows if prev_rows else 0
+        if ratio > limits.max_row_count_delta_ratio:
+            return _change_type(
+                kind="sharp_row_drop",
+                country_code=cc,
+                before=prev_rows,
+                after=row_count,
+                message=f"Row count for {cc} dropped by {ratio:.0%}",
+            )
+    return None
+
+
+def _check_lost_categories(
+    previous: PreviousState,
+    output: CountryOutput,
+    cc: str,
+) -> list[ChangeType]:
+    prev_categories = previous.core_categories.get(cc, set())
+    current_categories = _selected_categories_from_derived(output.derived)
+    changes: list[ChangeType] = []
+    for category in sorted(prev_categories - current_categories):
+        accepted = _is_accepted(previous, "lost_core_category", cc, category)
+        changes.append(
+            _change_type(
+                kind="lost_core_category",
+                country_code=cc,
+                identifier=category,
+                before=True,
+                after=False,
+                message=f"Core category {category} disappeared for {cc}"
+                + (" (accepted regression)" if accepted else ""),
+                accepted=accepted,
+            )
+        )
+    return changes
+
+
+def _check_status_change(
+    prev_status: str | None,
+    output: CountryOutput,
+    cc: str,
+) -> ChangeType | None:
+    if prev_status in {"complete", "partial"} and output.derived.status == "unclassified":
+        return _change_type(
+            kind="classified_to_unclassified",
+            country_code=cc,
+            before=prev_status,
+            after="unclassified",
+            message=f"Derived data for {cc} became unclassified",
+        )
+    return None
+
+
+def _check_per_country_changes(
+    previous: PreviousState,
+    current_supported: set[str],
+    current_outputs: dict[str, CountryOutput],
+    limits: RegressionLimits,
+) -> list[ChangeType]:
+    changes: list[ChangeType] = []
     for cc in sorted(current_supported):
         output = current_outputs[cc]
         prev_tables = previous.country_tables.get(cc, 0)
         prev_rows = previous.country_rows.get(cc, 0)
-        prev_categories = previous.core_categories.get(cc, set())
         prev_status = previous.derived_status.get(cc)
 
         table_count = len(output.tables)
         row_count = sum(len(table.rows) for table in output.tables)
 
-        if prev_tables > 0 and table_count == 0:
-            changes.append(
-                _change_type(
-                    kind="removed_all_tables",
-                    country_code=cc,
-                    before=prev_tables,
-                    after=table_count,
-                    message=f"All tables removed for {cc}",
-                )
-            )
-        elif prev_tables > 0 and table_count < prev_tables:
-            ratio = (prev_tables - table_count) / prev_tables
-            kind = "sharp_table_drop" if ratio > limits.max_table_count_delta_ratio else "table_count_decreased"
-            changes.append(
-                _change_type(
-                    kind=kind,
-                    country_code=cc,
-                    before=prev_tables,
-                    after=table_count,
-                    message=f"Table count for {cc} dropped by {ratio:.0%}"
-                    if kind == "sharp_table_drop"
-                    else f"Table count for {cc} decreased",
-                )
-            )
-        elif table_count > prev_tables:
-            changes.append(
-                _change_type(
-                    kind="new_table",
-                    country_code=cc,
-                    before=prev_tables,
-                    after=table_count,
-                    message=f"Table count for {cc} increased",
-                )
-            )
+        table_change = _check_table_change(prev_tables, table_count, cc, limits)
+        if table_change:
+            changes.append(table_change)
 
-        if prev_rows > 0 and row_count < prev_rows:
-            ratio = (prev_rows - row_count) / prev_rows if prev_rows else 0
-            if ratio > limits.max_row_count_delta_ratio:
-                changes.append(
-                    _change_type(
-                        kind="sharp_row_drop",
-                        country_code=cc,
-                        before=prev_rows,
-                        after=row_count,
-                        message=f"Row count for {cc} dropped by {ratio:.0%}",
-                    )
-                )
+        row_change = _check_row_change(prev_rows, row_count, cc, limits)
+        if row_change:
+            changes.append(row_change)
 
-        current_categories = _selected_categories_from_derived(output.derived)
+        changes.extend(_check_lost_categories(previous, output, cc))
 
-        lost_categories = prev_categories - current_categories
-        for category in sorted(lost_categories):
-            accepted = _is_accepted(previous, "lost_core_category", cc, category)
-            changes.append(
-                _change_type(
-                    kind="lost_core_category",
-                    country_code=cc,
-                    identifier=category,
-                    before=True,
-                    after=False,
-                    message=f"Core category {category} disappeared for {cc}"
-                    + (" (accepted regression)" if accepted else ""),
-                    accepted=accepted,
-                )
-            )
+        status_change = _check_status_change(prev_status, output, cc)
+        if status_change:
+            changes.append(status_change)
+    return changes
 
-        if prev_status in {"complete", "partial"} and output.derived.status == "unclassified":
-            changes.append(
-                _change_type(
-                    kind="classified_to_unclassified",
-                    country_code=cc,
-                    before=prev_status,
-                    after="unclassified",
-                    message=f"Derived data for {cc} became unclassified",
-                )
-            )
 
+def _check_classifier_version(
+    previous: PreviousState,
+    current_classifier_metadata: ClassifierMetadata | None,
+) -> list[ChangeType]:
+    changes: list[ChangeType] = []
     if (
         current_classifier_metadata is not None
         and previous.classifier_metadata is not None
@@ -386,11 +477,45 @@ def check_regression(
                 message=f"Classifier metadata changed from {previous.classifier_metadata.classifier_version} to {current_classifier_metadata.classifier_version}",
             )
         )
+    return changes
 
-    return ChangeReport(
-        schema_version=1,
-        changes=changes,
+
+def check_regression(
+    previous: PreviousState,
+    current_discovered: set[str],
+    current_supported: set[str],
+    current_unsupported: set[str],
+    current_transient: set[str],
+    current_outputs: dict[str, CountryOutput],
+    limits: RegressionLimits,
+    current_classifier_metadata: ClassifierMetadata | None = None,
+) -> ChangeReport:
+    """Compare the new market states with the previous state and return a change report.
+
+    Every market state is compared against its equivalent previous state:
+    discovered vs discovered, supported vs supported, unsupported vs unsupported,
+    and transient vs transient. No state is compared against a different state.
+    """
+    changes: list[ChangeType] = []
+    changes.extend(_check_structural_regressions(current_supported, current_unsupported, current_transient))
+    changes.extend(
+        _check_removed_supported(previous, current_supported, current_transient, current_unsupported, limits)
     )
+    changes.extend(_check_sharp_country_drop(previous, current_supported, limits))
+    changes.extend(_check_removed_discovered(previous, current_discovered, limits))
+    changes.extend(_check_added_supported(previous, current_supported))
+    changes.extend(
+        _check_newly_discovered(
+            previous,
+            current_discovered,
+            current_supported,
+            current_unsupported,
+            current_transient,
+        )
+    )
+    changes.extend(_check_per_country_changes(previous, current_supported, current_outputs, limits))
+    changes.extend(_check_classifier_version(previous, current_classifier_metadata))
+    return ChangeReport(schema_version=1, changes=changes)
 
 
 def enforce_regression(

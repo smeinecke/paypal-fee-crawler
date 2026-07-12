@@ -9,6 +9,7 @@ legacy order-dependent predicates in `classify.py`.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
@@ -638,7 +639,7 @@ def _has_contextual_support(signals: list[EvidenceSignal]) -> bool:
     return any(s.source in _CONTEXTUAL_SOURCES for s in signals)
 
 
-def _keyword_score(text: str, positive: tuple[str, ...], negative: tuple[str, ...]) -> int:
+def _keyword_score(text: str, positive: Collection[str], negative: Collection[str]) -> int:
     """Return a lexical score between -10 and +10 based on keyword matches."""
     norm = _norm(text)
     if not norm:
@@ -689,6 +690,67 @@ def _metadata_matches_category(table: Table, category: FeeCategory) -> tuple[boo
     return False, None
 
 
+def _finalize_score_result(
+    category: FeeCategory,
+    signals: list[EvidenceSignal],
+    blockers: list[BlockerCode],
+) -> ScoreResult:
+    score = _clamp_score(sum(s.weight for s in signals))
+    if score >= MINIMUM_SCORE and not _has_contextual_support(signals):
+        blockers.append(BlockerCode.NO_CONTEXTUAL_SUPPORT)
+    return ScoreResult(
+        category=category,
+        score=score,
+        signals=tuple(signals),
+        blockers=tuple(blockers),
+    )
+
+
+def _add_lexical_signals(
+    signals: list[EvidenceSignal],
+    table: Table,
+    profile: TableProfile,
+    pos_terms: Collection[str],
+    neg_terms: Collection[str],
+) -> int:
+    text = _table_text(table, profile, include_rows=False)
+    lexical = _keyword_score(text, pos_terms, neg_terms)
+    if lexical > 0:
+        _add_signal(signals, EvidenceCode.POSITIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
+    elif lexical < 0:
+        _add_signal(signals, EvidenceCode.NEGATIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
+    return lexical
+
+
+def _add_reference_context_signal(
+    signals: list[EvidenceSignal],
+    table: Table,
+    profile: TableProfile,
+) -> None:
+    if table.reference_id or table.source_table_ids or any(c.reference_id for c in profile.contexts):
+        _add_signal(signals, EvidenceCode.REFERENCE_CONTEXT_MATCH, EvidenceSource.RELATIONSHIP, 5)
+
+
+def _add_document_id_signal(
+    signals: list[EvidenceSignal],
+    table: Table,
+    doc_ids: Collection[str],
+) -> None:
+    doc_id = (table.document_id or "").upper()
+    if doc_id in doc_ids and not _has_registry_document_id(signals):
+        _add_signal(signals, EvidenceCode.KNOWN_DOCUMENT_ID, EvidenceSource.RELATIONSHIP, 20, detail=doc_id)
+
+
+def _add_metadata_signal(
+    signals: list[EvidenceSignal],
+    table: Table,
+    category: FeeCategory,
+) -> None:
+    meta_match, meta_detail = _metadata_matches_category(table, category)
+    if meta_match:
+        _add_signal(signals, EvidenceCode.METADATA_KEY_MATCH, EvidenceSource.METADATA, 20, detail=meta_detail)
+
+
 # ---------------------------------------------------------------------------
 # Category scorers
 # ---------------------------------------------------------------------------
@@ -724,36 +786,13 @@ def score_standard_commercial(
         blockers.append(BlockerCode.NO_USABLE_VALUES)
 
     if profile.money_columns and not profile.has_percentage:
-        # A pure money table is not standard commercial.
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
 
-    doc_id = (table.document_id or "").upper()
-    if doc_id in STANDARD_DOC_IDS and not _has_registry_document_id(signals):
-        _add_signal(signals, EvidenceCode.KNOWN_DOCUMENT_ID, EvidenceSource.RELATIONSHIP, 20, detail=doc_id)
-
-    meta_match, meta_detail = _metadata_matches_category(table, category)
-    if meta_match:
-        _add_signal(signals, EvidenceCode.METADATA_KEY_MATCH, EvidenceSource.METADATA, 20, detail=meta_detail)
-
-    text = _table_text(table, profile, include_rows=False)
-    lexical = _keyword_score(text, _POS_STANDARD, _NEG_STANDARD)
-    if lexical > 0:
-        _add_signal(signals, EvidenceCode.POSITIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
-    elif lexical < 0:
-        _add_signal(signals, EvidenceCode.NEGATIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
-
-    if table.reference_id or table.source_table_ids or any(c.reference_id for c in profile.contexts):
-        _add_signal(signals, EvidenceCode.REFERENCE_CONTEXT_MATCH, EvidenceSource.RELATIONSHIP, 5)
-
-    score = _clamp_score(sum(s.weight for s in signals))
-    if score >= MINIMUM_SCORE and not _has_contextual_support(signals):
-        blockers.append(BlockerCode.NO_CONTEXTUAL_SUPPORT)
-    return ScoreResult(
-        category=category,
-        score=score,
-        signals=tuple(signals),
-        blockers=tuple(blockers),
-    )
+    _add_document_id_signal(signals, table, STANDARD_DOC_IDS)
+    _add_metadata_signal(signals, table, category)
+    _add_lexical_signals(signals, table, profile, _POS_STANDARD, _NEG_STANDARD)
+    _add_reference_context_signal(signals, table, profile)
+    return _finalize_score_result(category, signals, blockers)
 
 
 def score_fixed_fee(
@@ -789,33 +828,11 @@ def score_fixed_fee(
     if profile.has_percentage and not profile.has_money:
         blockers.append(BlockerCode.ONLY_PERCENTAGES_FOR_FIXED_FEE)
 
-    doc_id = (table.document_id or "").upper()
-    if doc_id in FIXED_DOC_IDS and not _has_registry_document_id(signals):
-        _add_signal(signals, EvidenceCode.KNOWN_DOCUMENT_ID, EvidenceSource.RELATIONSHIP, 20, detail=doc_id)
-
-    meta_match, meta_detail = _metadata_matches_category(table, category)
-    if meta_match:
-        _add_signal(signals, EvidenceCode.METADATA_KEY_MATCH, EvidenceSource.METADATA, 20, detail=meta_detail)
-
-    text = _table_text(table, profile, include_rows=False)
-    lexical = _keyword_score(text, _POS_FIXED, _NEG_FIXED)
-    if lexical > 0:
-        _add_signal(signals, EvidenceCode.POSITIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
-    elif lexical < 0:
-        _add_signal(signals, EvidenceCode.NEGATIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
-
-    if table.reference_id or table.source_table_ids or any(c.reference_id for c in profile.contexts):
-        _add_signal(signals, EvidenceCode.REFERENCE_CONTEXT_MATCH, EvidenceSource.RELATIONSHIP, 5)
-
-    score = _clamp_score(sum(s.weight for s in signals))
-    if score >= MINIMUM_SCORE and not _has_contextual_support(signals):
-        blockers.append(BlockerCode.NO_CONTEXTUAL_SUPPORT)
-    return ScoreResult(
-        category=category,
-        score=score,
-        signals=tuple(signals),
-        blockers=tuple(blockers),
-    )
+    _add_document_id_signal(signals, table, FIXED_DOC_IDS)
+    _add_metadata_signal(signals, table, category)
+    _add_lexical_signals(signals, table, profile, _POS_FIXED, _NEG_FIXED)
+    _add_reference_context_signal(signals, table, profile)
+    return _finalize_score_result(category, signals, blockers)
 
 
 def score_international_surcharge(
@@ -851,33 +868,11 @@ def score_international_surcharge(
     if profile.has_money and not profile.has_percentage:
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
 
-    doc_id = (table.document_id or "").upper()
-    if doc_id in INTERNATIONAL_DOC_IDS and not _has_registry_document_id(signals):
-        _add_signal(signals, EvidenceCode.KNOWN_DOCUMENT_ID, EvidenceSource.RELATIONSHIP, 20, detail=doc_id)
-
-    meta_match, meta_detail = _metadata_matches_category(table, category)
-    if meta_match:
-        _add_signal(signals, EvidenceCode.METADATA_KEY_MATCH, EvidenceSource.METADATA, 20, detail=meta_detail)
-
-    text = _table_text(table, profile, include_rows=False)
-    lexical = _keyword_score(text, _POS_INTERNATIONAL, _NEG_INTERNATIONAL)
-    if lexical > 0:
-        _add_signal(signals, EvidenceCode.POSITIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
-    elif lexical < 0:
-        _add_signal(signals, EvidenceCode.NEGATIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
-
-    if table.reference_id or table.source_table_ids or any(c.reference_id for c in profile.contexts):
-        _add_signal(signals, EvidenceCode.REFERENCE_CONTEXT_MATCH, EvidenceSource.RELATIONSHIP, 5)
-
-    score = _clamp_score(sum(s.weight for s in signals))
-    if score >= MINIMUM_SCORE and not _has_contextual_support(signals):
-        blockers.append(BlockerCode.NO_CONTEXTUAL_SUPPORT)
-    return ScoreResult(
-        category=category,
-        score=score,
-        signals=tuple(signals),
-        blockers=tuple(blockers),
-    )
+    _add_document_id_signal(signals, table, INTERNATIONAL_DOC_IDS)
+    _add_metadata_signal(signals, table, category)
+    _add_lexical_signals(signals, table, profile, _POS_INTERNATIONAL, _NEG_INTERNATIONAL)
+    _add_reference_context_signal(signals, table, profile)
+    return _finalize_score_result(category, signals, blockers)
 
 
 def score_conversion(
@@ -913,50 +908,26 @@ def score_conversion(
     if profile.has_money and not profile.has_percentage:
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
 
-    doc_id = (table.document_id or "").upper()
-    if doc_id in CONVERSION_DOC_IDS and not _has_registry_document_id(signals):
-        _add_signal(signals, EvidenceCode.KNOWN_DOCUMENT_ID, EvidenceSource.RELATIONSHIP, 20, detail=doc_id)
-
-    meta_match, meta_detail = _metadata_matches_category(table, category)
-    if meta_match:
-        _add_signal(signals, EvidenceCode.METADATA_KEY_MATCH, EvidenceSource.METADATA, 20, detail=meta_detail)
-
-    text = _table_text(table, profile, include_rows=False)
-    lexical = _keyword_score(text, _POS_CONVERSION, _NEG_CONVERSION)
-    if lexical > 0:
-        _add_signal(signals, EvidenceCode.POSITIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
-    elif lexical < 0:
-        _add_signal(signals, EvidenceCode.NEGATIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
-
-    if table.reference_id or table.source_table_ids or any(c.reference_id for c in profile.contexts):
-        _add_signal(signals, EvidenceCode.REFERENCE_CONTEXT_MATCH, EvidenceSource.RELATIONSHIP, 5)
+    _add_document_id_signal(signals, table, CONVERSION_DOC_IDS)
+    _add_metadata_signal(signals, table, category)
+    lexical = _add_lexical_signals(signals, table, profile, _POS_CONVERSION, _NEG_CONVERSION)
+    _add_reference_context_signal(signals, table, profile)
 
     # Conversion is fragile; require metadata, relationship, registry, or strong
     # structural evidence beyond a single percentage.
+    approved_codes = {
+        EvidenceCode.KNOWN_DOCUMENT_ID,
+        EvidenceCode.KNOWN_FINGERPRINT,
+        EvidenceCode.METADATA_KEY_MATCH,
+        EvidenceCode.INTERNAL_NAME_MATCH,
+    }
     has_strong_evidence = bool(
-        {
-            EvidenceCode.KNOWN_DOCUMENT_ID,
-            EvidenceCode.KNOWN_FINGERPRINT,
-            EvidenceCode.METADATA_KEY_MATCH,
-            EvidenceCode.INTERNAL_NAME_MATCH,
-        }
-        & {s.code for s in signals}
-        or len(profile.percentage_columns) >= 1
-        and lexical > 0
+        approved_codes & {s.code for s in signals} or len(profile.percentage_columns) >= 1 and lexical > 0
     )
     if not has_strong_evidence and not blockers:
-        # Not a blocker, but the score will likely be too low to win.
         _add_signal(signals, EvidenceCode.NEGATIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, -15)
 
-    score = _clamp_score(sum(s.weight for s in signals))
-    if score >= MINIMUM_SCORE and not _has_contextual_support(signals):
-        blockers.append(BlockerCode.NO_CONTEXTUAL_SUPPORT)
-    return ScoreResult(
-        category=category,
-        score=score,
-        signals=tuple(signals),
-        blockers=tuple(blockers),
-    )
+    return _finalize_score_result(category, signals, blockers)
 
 
 # ---------------------------------------------------------------------------

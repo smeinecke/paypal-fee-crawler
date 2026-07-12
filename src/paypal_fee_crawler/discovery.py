@@ -90,6 +90,46 @@ def _find_country_selectors(data: Any) -> list[dict[str, Any]]:
     return found
 
 
+def _extract_languages(country: dict[str, Any]) -> tuple[list[Language], str | None]:
+    languages: list[Language] = []
+    langs = country.get("languages") or country.get("languageList") or []
+    default_locale = country.get("defaultLocale") or country.get("preferredLocale")
+    preferred = None
+    for lang in langs:
+        lang_code = lang.get("language") or lang.get("code") or lang.get("languageCode")
+        if not lang_code:
+            continue
+        lang_name = lang.get("languageName") or lang.get("name")
+        languages.append(Language(code=lang_code, name=lang_name))
+        if default_locale and default_locale.startswith(lang_code):
+            preferred = lang_code
+    return languages, preferred
+
+
+def _build_market(country: dict[str, Any], region_name: str, seen: set[str]) -> Market | None:
+    paypal_code = country.get("countryCode") or country.get("code") or country.get("country")
+    if not paypal_code:
+        return None
+    paypal_code = paypal_code.upper()
+    if paypal_code in seen:
+        return None
+    seen.add(paypal_code)
+    languages, preferred = _extract_languages(country)
+    default_locale = country.get("defaultLocale") or country.get("preferredLocale")
+    if not default_locale and languages:
+        preferred = preferred or languages[0].code
+    return Market(
+        paypal_market_code=paypal_code,
+        iso_country_code=iso_country_code_for(paypal_code),
+        country_name=country.get("countryName") or country.get("name") or paypal_code,
+        region=str(region_name).lower().replace(" ", "_"),
+        locale=default_locale,
+        languages=languages,
+        url_prefix=f"https://www.paypal.com/{paypal_code.lower()}",
+        preferred_language=preferred,
+    )
+
+
 def _normalize_markets(selectors: list[dict[str, Any]]) -> list[Market]:
     """Convert CountrySelector data into normalized Market objects.
 
@@ -104,41 +144,9 @@ def _normalize_markets(selectors: list[dict[str, Any]]) -> list[Market]:
             region_name = region.get("region") or region.get("name") or "unknown"
             countries = region.get("countries") or region.get("countryList") or []
             for country in countries:
-                paypal_code = country.get("countryCode") or country.get("code") or country.get("country")
-                if not paypal_code:
-                    continue
-                paypal_code = paypal_code.upper()
-                if paypal_code in seen:
-                    continue
-                seen.add(paypal_code)
-                iso_code = iso_country_code_for(paypal_code)
-                languages: list[Language] = []
-                langs = country.get("languages") or country.get("languageList") or []
-                default_locale = country.get("defaultLocale") or country.get("preferredLocale")
-                preferred = None
-                for lang in langs:
-                    lang_code = lang.get("language") or lang.get("code") or lang.get("languageCode")
-                    if not lang_code:
-                        continue
-                    lang_name = lang.get("languageName") or lang.get("name")
-                    languages.append(Language(code=lang_code, name=lang_name))
-                    if default_locale and default_locale.startswith(lang_code):
-                        preferred = lang_code
-                # Avoid invented locale strings; only keep real PayPal locale data.
-                if not default_locale and languages:
-                    preferred = preferred or languages[0].code
-                markets.append(
-                    Market(
-                        paypal_market_code=paypal_code,
-                        iso_country_code=iso_code,
-                        country_name=country.get("countryName") or country.get("name") or paypal_code,
-                        region=str(region_name).lower().replace(" ", "_"),
-                        locale=default_locale,
-                        languages=languages,
-                        url_prefix=f"https://www.paypal.com/{paypal_code.lower()}",
-                        preferred_language=preferred,
-                    )
-                )
+                market = _build_market(country, region_name, seen)
+                if market:
+                    markets.append(market)
     return markets
 
 
@@ -273,6 +281,133 @@ def _find_fee_links(data: Any, homepage: str) -> list[str]:
     return links
 
 
+async def _try_alias(
+    http_client: HttpClient,
+    code: str,
+    slug: str,
+) -> str | None:
+    alias_url = FEE_PAGE_ALIASES.get(code)
+    if not alias_url:
+        return None
+    try:
+        response = await http_client.get(alias_url)
+        try:
+            page_data = extract_cms_context(response.text)
+            if _is_fee_page(page_data, response):
+                return str(response.url)
+        except ParserError:
+            response_url = str(response.url)
+            if _is_html_response(response) and _is_fee_url_path(response_url):
+                return response_url
+    except (NetworkError, ParserError) as exc:
+        logger.debug("Alias fee page fetch failed for %s: %s", code, exc)
+    return None
+
+
+async def _fetch_with_flags(
+    http_client: HttpClient,
+    url: str,
+    code: str,
+    context: str,
+) -> tuple[HttpResponse | None, bool, bool]:
+    try:
+        return await http_client.get(url), False, False
+    except (AccessChallengeError, ContentSecurityError) as exc:
+        logger.debug("Access/security failure on %s for %s: %s", context, code, exc)
+    except PermanentHttpError as exc:
+        if exc.status_code == 404:
+            return None, False, False
+        logger.debug("Permanent HTTP error on %s for %s: %s", context, code, exc)
+    except PermanentNetworkError as exc:
+        logger.debug("Permanent network error on %s for %s: %s", context, code, exc)
+    except (TransientNetworkError, RateLimitError, NetworkError) as exc:
+        logger.debug("Transient %s failure for %s: %s", context, code, exc)
+    except ParserError as exc:
+        logger.debug("Parser error on %s for %s: %s", context, code, exc)
+        return None, False, True
+    return None, True, False
+
+
+async def _try_candidates(
+    http_client: HttpClient,
+    candidates: list[str],
+    slug: str,
+    code: str,
+) -> tuple[str | None, list[str], bool, bool]:
+    tested: list[str] = []
+    transient_failure = False
+    parser_failure = False
+    for index, url in enumerate(candidates):
+        tested.append(url)
+        response, tf, pf = await _fetch_with_flags(http_client, url, code, "candidate")
+        transient_failure = transient_failure or tf
+        parser_failure = parser_failure or pf
+        if response is None:
+            continue
+        try:
+            page_data = extract_cms_context(response.text)
+        except ParserError as exc:
+            response_url = str(response.url)
+            if (
+                index == 0
+                and _is_html_response(response)
+                and _is_fee_url_path(response_url)
+                and urlparse(response_url).path.lower().startswith(f"/{slug}/")
+            ):
+                return response_url, tested, transient_failure, parser_failure
+            logger.debug("Parser error extracting CMS from candidate for %s: %s", code, exc)
+            parser_failure = True
+            continue
+        if _is_fee_page(page_data, response):
+            return str(response.url), tested, transient_failure, parser_failure
+    return None, tested, transient_failure, parser_failure
+
+
+async def _fetch_homepage(
+    http_client: HttpClient,
+    homepage: str,
+    code: str,
+) -> HttpResponse:
+    try:
+        return await http_client.get(homepage)
+    except (AccessChallengeError, ContentSecurityError) as exc:
+        raise FeePageError(f"Homepage access challenge for {code}: {exc}") from exc
+    except PermanentHttpError as exc:
+        raise FeePageError(f"Homepage returned HTTP {exc.status_code} for {code}") from exc
+    except PermanentNetworkError as exc:
+        raise FeePageError(f"Homepage access denied for {code}: {exc}") from exc
+    except (TransientNetworkError, RateLimitError, NetworkError) as exc:
+        raise FeePageError(f"Homepage request failed for {code}: {exc}") from exc
+
+
+async def _try_homepage_links(
+    http_client: HttpClient,
+    page_data: dict[str, Any],
+    homepage: str,
+    code: str,
+    tested: list[str],
+) -> tuple[str | None, bool, bool]:
+    fee_links = _find_fee_links(page_data, homepage)
+    transient_failure = False
+    parser_failure = False
+    for url in fee_links:
+        tested.append(url)
+        response, tf, pf = await _fetch_with_flags(http_client, url, code, "fee link")
+        transient_failure = transient_failure or tf
+        parser_failure = parser_failure or pf
+        if response is None:
+            continue
+        try:
+            page_data_link = extract_cms_context(response.text)
+        except ParserError as exc:
+            logger.debug("Parser error extracting CMS from fee link for %s: %s", code, exc)
+            parser_failure = True
+            continue
+        if _is_fee_page(page_data_link, response):
+            return str(response.url), transient_failure, parser_failure
+    return None, transient_failure, parser_failure
+
+
 async def discover_fee_page(
     http_client: HttpClient,
     market: Market,
@@ -287,135 +422,32 @@ async def discover_fee_page(
     code = market.paypal_market_code
     slug = market.url_slug
 
-    # Check if this market uses another market's fee page (redirect alias).
-    alias_url = FEE_PAGE_ALIASES.get(code)
-    if alias_url:
-        try:
-            response = await http_client.get(alias_url)
-            try:
-                page_data = extract_cms_context(response.text)
-                if _is_fee_page(page_data, response):
-                    return str(response.url)
-            except ParserError:
-                # No CMS context — check if it's still a valid fee-page URL.
-                response_url = str(response.url)
-                if _is_html_response(response) and _is_fee_url_path(response_url):
-                    return response_url
-        except (NetworkError, ParserError) as exc:
-            logger.debug("Alias fee page fetch failed for %s: %s", code, exc)
-        # Fall through to normal discovery if alias didn't work.
+    alias_result = await _try_alias(http_client, code, slug)
+    if alias_result:
+        return alias_result
 
     candidates = [f"https://www.paypal.com/{slug}/business/paypal-business-fees"]
     for legacy in config.legacy_fee_paths:
         candidates.append(f"https://www.paypal.com/{slug}/{legacy}")
 
-    tested: list[str] = []
-    transient_failure = False
-    parser_failure = False
+    confirmed, tested, transient_failure, parser_failure = await _try_candidates(http_client, candidates, slug, code)
+    if confirmed:
+        return confirmed
 
-    for index, url in enumerate(candidates):
-        tested.append(url)
-        try:
-            response = await http_client.get(url)
-        except (AccessChallengeError, ContentSecurityError) as exc:
-            logger.debug("Access/security failure on candidate for %s: %s", code, exc)
-            transient_failure = True
-            continue
-        except PermanentHttpError as exc:
-            if exc.status_code == 404:
-                # Confirmed not-found for this candidate path; keep trying others.
-                continue
-            logger.debug("Permanent HTTP error for candidate %s: %s", code, exc)
-            transient_failure = True
-            continue
-        except PermanentNetworkError as exc:
-            logger.debug("Permanent network error for candidate %s: %s", code, exc)
-            transient_failure = True
-            continue
-        except (TransientNetworkError, RateLimitError, NetworkError) as exc:
-            logger.debug("Transient candidate failure for %s: %s", code, exc)
-            transient_failure = True
-            continue
-        except ParserError as exc:
-            logger.debug("Parser error on candidate for %s: %s", code, exc)
-            parser_failure = True
-            continue
-
-        try:
-            page_data = extract_cms_context(response.text)
-        except ParserError as exc:
-            # PayPal no longer embeds the CMS context on the public fee pages. If the
-            # primary canonical fee-page URL returns HTML but has no CMS context, trust it
-            # as long as the page still belongs to this market (no cross-country redirect).
-            response_url = str(response.url)
-            if (
-                index == 0
-                and _is_html_response(response)
-                and _is_fee_url_path(response_url)
-                and urlparse(response_url).path.lower().startswith(f"/{slug}/")
-            ):
-                return response_url
-            logger.debug("Parser error extracting CMS from candidate for %s: %s", code, exc)
-            parser_failure = True
-            continue
-        if _is_fee_page(page_data, response):
-            return str(response.url)
-
-    # If the default path failed, try the homepage and search navigation for fee links.
     homepage = f"https://www.paypal.com/{slug}"
     tested.append(homepage)
-    try:
-        response = await http_client.get(homepage)
-    except (AccessChallengeError, ContentSecurityError) as exc:
-        raise FeePageError(f"Homepage access challenge for {code}: {exc}") from exc
-    except PermanentHttpError as exc:
-        raise FeePageError(f"Homepage returned HTTP {exc.status_code} for {code}") from exc
-    except PermanentNetworkError as exc:
-        raise FeePageError(f"Homepage access denied for {code}: {exc}") from exc
-    except (TransientNetworkError, RateLimitError, NetworkError) as exc:
-        raise FeePageError(f"Homepage request failed for {code}: {exc}") from exc
+    response = await _fetch_homepage(http_client, homepage, code)
 
     try:
         page_data = extract_cms_context(response.text)
     except ParserError as exc:
         raise FeePageStructureError(f"Homepage for {code} has no valid CMS context: {exc}") from exc
 
-    fee_links = _find_fee_links(page_data, homepage)
-    for url in fee_links:
-        tested.append(url)
-        try:
-            response = await http_client.get(url)
-        except (AccessChallengeError, ContentSecurityError) as exc:
-            logger.debug("Access/security failure on fee link for %s: %s", code, exc)
-            transient_failure = True
-            continue
-        except PermanentHttpError as exc:
-            if exc.status_code == 404:
-                continue
-            logger.debug("Permanent HTTP error on fee link for %s: %s", code, exc)
-            transient_failure = True
-            continue
-        except PermanentNetworkError as exc:
-            logger.debug("Permanent network error on fee link for %s: %s", code, exc)
-            transient_failure = True
-            continue
-        except (TransientNetworkError, RateLimitError, NetworkError) as exc:
-            logger.debug("Transient failure on fee link for %s: %s", code, exc)
-            transient_failure = True
-            continue
-        except ParserError as exc:
-            logger.debug("Parser error on fee link for %s: %s", code, exc)
-            parser_failure = True
-            continue
-
-        try:
-            page_data = extract_cms_context(response.text)
-        except ParserError as exc:
-            logger.debug("Parser error extracting CMS from fee link for %s: %s", code, exc)
-            parser_failure = True
-            continue
-        if _is_fee_page(page_data, response):
-            return str(response.url)
+    confirmed, transient_failure, parser_failure = await _try_homepage_links(
+        http_client, page_data, homepage, code, tested
+    )
+    if confirmed:
+        return confirmed
 
     if transient_failure or parser_failure:
         raise FeePageError(

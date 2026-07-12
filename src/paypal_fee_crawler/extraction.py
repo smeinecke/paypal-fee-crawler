@@ -12,7 +12,7 @@ from enum import StrEnum
 from .models import FixedFees, InternationalSurcharge, Row, Table
 from .normalize import clean_text
 from .pricing_tokens import CURRENCY_CODES, is_numeric_amount, parse_amount
-from .profiles import TableProfile
+from .profiles import ColumnProfile, TableProfile
 from .scoring import (
     EvidenceCode,
     EvidenceSignal,
@@ -113,73 +113,96 @@ def _is_iso_currency_code(text: str) -> bool:
     return len(text) == 3 and text.isalpha() and text.upper() in CURRENCY_CODES
 
 
+def _find_label_column(
+    columns: tuple[ColumnProfile, ...],
+    percentage_columns: tuple[int, ...],
+    money_columns: tuple[int, ...],
+) -> int | None:
+    for col in columns:
+        if col.column_index in percentage_columns or col.column_index in money_columns:
+            continue
+        if col.text_row_count > 0:
+            return col.column_index
+    return None
+
+
+def _is_valid_currency_label_column(col_index: int, table: Table) -> bool:
+    for row in table.rows:
+        if col_index >= len(row.cells):
+            continue
+        cell = row.cells[col_index].text.strip()
+        if not cell:
+            continue
+        if not _is_iso_currency_code(cell):
+            return False
+    return True
+
+
+def _find_currency_label_column(
+    profile: TableProfile,
+    table: Table,
+    percentage_columns: tuple[int, ...],
+    money_columns: tuple[int, ...],
+) -> int | None:
+    for col in profile.columns:
+        if col.column_index in percentage_columns or col.column_index in money_columns:
+            continue
+        if _is_valid_currency_label_column(col.column_index, table):
+            return col.column_index
+    return None
+
+
+def _is_valid_amount_column(col_index: int, table: Table) -> bool:
+    for row in table.rows:
+        if col_index >= len(row.cells):
+            continue
+        cell = row.cells[col_index].text.strip()
+        if not cell:
+            continue
+        if not is_numeric_amount(cell):
+            return False
+    return True
+
+
+def _find_amount_column(
+    profile: TableProfile,
+    table: Table,
+    percentage_columns: tuple[int, ...],
+    money_columns: tuple[int, ...],
+) -> int | None:
+    if len(money_columns) == 1:
+        return money_columns[0]
+    for col in profile.columns:
+        if col.column_index in percentage_columns:
+            continue
+        if _is_valid_amount_column(col.column_index, table):
+            return col.column_index
+    return None
+
+
+def _role_confidence(
+    percentage_columns: tuple[int, ...],
+    money_columns: tuple[int, ...],
+    label_column: int | None,
+) -> int:
+    if percentage_columns and label_column is not None:
+        return 100
+    if percentage_columns and money_columns:
+        return 80
+    if percentage_columns or money_columns:
+        return 50
+    return 0
+
+
 def _column_roles(profile: TableProfile, table: Table) -> ColumnRoleAssignment:
     """Infer label, percentage, money, currency-label, and amount columns."""
     percentage_columns = tuple(sorted(profile.percentage_columns))
     money_columns = tuple(sorted(profile.money_columns))
 
-    label_column: int | None = None
-    # The label column is the leftmost text-heavy column that is not a value
-    # column. If every column is a value column, there is no separate label.
-    for col in profile.columns:
-        if col.column_index in percentage_columns or col.column_index in money_columns:
-            continue
-        if col.text_row_count > 0:
-            label_column = col.column_index
-            break
-
-    # Infer the currency-label column from non-value cells that contain valid
-    # ISO 4217 codes.  The leftmost column matching is preferred.
-    currency_label_column: int | None = None
-    for col in profile.columns:
-        if col.column_index in percentage_columns or col.column_index in money_columns:
-            continue
-        valid = True
-        for row in table.rows:
-            if col.column_index >= len(row.cells):
-                continue
-            cell = row.cells[col.column_index].text.strip()
-            if not cell:
-                continue
-            if not _is_iso_currency_code(cell):
-                valid = False
-                break
-        if valid:
-            currency_label_column = col.column_index
-            break
-
-    # Infer the amount column.  Prefer columns with money tokens, then fall back
-    # to columns whose cells are plain numeric amounts.
-    amount_column: int | None = None
-    if len(money_columns) == 1:
-        amount_column = money_columns[0]
-    else:
-        for col in profile.columns:
-            if col.column_index in percentage_columns:
-                continue
-            valid = True
-            for row in table.rows:
-                if col.column_index >= len(row.cells):
-                    continue
-                cell = row.cells[col.column_index].text.strip()
-                if not cell:
-                    continue
-                if not is_numeric_amount(cell):
-                    valid = False
-                    break
-            if valid:
-                amount_column = col.column_index
-                break
-
-    # Confidence: full assignment if we have value columns and a label.
-    if percentage_columns and label_column is not None:
-        confidence = 100
-    elif percentage_columns and money_columns:
-        confidence = 80
-    elif percentage_columns or money_columns:
-        confidence = 50
-    else:
-        confidence = 0
+    label_column = _find_label_column(profile.columns, percentage_columns, money_columns)
+    currency_label_column = _find_currency_label_column(profile, table, percentage_columns, money_columns)
+    amount_column = _find_amount_column(profile, table, percentage_columns, money_columns)
+    confidence = _role_confidence(percentage_columns, money_columns, label_column)
 
     return ColumnRoleAssignment(
         label_column=label_column,
@@ -348,6 +371,23 @@ _STD_ROW_FALLBACK = (
 )
 
 
+def _standard_row_lexical_score(
+    first_cell_text: str,
+    all_text: str,
+    market_code: str | None,
+) -> int:
+    score = 0
+    if _contains_any(first_cell_text, _STD_ROW_INCLUDE) or _contains_any(all_text, _STD_ROW_INCLUDE):
+        score += 10
+    if market_code and (
+        market_code_matches(first_cell_text, market_code) or market_code_matches(all_text, market_code)
+    ):
+        score += 5
+    if _contains_any(first_cell_text, _STD_ROW_FALLBACK) or _contains_any(all_text, _STD_ROW_FALLBACK):
+        score += 5
+    return score
+
+
 def _score_standard_row(
     row: Row,
     row_idx: int,
@@ -367,13 +407,10 @@ def _score_standard_row(
         return None
 
     score = 0
-
-    # Mixed percentage-plus-fixed expressions are the strongest signal.
     has_money = any(_moneys_in_row(row))
     if has_money and row_idx in profile.mixed_percentage_money_rows:
         score += 50
 
-    # Rows linked to a validated fixed-fee table (same currency present).
     if fixed_currencies and has_money:
         row_currencies = {
             token.currency for cell in row.cells for token in cell.tokens if token.kind == "money" and token.currency
@@ -381,23 +418,11 @@ def _score_standard_row(
         if row_currencies & fixed_currencies:
             score += 30
 
-    # Rows with a percentage in an inferred percentage column.
     row_pct_cols = {c for c, _ in _percentages_in_row(row)}
     if row_pct_cols & profile.percentage_columns:
         score += 20
 
-    # Positive lexical evidence.
-    if _contains_any(first_cell_text, _STD_ROW_INCLUDE) or _contains_any(all_text, _STD_ROW_INCLUDE):
-        score += 10
-
-    # Fallback market or catch-all labels.
-    if market_code and (
-        market_code_matches(first_cell_text, market_code) or market_code_matches(all_text, market_code)
-    ):
-        score += 5
-    if _contains_any(first_cell_text, _STD_ROW_FALLBACK) or _contains_any(all_text, _STD_ROW_FALLBACK):
-        score += 5
-
+    score += _standard_row_lexical_score(first_cell_text, all_text, market_code)
     return score if score > 0 else None
 
 
@@ -484,6 +509,71 @@ def extract_standard_percentage(
 # ---------------------------------------------------------------------------
 
 
+def _fixed_fee_pair_from_row(
+    row: Row,
+    row_idx: int,
+    roles: ColumnRoleAssignment,
+    table: Table,
+    observations: list[ClassificationObservation],
+) -> tuple[str | None, str | None]:
+    """Return (currency, amount) for a fixed-fee row, or (None, None) if none."""
+    moneys = _moneys_in_row(row)
+    if len(moneys) > 1:
+        observations.append(
+            ClassificationObservation(
+                kind=ObservationKind.EXTRACTION_CONFLICT,
+                category=FeeCategory.FIXED_FEE,
+                table_id=table.table_id or table.document_id,
+                message=f"row {row_idx} has {len(moneys)} money tokens",
+            )
+        )
+        return None, None
+    if moneys:
+        return moneys[0][2], moneys[0][1]
+
+    currency_label_column = roles.currency_label_column
+    amount_column = roles.amount_column
+    if (
+        currency_label_column is not None
+        and amount_column is not None
+        and currency_label_column < len(row.cells)
+        and amount_column < len(row.cells)
+    ):
+        label_text = row.cells[currency_label_column].text.strip()
+        amount_text = row.cells[amount_column].text.strip()
+        if _is_iso_currency_code(label_text):
+            return label_text.upper(), parse_amount(amount_text)
+    return None, None
+
+
+def _record_fixed_fee(
+    currency: str,
+    amount: str,
+    row_idx: int,
+    table: Table,
+    fees: list[FixedFees],
+    selected_rows: list[int],
+    by_currency: dict[str, str],
+    observations: list[ClassificationObservation],
+) -> None:
+    existing = by_currency.get(currency)
+    if existing is not None and existing != amount:
+        observations.append(
+            ClassificationObservation(
+                kind=ObservationKind.EXTRACTION_CONFLICT,
+                category=FeeCategory.FIXED_FEE,
+                table_id=table.table_id or table.document_id,
+                message=f"conflicting fixed fee for {currency}: {existing} vs {amount}",
+            )
+        )
+        return
+    if existing == amount:
+        return
+    by_currency[currency] = amount
+    selected_rows.append(row_idx)
+    fees.append(FixedFees(currency=currency, amount=amount))
+
+
 def extract_fixed_fees(table: Table, profile: TableProfile) -> ExtractionDecision[list[FixedFees]]:
     """Extract fixed-fee rows as a list of (currency, amount) values.
 
@@ -499,40 +589,14 @@ def extract_fixed_fees(table: Table, profile: TableProfile) -> ExtractionDecisio
     selected_rows: list[int] = []
 
     roles = _column_roles(profile, table)
-    currency_label_column = roles.currency_label_column
-    amount_column = roles.amount_column
 
     for row_idx, row in enumerate(table.rows):
         if profile.rows[row_idx].is_probable_header or profile.rows[row_idx].is_probable_note:
             continue
 
-        amount: str | None = None
-        currency: str | None = None
-
-        moneys = _moneys_in_row(row)
-        if len(moneys) > 1:
-            observations.append(
-                ClassificationObservation(
-                    kind=ObservationKind.EXTRACTION_CONFLICT,
-                    category=FeeCategory.FIXED_FEE,
-                    table_id=table.table_id or table.document_id,
-                    message=f"row {row_idx} has {len(moneys)} money tokens",
-                )
-            )
+        currency, amount = _fixed_fee_pair_from_row(row, row_idx, roles, table, observations)
+        if currency is None and amount is None:
             continue
-
-        if moneys:
-            col, amount, currency = moneys[0]
-        elif currency_label_column is not None and amount_column is not None:
-            if currency_label_column < len(row.cells) and amount_column < len(row.cells):
-                label_text = row.cells[currency_label_column].text.strip()
-                amount_text = row.cells[amount_column].text.strip()
-                if _is_iso_currency_code(label_text):
-                    amount = parse_amount(amount_text)
-                    currency = label_text.upper()
-        else:
-            continue
-
         if not currency or not amount:
             observations.append(
                 ClassificationObservation(
@@ -544,23 +608,7 @@ def extract_fixed_fees(table: Table, profile: TableProfile) -> ExtractionDecisio
             )
             continue
 
-        existing = by_currency.get(currency)
-        if existing is not None and existing != amount:
-            observations.append(
-                ClassificationObservation(
-                    kind=ObservationKind.EXTRACTION_CONFLICT,
-                    category=FeeCategory.FIXED_FEE,
-                    table_id=table.table_id or table.document_id,
-                    message=f"conflicting fixed fee for {currency}: {existing} vs {amount}",
-                )
-            )
-            continue
-        if existing == amount:
-            continue
-
-        by_currency[currency] = amount
-        selected_rows.append(row_idx)
-        fees.append(FixedFees(currency=currency, amount=amount))
+        _record_fixed_fee(currency, amount, row_idx, table, fees, selected_rows, by_currency, observations)
 
     if not fees:
         observations.append(
@@ -601,6 +649,33 @@ def _normalize_region(text: str) -> str | None:
         return "OTHER"
 
     return None
+
+
+def _surcharge_row_label(
+    row: Row,
+    label_column: int | None,
+    percentage_columns: tuple[int, ...],
+) -> str:
+    if label_column is not None and label_column < len(row.cells):
+        return row.cells[label_column].text
+    for idx, cell in enumerate(row.cells):
+        if idx in percentage_columns:
+            continue
+        if cell.text.strip():
+            return cell.text
+    return ""
+
+
+def _resolve_surcharge_region(
+    label: str,
+    market_code: str | None,
+) -> str:
+    region = _normalize_region(label)
+    if market_code and region is None and market_code_matches(label, market_code):
+        region = market_code.upper()
+    if region is None:
+        region = "UNKNOWN"
+    return region
 
 
 def extract_international_surcharges(
@@ -645,7 +720,6 @@ def extract_international_surcharges(
         if not pcts:
             continue
 
-        # If there are multiple percentages, report ambiguity and continue.
         assigned_pcts = [pct for col, pct in pcts if col == pct_column]
         if not assigned_pcts:
             assigned_pcts = [pct for _, pct in pcts]
@@ -664,24 +738,8 @@ def extract_international_surcharges(
         pct = assigned_pcts[0]
         selected_rows.append(row_idx)
 
-        label = ""
-        if label_column is not None and label_column < len(row.cells):
-            label = row.cells[label_column].text
-        else:
-            # Fall back to the first non-value cell.
-            for idx, cell in enumerate(row.cells):
-                if idx in percentage_columns:
-                    continue
-                if cell.text.strip():
-                    label = cell.text
-                    break
-
-        region = _normalize_region(label)
-        if market_code and region is None and market_code_matches(label, market_code):
-            region = market_code.upper()
-
-        if region is None:
-            region = "UNKNOWN"
+        label = _surcharge_row_label(row, label_column, percentage_columns)
+        region = _resolve_surcharge_region(label, market_code)
 
         if region in seen_regions:
             observations.append(
@@ -717,20 +775,33 @@ def extract_international_surcharges(
 # ---------------------------------------------------------------------------
 
 
-def extract_conversion_spread(
-    table: Table,
-    profile: TableProfile,
-    has_approved_evidence: bool = False,
-) -> ExtractionDecision[str]:
-    """Extract currency conversion spread percentage.
+_CONVERSION_KEYWORDS = (
+    "currency conversion",
+    "conversion",
+    "conversión",
+    "währungsumrechnung",
+    "umrechnung",
+    "wechselkurs",
+    "spread",
+    "base exchange rate",
+    "tipo de cambio",
+    "tipos de cambio",
+    "cambio",
+    "tasas de cambio",
+    "foreign exchange",
+    "exchange rate",
+    "prepočet",
+    "prepocet",
+    "zmena",
+    "zmena meny",
+    "výmenný",
+    "vymenny",
+    "výmenný kurz",
+    "vymenny kurz",
+)
 
-    For the first structural release, a conversion value is only returned when
-    approved evidence is present or the table is unambiguously conversion.
-    """
-    signals: list[EvidenceSignal] = []
-    observations: list[ClassificationObservation] = []
-    selected_rows: list[int] = []
 
+def _is_conversion_table(table: Table) -> bool:
     text = _norm(
         " ".join(
             [table.caption or ""]
@@ -739,47 +810,15 @@ def extract_conversion_spread(
             + [header.text for header in table.headers]
         )
     )
+    return any(kw in text for kw in _CONVERSION_KEYWORDS)
 
-    conversion_keywords = (
-        "currency conversion",
-        "conversion",
-        "conversión",
-        "währungsumrechnung",
-        "umrechnung",
-        "wechselkurs",
-        "spread",
-        "base exchange rate",
-        "tipo de cambio",
-        "tipos de cambio",
-        "cambio",
-        "tasas de cambio",
-        "foreign exchange",
-        "exchange rate",
-        "prepočet",
-        "prepocet",
-        "zmena",
-        "zmena meny",
-        "výmenný",
-        "vymenny",
-        "výmenný kurz",
-        "vymenny kurz",
-    )
-    is_conversion_table = any(kw in text for kw in conversion_keywords)
 
-    if not is_conversion_table and not has_approved_evidence:
-        observations.append(
-            ClassificationObservation(
-                kind=ObservationKind.UNKNOWN_FINGERPRINT,
-                category=FeeCategory.CURRENCY_CONVERSION,
-                table_id=table.table_id or table.document_id,
-                message="conversion table lacks approved evidence or unambiguous label",
-            )
-        )
-        return ExtractionDecision(
-            value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations)
-        )
-
-    roles = _column_roles(profile, table)
+def _collect_conversion_percentages(
+    table: Table,
+    profile: TableProfile,
+    roles: ColumnRoleAssignment,
+    observations: list[ClassificationObservation],
+) -> list[tuple[int, str]]:
     pcts: list[tuple[int, str]] = []
     for row_idx, row in enumerate(table.rows):
         if profile.rows[row_idx].is_probable_header or profile.rows[row_idx].is_probable_note:
@@ -799,6 +838,38 @@ def extract_conversion_spread(
             if roles.percentage_columns and col not in roles.percentage_columns:
                 continue
             pcts.append((row_idx, pct))
+    return pcts
+
+
+def extract_conversion_spread(
+    table: Table,
+    profile: TableProfile,
+    has_approved_evidence: bool = False,
+) -> ExtractionDecision[str]:
+    """Extract currency conversion spread percentage.
+
+    For the first structural release, a conversion value is only returned when
+    approved evidence is present or the table is unambiguously conversion.
+    """
+    signals: list[EvidenceSignal] = []
+    observations: list[ClassificationObservation] = []
+    selected_rows: list[int] = []
+
+    if not _is_conversion_table(table) and not has_approved_evidence:
+        observations.append(
+            ClassificationObservation(
+                kind=ObservationKind.UNKNOWN_FINGERPRINT,
+                category=FeeCategory.CURRENCY_CONVERSION,
+                table_id=table.table_id or table.document_id,
+                message="conversion table lacks approved evidence or unambiguous label",
+            )
+        )
+        return ExtractionDecision(
+            value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations)
+        )
+
+    roles = _column_roles(profile, table)
+    pcts = _collect_conversion_percentages(table, profile, roles, observations)
 
     if not pcts:
         observations.append(

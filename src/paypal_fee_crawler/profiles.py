@@ -244,108 +244,118 @@ def _token_metadata_sets(tokens: list[FeeToken]) -> tuple[set[str], set[str], se
     return keys, names, content_types
 
 
-def build_table_profile(table: Table, contexts: tuple[TableContext, ...] | None = None) -> TableProfile:
-    """Return a deterministic structural profile for *table*."""
-    rows = table.rows
-    num_rows = len(rows)
-    num_cols = max((len(row.cells) for row in rows), default=0) or table.column_count or 0
+def _column_count(table: Table) -> int:
+    return max((len(row.cells) for row in table.rows), default=0) or table.column_count or 0
 
-    row_profiles: list[RowProfile] = []
-    percentage_rows: set[int] = set()
-    money_rows: set[int] = set()
-    mixed_rows: set[int] = set()
-    currencies: set[str] = set()
-    additive_count = 0
 
+def _profile_row(idx: int, row: Row, num_rows: int) -> RowProfile:
+    pct_count = _percentage_count(row)
+    mon_count = _money_count(row)
+    row_currencies = {
+        token.currency for cell in row.cells for token in cell.tokens if token.kind == "money" and token.currency
+    }
+    row_tokens = [token for cell in row.cells for token in cell.tokens]
+    keys, names, cts = _token_metadata_sets(row_tokens)
+    add_pct = _additive_percentage_count(row)
+    return RowProfile(
+        row_index=idx,
+        cell_count=len(row.cells),
+        percentage_count=pct_count,
+        money_count=mon_count,
+        currencies=frozenset(row_currencies),
+        additive_percentage_count=add_pct,
+        fee_data_keys=frozenset(keys),
+        internal_names=frozenset(names),
+        content_types=frozenset(cts),
+        token_kind_pattern=tuple(_cell_kind_string(cell) for cell in row.cells),
+        is_probable_header=_is_probable_header(idx, row),
+        is_probable_note=_is_probable_note(idx, row, num_rows),
+    )
+
+
+def _build_row_profiles(rows: list[Row], num_rows: int) -> tuple[list[RowProfile], frozenset[str]]:
+    row_profiles = [_profile_row(idx, row, num_rows) for idx, row in enumerate(rows)]
+    currencies = {currency for profile in row_profiles for currency in profile.currencies}
+    return row_profiles, frozenset(currencies)
+
+
+def _column_cell_counts(cell: Cell) -> tuple[int, int, int, set[str]]:
+    cell_pcts = sum(1 for token in cell.tokens if token.kind == "percentage")
+    cell_mons = sum(1 for token in cell.tokens if token.kind == "money")
+    cell_amount = cell_mons + (1 if is_numeric_amount(cell.text) else 0)
+    cell_texts = int(bool(cell.text.strip() and not cell_pcts and not cell_amount))
+    currencies = {token.currency for token in cell.tokens if token.kind == "money" and token.currency}
+    return cell_pcts, cell_amount, cell_texts, currencies
+
+
+def _profile_column(
+    col: int,
+    rows: list[Row],
+    row_profiles: list[RowProfile],
+) -> tuple[ColumnProfile, bool, bool]:
+    pct_count = 0
+    mon_count = 0
+    text_count = 0
+    col_currencies: set[str] = set()
+    col_pattern: list[str] = []
+    data_rows = 0
     for idx, row in enumerate(rows):
-        pct_count = _percentage_count(row)
-        mon_count = _money_count(row)
-        row_currencies = {
-            token.currency for cell in row.cells for token in cell.tokens if token.kind == "money" and token.currency
-        }
-        currencies.update(row_currencies)
-        if pct_count:
-            percentage_rows.add(idx)
-        if mon_count:
-            money_rows.add(idx)
-        if pct_count and mon_count:
-            mixed_rows.add(idx)
+        if row_profiles[idx].is_probable_header or row_profiles[idx].is_probable_note:
+            continue
+        data_rows += 1
+        if col < len(row.cells):
+            cell = row.cells[col]
+            cell_pcts, cell_amount, cell_texts, cell_currencies = _column_cell_counts(cell)
+            if cell_pcts:
+                pct_count += 1
+            if cell_amount:
+                mon_count += 1
+            if cell_texts:
+                text_count += 1
+            col_currencies.update(cell_currencies)
+            col_pattern.append(_cell_kind_string(cell))
+        else:
+            col_pattern.append("missing")
+    is_percentage = data_rows > 0 and pct_count > 0 and pct_count / data_rows > 0.5
+    is_money = data_rows > 0 and mon_count > 0 and mon_count / data_rows > 0.5
+    return (
+        ColumnProfile(
+            column_index=col,
+            percentage_row_count=pct_count,
+            money_row_count=mon_count,
+            text_row_count=text_count,
+            currencies=frozenset(col_currencies),
+            token_kind_pattern=tuple(col_pattern),
+        ),
+        is_percentage,
+        is_money,
+    )
 
-        row_tokens = [token for cell in row.cells for token in cell.tokens]
-        keys, names, cts = _token_metadata_sets(row_tokens)
-        add_pct = _additive_percentage_count(row)
-        additive_count += add_pct
 
-        row_profiles.append(
-            RowProfile(
-                row_index=idx,
-                cell_count=len(row.cells),
-                percentage_count=pct_count,
-                money_count=mon_count,
-                currencies=frozenset(row_currencies),
-                additive_percentage_count=add_pct,
-                fee_data_keys=frozenset(keys),
-                internal_names=frozenset(names),
-                content_types=frozenset(cts),
-                token_kind_pattern=tuple(_cell_kind_string(cell) for cell in row.cells),
-                is_probable_header=_is_probable_header(idx, row),
-                is_probable_note=_is_probable_note(idx, row, num_rows),
-            )
-        )
-
-    all_tokens = _collect_tokens(table)
-    table_keys, table_names, table_cts = _token_metadata_sets(all_tokens)
-
+def _build_column_profiles(
+    rows: list[Row],
+    num_cols: int,
+    row_profiles: list[RowProfile],
+) -> tuple[tuple[ColumnProfile, ...], frozenset[int], frozenset[int]]:
+    column_profiles: list[ColumnProfile] = []
     percentage_columns: set[int] = set()
     money_columns: set[int] = set()
-    column_profiles: list[ColumnProfile] = []
-
     for col in range(num_cols):
-        pct_count = 0
-        mon_count = 0
-        text_count = 0
-        col_currencies: set[str] = set()
-        col_pattern: list[str] = []
-        data_rows = 0
-        for idx, row in enumerate(rows):
-            if row_profiles[idx].is_probable_header or row_profiles[idx].is_probable_note:
-                continue
-            data_rows += 1
-            if col < len(row.cells):
-                cell = row.cells[col]
-                cell_pcts = sum(1 for token in cell.tokens if token.kind == "percentage")
-                cell_mons = sum(1 for token in cell.tokens if token.kind == "money")
-                cell_amount = cell_mons + (1 if is_numeric_amount(cell.text) else 0)
-                cell_texts = int(bool(cell.text.strip() and not cell_pcts and not cell_amount))
-                if cell_pcts:
-                    pct_count += 1
-                if cell_amount:
-                    mon_count += 1
-                if cell_texts:
-                    text_count += 1
-                col_currencies.update(
-                    token.currency for token in cell.tokens if token.kind == "money" and token.currency
-                )
-                col_pattern.append(_cell_kind_string(cell))
-            else:
-                col_pattern.append("missing")
-        if data_rows and pct_count > 0 and pct_count / data_rows > 0.5:
+        profile, is_percentage, is_money = _profile_column(col, rows, row_profiles)
+        column_profiles.append(profile)
+        if is_percentage:
             percentage_columns.add(col)
-        if data_rows and mon_count > 0 and mon_count / data_rows > 0.5:
+        if is_money:
             money_columns.add(col)
-        column_profiles.append(
-            ColumnProfile(
-                column_index=col,
-                percentage_row_count=pct_count,
-                money_row_count=mon_count,
-                text_row_count=text_count,
-                currencies=frozenset(col_currencies),
-                token_kind_pattern=tuple(col_pattern),
-            )
-        )
+    return tuple(column_profiles), frozenset(percentage_columns), frozenset(money_columns)
 
+
+def _normalize_contexts(
+    table: Table,
+    contexts: tuple[TableContext, ...] | None,
+) -> tuple[TableContext, ...]:
     if contexts is None:
-        contexts = (
+        return (
             TableContext(
                 component_id=table.component_id,
                 caption=table.caption,
@@ -355,18 +365,40 @@ def build_table_profile(table: Table, contexts: tuple[TableContext, ...] | None 
                 reference_id=table.reference_id,
             ),
         )
+    return contexts
+
+
+def build_table_profile(table: Table, contexts: tuple[TableContext, ...] | None = None) -> TableProfile:
+    """Return a deterministic structural profile for *table*."""
+    rows = table.rows
+    num_rows = len(rows)
+    num_cols = _column_count(table)
+
+    row_profiles, currencies = _build_row_profiles(rows, num_rows)
+    percentage_rows = frozenset(profile.row_index for profile in row_profiles if profile.percentage_count)
+    money_rows = frozenset(profile.row_index for profile in row_profiles if profile.money_count)
+    mixed_rows = frozenset(
+        profile.row_index for profile in row_profiles if profile.percentage_count and profile.money_count
+    )
+    additive_count = sum(profile.additive_percentage_count for profile in row_profiles)
+
+    all_tokens = _collect_tokens(table)
+    table_keys, table_names, table_cts = _token_metadata_sets(all_tokens)
+
+    column_profiles, percentage_columns, money_columns = _build_column_profiles(rows, num_cols, row_profiles)
+    contexts = _normalize_contexts(table, contexts)
 
     return TableProfile(
         row_count=num_rows,
         column_count=num_cols,
         rows=tuple(row_profiles),
-        columns=tuple(column_profiles),
-        percentage_rows=frozenset(percentage_rows),
-        money_rows=frozenset(money_rows),
-        mixed_percentage_money_rows=frozenset(mixed_rows),
-        percentage_columns=frozenset(percentage_columns),
-        money_columns=frozenset(money_columns),
-        currencies=frozenset(currencies),
+        columns=column_profiles,
+        percentage_rows=percentage_rows,
+        money_rows=money_rows,
+        mixed_percentage_money_rows=mixed_rows,
+        percentage_columns=percentage_columns,
+        money_columns=money_columns,
+        currencies=currencies,
         additive_percentage_count=additive_count,
         fee_data_keys=frozenset(table_keys),
         internal_names=frozenset(table_names),

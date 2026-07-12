@@ -298,17 +298,7 @@ def _validate_generated_path_safety(root: Path, errors: list[str]) -> None:
             errors.append(f"Output targets protected repository path: {rel}")
 
 
-def validate_output_tree(root: Path | str) -> list[str]:
-    """Validate schemas and cross-file relationships in the generated tree.
-
-    ``root`` may be either a staging directory containing only generated files or
-    the root of the data git repository.  Validation intentionally ignores
-    unrelated non-managed files such as ``.git`` and ``README.md`` when they are
-    already present in the repository root.
-    """
-    root = Path(root)
-    errors: list[str] = []
-
+def _validate_required_files(root: Path) -> list[str]:
     required = [
         root / "json" / "index.json",
         root / "json" / "core-fees.json",
@@ -316,59 +306,67 @@ def validate_output_tree(root: Path | str) -> list[str]:
         root / "meta" / "schema-version.json",
         root / "meta" / "crawl-state.json",
     ]
-    for path in required:
-        if not path.exists():
-            errors.append(f"Missing required file: {_safe_rel(path, root)}")
+    return [f"Missing required file: {_safe_rel(path, root)}" for path in required if not path.exists()]
 
+
+def _validate_schema_files(root: Path) -> list[str]:
     schema_files = [
         "paypal-fees-v3.schema.json",
         "core-fees-v3.schema.json",
         "index-v3.schema.json",
         "manifest-v3.schema.json",
     ]
+    errors: list[str] = []
     for name in schema_files:
         if not (root / "schemas" / name).exists():
             errors.append(f"Missing schema file: schemas/{name}")
+    return errors
 
-    _validate_generated_path_safety(root, errors)
 
-    if errors:
-        return errors
-
+def _load_tree_model(
+    path: Path,
+    model_class: type,
+    label: str,
+    errors: list[str],
+) -> Any | None:
     try:
-        index_data = json.loads((root / "json" / "index.json").read_text(encoding="utf-8"))
-        index = CountryIndex.model_validate(index_data)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return model_class.model_validate(data)
     except Exception as exc:  # nosec B112 # noqa: S112
-        errors.append(f"json/index.json: {exc}")
-        return errors
+        errors.append(f"{label}: {exc}")
+        return None
 
-    try:
-        core_data = json.loads((root / "json" / "core-fees.json").read_text(encoding="utf-8"))
-        core = CoreFees.model_validate(core_data)
-    except Exception as exc:  # nosec B112 # noqa: S112
-        errors.append(f"json/core-fees.json: {exc}")
-        return errors
 
-    try:
-        manifest_data = json.loads((root / "meta" / "countries.json").read_text(encoding="utf-8"))
-        manifest = CountryManifest.model_validate(manifest_data)
-    except Exception as exc:  # nosec B112 # noqa: S112
-        errors.append(f"meta/countries.json: {exc}")
-        return errors
+def _load_tree_models(
+    root: Path,
+    errors: list[str],
+) -> tuple[CountryIndex | None, CoreFees | None, CountryManifest | None]:
+    index = _load_tree_model(root / "json" / "index.json", CountryIndex, "json/index.json", errors)
+    core = _load_tree_model(root / "json" / "core-fees.json", CoreFees, "json/core-fees.json", errors)
+    manifest = _load_tree_model(root / "meta" / "countries.json", CountryManifest, "meta/countries.json", errors)
+    return index, core, manifest
 
+
+def _validate_manifest_duplicates(manifest: CountryManifest, errors: list[str]) -> None:
+    market_codes = [m.paypal_market_code for m in manifest.markets]
+    if len(market_codes) != len(set(market_codes)):
+        errors.append("Duplicate PayPal market codes in manifest")
+    slugs = [m.url_slug for m in manifest.markets]
+    if len(slugs) != len(set(slugs)):
+        errors.append("Duplicate URL slugs in manifest")
+
+
+def _validate_index_manifest_consistency(index: CountryIndex, manifest: CountryManifest, errors: list[str]) -> None:
     supported = {entry.paypal_market_code for entry in index.countries}
     unsupported = {u.paypal_market_code for u in manifest.unsupported}
     if supported & unsupported:
         errors.append("Supported and unsupported market sets overlap")
 
-    market_codes = [m.paypal_market_code for m in manifest.markets]
-    if len(market_codes) != len(set(market_codes)):
-        errors.append("Duplicate PayPal market codes in manifest")
 
-    slugs = [m.url_slug for m in manifest.markets]
-    if len(slugs) != len(set(slugs)):
-        errors.append("Duplicate URL slugs in manifest")
-
+def _load_country_files(
+    root: Path,
+    errors: list[str],
+) -> dict[str, tuple[Path, PublicCountryOutput, dict[str, Any]]]:
     country_files: dict[str, tuple[Path, PublicCountryOutput, dict[str, Any]]] = {}
     for path in (root / "json").glob("*.json"):
         if path.name in {"index.json", "core-fees.json"}:
@@ -383,7 +381,51 @@ def validate_output_tree(root: Path | str) -> list[str]:
         if cc in country_files:
             errors.append(f"Duplicate country file for {cc}")
         country_files[cc] = (path, country, data)
+    return country_files
 
+
+def _validate_country_file(
+    entry: Any,
+    country_files: dict[str, tuple[Path, PublicCountryOutput, dict[str, Any]]],
+    root: Path,
+    errors: list[str],
+) -> None:
+    cc = entry.paypal_market_code
+    if cc not in country_files:
+        errors.append(f"Index entry {cc} has no country file")
+        return
+    path, country, data = country_files[cc]
+    slug = cc.lower()
+    expected_data_url = f"json/{slug}.json"
+    if entry.data_url != expected_data_url:
+        errors.append(f"Index data_url for {cc} is {entry.data_url}, expected {expected_data_url}")
+    rel = path.relative_to(root)
+    if str(rel) != entry.data_url:
+        errors.append(f"Country file path {rel} does not match index data_url {entry.data_url}")
+    if path.name != f"{slug}.json":
+        errors.append(f"Filename {path.name} does not match market slug {slug}")
+    if cc != country.market.paypal_market_code:
+        errors.append(f"Index market code {cc} disagrees with country file {country.market.paypal_market_code}")
+
+    expected_hash = _country_output_hash(data)
+    if entry.content_sha256 != expected_hash:
+        errors.append(f"Index content hash for {cc} does not match country file hash")
+
+    country_errors = validate_public_country_output(data, schema_only=False)
+    if country_errors:
+        errors.append(f"{path}: " + "; ".join(country_errors))
+
+    currencies = [fee.currency for fee in country.derived.commercial_fixed_fees]
+    if len(currencies) != len(set(currencies)):
+        errors.append(f"Duplicate fixed-fee currency entries for {cc}")
+
+
+def _validate_index_country_consistency(
+    index: CountryIndex,
+    country_files: dict[str, tuple[Path, PublicCountryOutput, dict[str, Any]]],
+    root: Path,
+    errors: list[str],
+) -> None:
     if len(index.countries) != len(country_files):
         errors.append(f"Index lists {len(index.countries)} countries but {len(country_files)} country files exist")
 
@@ -392,35 +434,10 @@ def validate_output_tree(root: Path | str) -> list[str]:
         errors.append("Duplicate data URLs in index")
 
     for entry in index.countries:
-        cc = entry.paypal_market_code
-        if cc not in country_files:
-            errors.append(f"Index entry {cc} has no country file")
-            continue
-        path, country, data = country_files[cc]
-        slug = cc.lower()
-        expected_data_url = f"json/{slug}.json"
-        if entry.data_url != expected_data_url:
-            errors.append(f"Index data_url for {cc} is {entry.data_url}, expected {expected_data_url}")
-        rel = path.relative_to(root)
-        if str(rel) != entry.data_url:
-            errors.append(f"Country file path {rel} does not match index data_url {entry.data_url}")
-        if path.name != f"{slug}.json":
-            errors.append(f"Filename {path.name} does not match market slug {slug}")
-        if cc != country.market.paypal_market_code:
-            errors.append(f"Index market code {cc} disagrees with country file {country.market.paypal_market_code}")
+        _validate_country_file(entry, country_files, root, errors)
 
-        expected_hash = _country_output_hash(data)
-        if entry.content_sha256 != expected_hash:
-            errors.append(f"Index content hash for {cc} does not match country file hash")
 
-        country_errors = validate_public_country_output(data, schema_only=False)
-        if country_errors:
-            errors.append(f"{path}: " + "; ".join(country_errors))
-
-        currencies = [fee.currency for fee in country.derived.commercial_fixed_fees]
-        if len(currencies) != len(set(currencies)):
-            errors.append(f"Duplicate fixed-fee currency entries for {cc}")
-
+def _validate_core_fees(core: CoreFees, supported: set[str], errors: list[str]) -> None:
     core_codes = {entry.paypal_market_code for entry in core.countries}
     if core_codes - supported:
         errors.append("Core-fees file contains markets not listed in the supported index")
@@ -435,8 +452,46 @@ def validate_output_tree(root: Path | str) -> list[str]:
             errors.append(f"Core-fee status mismatch for {entry.paypal_market_code}")
         errors.extend(_complete_derived_errors(entry.derived, f"Core-fee entry {entry.paypal_market_code}"))
 
+
+def _validate_supported_coverage(
+    country_files: dict[str, tuple[Path, PublicCountryOutput, dict[str, Any]]],
+    supported: set[str],
+    errors: list[str],
+) -> None:
     for cc in country_files:
         if cc not in supported:
             errors.append(f"Country file {cc} is not listed in the supported index")
+
+
+def validate_output_tree(root: Path | str) -> list[str]:
+    """Validate schemas and cross-file relationships in the generated tree.
+
+    ``root`` may be either a staging directory containing only generated files or
+    the root of the data git repository.  Validation intentionally ignores
+    unrelated non-managed files such as ``.git`` and ``README.md`` when they are
+    already present in the repository root.
+    """
+    root = Path(root)
+    errors: list[str] = []
+
+    errors.extend(_validate_required_files(root))
+    errors.extend(_validate_schema_files(root))
+    _validate_generated_path_safety(root, errors)
+
+    if errors:
+        return errors
+
+    index, core, manifest = _load_tree_models(root, errors)
+    if index is None or core is None or manifest is None:
+        return errors
+
+    _validate_index_manifest_consistency(index, manifest, errors)
+    _validate_manifest_duplicates(manifest, errors)
+
+    supported = {entry.paypal_market_code for entry in index.countries}
+    country_files = _load_country_files(root, errors)
+    _validate_index_country_consistency(index, country_files, root, errors)
+    _validate_core_fees(core, supported, errors)
+    _validate_supported_coverage(country_files, supported, errors)
 
     return errors

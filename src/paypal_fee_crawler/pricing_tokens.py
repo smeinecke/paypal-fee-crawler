@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -357,6 +358,29 @@ def normalize_pricing_token(
     )
 
 
+_CONTAINER_TYPES = {
+    "document",
+    "Document",
+    "rich-text",
+    "paragraph",
+    "Paragraph",
+    "text",
+    "Text",
+    "hyperlink",
+    "link",
+    "list",
+    "List",
+    "list-item",
+    "ListItem",
+}
+
+_EMBEDDED_TYPES = {
+    "EmbeddedEntryBlock",
+    "embedded-entry",
+    "embedded-entry-block",
+    "embedded-entry-inline",
+}
+
 _TOKENIZE_RE = re.compile(
     r"(?:(?P<currency_pre>[A-Z]{3})\s+)?(?P<operator>[+\-])?\s*(?P<value>[0-9]+(?:[.,][0-9]+)?)\s*(?P<currency_post>[A-Z]{3})?\s*(?P<suffix>%)?"
 )
@@ -449,6 +473,106 @@ def _render_text_node(node: dict[str, Any]) -> tuple[str, list[FeeToken], list[L
     return text, tokens, links
 
 
+_CHILD_CATEGORY = {
+    "text": "text",
+    "Text": "text",
+    "hyperlink": "link",
+    "link": "link",
+    "Hyperlink": "link",
+    "paragraph": "paragraph",
+    "Paragraph": "paragraph",
+    "list-item": "paragraph",
+    "ListItem": "paragraph",
+    "line-break": "linebreak",
+    "linebreak": "linebreak",
+    "LineBreak": "linebreak",
+    "embedded-entry-block": "embedded",
+    "embedded-entry": "embedded",
+    "embedded-entry-inline": "embedded",
+}
+
+
+def _render_text_child(child: dict[str, Any]) -> tuple[str, list[FeeToken], list[Link]]:
+    return _render_text_node(child)
+
+
+def _render_link_child(child: dict[str, Any]) -> tuple[str, list[FeeToken], list[Link]]:
+    rendered = render_rich_text_node(child)
+    text = rendered.text
+    if not text.strip():
+        return "", [], []
+    links: list[Link] = []
+    if rendered.links:
+        links = [Link(text=text, uri=link.uri) for link in rendered.links]
+    else:
+        uri = child.get("data", {}).get("uri") or child.get("data", {}).get("href")
+        if uri:
+            links = [Link(text=text, uri=uri)]
+    return text, rendered.tokens, links
+
+
+def _render_paragraph_child(child: dict[str, Any]) -> tuple[str, list[FeeToken], list[Link]]:
+    rendered = render_rich_text_node(child)
+    if rendered.text.strip():
+        return rendered.text, rendered.tokens, rendered.links
+    return "", [], []
+
+
+def _render_linebreak_child(child: dict[str, Any]) -> tuple[str, list[FeeToken], list[Link]]:
+    return "\n", [], []
+
+
+def _render_embedded_child(child: dict[str, Any]) -> tuple[str, list[FeeToken], list[Link]]:
+    rendered = render_rich_text_node(child)
+    if rendered.text.strip():
+        return rendered.text, rendered.tokens, rendered.links
+    return "", [], []
+
+
+def _render_default_child(child: dict[str, Any]) -> tuple[str, list[FeeToken], list[Link]]:
+    rendered = render_rich_text_node(child)
+    if rendered.text.strip():
+        return rendered.text, rendered.tokens, rendered.links
+    return "", [], []
+
+
+def _render_single_value_node(node: dict[str, Any]) -> Cell:
+    value = node.get("value") or node.get("text") or node.get("displayValue") or ""
+    if isinstance(value, dict):
+        return render_rich_text_node(value)
+    return Cell(text=str(value).strip())
+
+
+_CHILD_RENDERERS: dict[str, Callable[[dict[str, Any]], tuple[str, list[FeeToken], list[Link]]]] = {
+    "text": _render_text_child,
+    "link": _render_link_child,
+    "paragraph": _render_paragraph_child,
+    "linebreak": _render_linebreak_child,
+    "embedded": _render_embedded_child,
+    "default": _render_default_child,
+}
+
+
+def _render_child(child: Any) -> tuple[str, list[FeeToken], list[Link]]:
+    if not isinstance(child, dict):
+        return str(child), [], []
+    child_type = child.get("nodeType") or child.get("type") or ""
+    category = _CHILD_CATEGORY.get(child_type, "default")
+    return _CHILD_RENDERERS[category](child)
+
+
+def _render_children(content: list[Any]) -> tuple[list[str], list[FeeToken], list[Link]]:
+    text_parts: list[str] = []
+    tokens: list[FeeToken] = []
+    links: list[Link] = []
+    for child in content:
+        child_text, child_tokens, child_links = _render_child(child)
+        text_parts.append(child_text)
+        tokens.extend(child_tokens)
+        links.extend(child_links)
+    return text_parts, tokens, links
+
+
 def render_rich_text_node(node: Any) -> Cell:
     """Render a Contentful-like rich-text node into a lossless Cell."""
     if node is None:
@@ -459,77 +583,16 @@ def render_rich_text_node(node: Any) -> Cell:
         return Cell(text=str(node))
 
     node_type = node.get("nodeType") or node.get("type") or ""
-    text_parts: list[str] = []
-    tokens: list[FeeToken] = []
-    links: list[Link] = []
-
-    if (
-        node_type in {"document", "Document", "rich-text"}
-        or node_type in {"paragraph", "Paragraph", "text", "Text"}
-        or node_type in {"hyperlink", "link"}
-        or node_type in {"list", "List"}
-        or node_type in {"list-item", "ListItem"}
-    ):
-        content = node.get("content") or []
-    elif node_type in {"EmbeddedEntryBlock", "embedded-entry", "embedded-entry-block", "embedded-entry-inline"}:
+    if node_type in _EMBEDDED_TYPES:
         text, tokens, links = _render_text_node(node)
         return Cell(text=text, tokens=tokens, links=links)
-    elif "content" in node:
+
+    if node_type in _CONTAINER_TYPES or "content" in node:
         content = node.get("content") or []
     else:
-        # Single value node.
-        value = node.get("value") or node.get("text") or node.get("displayValue") or ""
-        if isinstance(value, dict):
-            return render_rich_text_node(value)
-        text = str(value).strip()
-        return Cell(text=text)
+        return _render_single_value_node(node)
 
-    for child in content:
-        if not isinstance(child, dict):
-            text_parts.append(str(child))
-            continue
-        child_type = child.get("nodeType") or child.get("type") or ""
-        if child_type in {"text", "Text"}:
-            child_text, child_tokens, child_links = _render_text_node(child)
-            text_parts.append(child_text)
-            tokens.extend(child_tokens)
-            links.extend(child_links)
-        elif child_type in {"hyperlink", "link", "Hyperlink"}:
-            # Render the link text and attach the URI.
-            rendered = render_rich_text_node(child)
-            if rendered.text.strip():
-                for link in rendered.links:
-                    links.append(Link(text=rendered.text, uri=link.uri))
-                if not rendered.links:
-                    data = child.get("data", {})
-                    uri = data.get("uri") or data.get("href")
-                    if uri:
-                        links.append(Link(text=rendered.text, uri=uri))
-                text_parts.append(rendered.text)
-                tokens.extend(rendered.tokens)
-        elif child_type in {"paragraph", "Paragraph", "list-item", "ListItem"}:
-            rendered = render_rich_text_node(child)
-            if rendered.text.strip():
-                text_parts.append(rendered.text)
-            tokens.extend(rendered.tokens)
-            links.extend(rendered.links)
-        elif child_type in {"line-break", "linebreak", "LineBreak"}:
-            text_parts.append("\n")
-        elif child_type in {"embedded-entry-block", "embedded-entry", "embedded-entry-inline"}:
-            rendered = render_rich_text_node(child)
-            if rendered.text.strip():
-                text_parts.append(rendered.text)
-            tokens.extend(rendered.tokens)
-            links.extend(rendered.links)
-        else:
-            # Generic recursion.
-            rendered = render_rich_text_node(child)
-            if rendered.text.strip():
-                text_parts.append(rendered.text)
-            tokens.extend(rendered.tokens)
-            links.extend(rendered.links)
-
+    text_parts, tokens, links = _render_children(content)
     full_text = "".join(text_parts)
-    # Normalize non-breaking spaces to regular spaces for readability but preserve in raw tokens.
     full_text = full_text.replace("\u00a0", " ").replace("\u202f", " ")
     return Cell(text=full_text.strip(), tokens=tokens, links=links)
