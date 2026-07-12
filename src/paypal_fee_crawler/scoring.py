@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-from .models import Cell, FeeToken, Row, Table
+from .models import FeeToken, Table
 from .normalize import clean_text
-from .profiles import TableProfile
+from .profiles import build_table_profile
 
 
 class FeeCategory(StrEnum):
@@ -476,19 +476,8 @@ def _table_text(table: Table, include_rows: bool = True) -> str:
     return _norm(" ".join(parts))
 
 
-def _row_text(row: Row) -> str:
-    return _norm(" ".join(cell.text for cell in row.cells))
-
-
-def _header_text(table: Table) -> str:
-    return _norm(" ".join(header.text for header in table.headers))
-
-
-def _cell_tokens(cell: Cell) -> list[FeeToken]:
-    return cell.tokens
-
-
 def _iter_tokens(table: Table) -> list[FeeToken]:
+    """Return all tokens from a table's headers and rows."""
     tokens: list[FeeToken] = []
     for header in table.headers:
         tokens.extend(header.tokens)
@@ -496,93 +485,6 @@ def _iter_tokens(table: Table) -> list[FeeToken]:
         for cell in row.cells:
             tokens.extend(cell.tokens)
     return tokens
-
-
-def _percentage_count(row: Row) -> int:
-    return sum(1 for cell in row.cells for token in cell.tokens if token.kind == "percentage")
-
-
-def _money_count(row: Row) -> int:
-    return sum(1 for cell in row.cells for token in cell.tokens if token.kind == "money")
-
-
-def _has_percentage(row: Row) -> bool:
-    return _percentage_count(row) > 0
-
-
-def _has_money(row: Row) -> bool:
-    return _money_count(row) > 0
-
-
-def _table_profile(table: Table) -> TableProfile:
-    """Return a simple structural profile for a table."""
-    rows = table.rows
-    num_rows = len(rows)
-    num_cols = max((len(row.cells) for row in rows), default=0) or table.column_count or 0
-
-    row_percentages = frozenset(i for i, row in enumerate(rows) if _has_percentage(row))
-    row_moneys = frozenset(i for i, row in enumerate(rows) if _has_money(row))
-    mixed_rows = frozenset(i for i, row in enumerate(rows) if _has_percentage(row) and _has_money(row))
-
-    # Column counts: a column is a percentage/money column if a majority of data
-    # rows in that column carry the token kind.
-    percentage_columns: set[int] = set()
-    money_columns: set[int] = set()
-    for col in range(num_cols):
-        pct_rows = sum(1 for i, row in enumerate(rows) if col < len(row.cells) and _cell_has_kind(row.cells[col], "percentage"))
-        money_rows = sum(1 for i, row in enumerate(rows) if col < len(row.cells) and _cell_has_kind(row.cells[col], "money"))
-        if pct_rows > 0 and pct_rows / max(num_rows, 1) > 0.5:
-            percentage_columns.add(col)
-        if money_rows > 0 and money_rows / max(num_rows, 1) > 0.5:
-            money_columns.add(col)
-
-    currencies: set[str] = set()
-    for row in rows:
-        for cell in row.cells:
-            for token in cell.tokens:
-                if token.kind == "money" and token.currency:
-                    currencies.add(token.currency)
-
-    additive = any(
-        token.operator == "add" or _percentage_count(row) > 1
-        for row in rows
-        for cell in row.cells
-        for token in cell.tokens
-        if token.kind == "percentage"
-    )
-
-    metadata_keys: set[str] = set()
-    internal_names: set[str] = set()
-    content_types: set[str] = set()
-    for token in _iter_tokens(table):
-        if token.fee_data_key:
-            metadata_keys.add(token.fee_data_key.lower())
-        if token.internal_name:
-            internal_names.add(token.internal_name.lower())
-        if token.content_type:
-            content_types.add(token.content_type.lower())
-
-    return {
-        "row_count": num_rows,
-        "column_count": num_cols,
-        "row_percentages": row_percentages,
-        "row_moneys": row_moneys,
-        "mixed_rows": mixed_rows,
-        "percentage_columns": frozenset(percentage_columns),
-        "money_columns": frozenset(money_columns),
-        "currencies": frozenset(currencies),
-        "multiple_currencies": len(currencies) > 1,
-        "additive_percentages": additive,
-        "metadata_keys": frozenset(metadata_keys),
-        "internal_names": frozenset(internal_names),
-        "content_types": frozenset(content_types),
-        "has_percentage": bool(row_percentages),
-        "has_money": bool(row_moneys),
-    }
-
-
-def _cell_has_kind(cell: Cell, kind: str) -> bool:
-    return any(token.kind == kind for token in cell.tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -680,24 +582,24 @@ def _metadata_matches_category(table: Table, category: FeeCategory) -> tuple[boo
 def score_standard_commercial(table: Table, market_code: str | None = None, locale: str | None = None) -> ScoreResult:
     """Score a table for the standard-commercial category."""
     category = FeeCategory.STANDARD_COMMERCIAL
-    profile = _table_profile(table)
+    profile = build_table_profile(table)
     signals: list[EvidenceSignal] = []
     blockers: list[BlockerCode] = []
 
-    if not profile["has_percentage"]:
+    if not profile.has_percentage:
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
     else:
-        if profile["percentage_columns"]:
+        if profile.percentage_columns:
             _add_signal(signals, EvidenceCode.HAS_PERCENTAGE_COLUMN, EvidenceSource.STRUCTURAL, 40)
-        if profile["mixed_rows"]:
+        if profile.mixed_percentage_money_rows:
             _add_signal(signals, EvidenceCode.HAS_MIXED_PERCENT_MONEY_ROW, EvidenceSource.STRUCTURAL, 25)
-        if profile["additive_percentages"]:
+        if profile.has_additive_percentages:
             _add_signal(signals, EvidenceCode.HAS_ADDITIVE_PERCENTAGES, EvidenceSource.STRUCTURAL, 10)
 
-    if not profile["has_percentage"] and not profile["has_money"]:
+    if not profile.has_percentage and not profile.has_money:
         blockers.append(BlockerCode.NO_USABLE_VALUES)
 
-    if profile["money_columns"] and not profile["percentage_columns"]:
+    if profile.money_columns and not profile.percentage_columns:
         # A pure money table is not standard commercial.
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
 
@@ -731,24 +633,24 @@ def score_standard_commercial(table: Table, market_code: str | None = None, loca
 def score_fixed_fee(table: Table, market_code: str | None = None, locale: str | None = None) -> ScoreResult:
     """Score a table for the fixed-fee category."""
     category = FeeCategory.FIXED_FEE
-    profile = _table_profile(table)
+    profile = build_table_profile(table)
     signals: list[EvidenceSignal] = []
     blockers: list[BlockerCode] = []
 
-    if not profile["has_money"]:
+    if not profile.has_money:
         blockers.append(BlockerCode.ONLY_PERCENTAGES_FOR_FIXED_FEE)
     else:
-        if profile["money_columns"]:
+        if profile.money_columns:
             _add_signal(signals, EvidenceCode.HAS_MONEY_COLUMN, EvidenceSource.STRUCTURAL, 40)
-        if profile["multiple_currencies"]:
+        if profile.has_multiple_currencies:
             _add_signal(signals, EvidenceCode.HAS_MULTIPLE_CURRENCIES, EvidenceSource.STRUCTURAL, 20)
-        if profile["mixed_rows"]:
+        if profile.mixed_percentage_money_rows:
             _add_signal(signals, EvidenceCode.HAS_MIXED_PERCENT_MONEY_ROW, EvidenceSource.STRUCTURAL, 5)
 
-    if not profile["has_percentage"] and not profile["has_money"]:
+    if not profile.has_percentage and not profile.has_money:
         blockers.append(BlockerCode.NO_USABLE_VALUES)
 
-    if profile["has_percentage"] and not profile["has_money"]:
+    if profile.has_percentage and not profile.has_money:
         blockers.append(BlockerCode.ONLY_PERCENTAGES_FOR_FIXED_FEE)
 
     doc_id = (table.document_id or "").upper()
@@ -781,24 +683,24 @@ def score_fixed_fee(table: Table, market_code: str | None = None, locale: str | 
 def score_international_surcharge(table: Table, market_code: str | None = None, locale: str | None = None) -> ScoreResult:
     """Score a table for the international-surcharge category."""
     category = FeeCategory.INTERNATIONAL_SURCHARGE
-    profile = _table_profile(table)
+    profile = build_table_profile(table)
     signals: list[EvidenceSignal] = []
     blockers: list[BlockerCode] = []
 
-    if not profile["has_percentage"]:
+    if not profile.has_percentage:
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
     else:
-        if profile["percentage_columns"]:
+        if profile.percentage_columns:
             _add_signal(signals, EvidenceCode.HAS_PERCENTAGE_COLUMN, EvidenceSource.STRUCTURAL, 40)
-        if profile["multiple_currencies"]:
+        if profile.has_multiple_currencies:
             _add_signal(signals, EvidenceCode.HAS_MULTIPLE_CURRENCIES, EvidenceSource.STRUCTURAL, 10)
-        if profile["additive_percentages"]:
+        if profile.has_additive_percentages:
             _add_signal(signals, EvidenceCode.HAS_ADDITIVE_PERCENTAGES, EvidenceSource.STRUCTURAL, 25)
 
-    if not profile["has_percentage"] and not profile["has_money"]:
+    if not profile.has_percentage and not profile.has_money:
         blockers.append(BlockerCode.NO_USABLE_VALUES)
 
-    if profile["has_money"] and not profile["has_percentage"]:
+    if profile.has_money and not profile.has_percentage:
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
 
     doc_id = (table.document_id or "").upper()
@@ -831,24 +733,24 @@ def score_international_surcharge(table: Table, market_code: str | None = None, 
 def score_conversion(table: Table, market_code: str | None = None, locale: str | None = None) -> ScoreResult:
     """Score a table for the currency-conversion category."""
     category = FeeCategory.CURRENCY_CONVERSION
-    profile = _table_profile(table)
+    profile = build_table_profile(table)
     signals: list[EvidenceSignal] = []
     blockers: list[BlockerCode] = []
 
-    if not profile["has_percentage"]:
+    if not profile.has_percentage:
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
     else:
-        if profile["percentage_columns"]:
+        if profile.percentage_columns:
             _add_signal(signals, EvidenceCode.HAS_PERCENTAGE_COLUMN, EvidenceSource.STRUCTURAL, 40)
-        if profile["multiple_currencies"]:
+        if profile.has_multiple_currencies:
             _add_signal(signals, EvidenceCode.HAS_MULTIPLE_CURRENCIES, EvidenceSource.STRUCTURAL, 10)
-        if profile["additive_percentages"]:
+        if profile.has_additive_percentages:
             _add_signal(signals, EvidenceCode.HAS_ADDITIVE_PERCENTAGES, EvidenceSource.STRUCTURAL, 25)
 
-    if not profile["has_percentage"] and not profile["has_money"]:
+    if not profile.has_percentage and not profile.has_money:
         blockers.append(BlockerCode.NO_USABLE_VALUES)
 
-    if profile["has_money"] and not profile["has_percentage"]:
+    if profile.has_money and not profile.has_percentage:
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
 
     doc_id = (table.document_id or "").upper()
@@ -874,7 +776,7 @@ def score_conversion(table: Table, market_code: str | None = None, locale: str |
     has_strong_evidence = bool(
         {EvidenceCode.KNOWN_DOCUMENT_ID, EvidenceCode.METADATA_KEY_MATCH, EvidenceCode.INTERNAL_NAME_MATCH}
         & {s.code for s in signals}
-        or len(profile["percentage_columns"]) >= 1
+        or len(profile.percentage_columns) >= 1
         and lexical > 0
     )
     if not has_strong_evidence and not blockers:
