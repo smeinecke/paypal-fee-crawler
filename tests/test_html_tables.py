@@ -121,6 +121,22 @@ def test_extract_html_pdf_url_missing() -> None:
     assert extract_html_pdf_url(html) is None
 
 
+def test_extract_html_tables_context() -> None:
+    html = """
+    <h1>Merchant Fees</h1>
+    <h2>Domestic</h2>
+    <table>
+        <tr><th>Fee</th></tr>
+        <tr><td>2.49% + 0.35 EUR</td></tr>
+    </table>
+    """
+    sections, tables, warnings = extract_html_tables(html)
+    table = tables[0]
+    assert table.component_id == "html-table-0"
+    assert table.section_path == ["Merchant Fees", "Domestic"]
+    assert table.parent_path == ["Merchant Fees", "Domestic"]
+
+
 def test_extract_html_locale() -> None:
     html = '<html lang="de-DE"><body></body></html>'
     assert extract_html_locale(html) == "de-DE"

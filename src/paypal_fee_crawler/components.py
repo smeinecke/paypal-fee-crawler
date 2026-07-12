@@ -9,6 +9,7 @@ from typing import Any
 
 from .models import Cell, ParserWarning, Row, Section, Table, TableHeader
 from .pricing_tokens import render_rich_text_node
+from .profiles import NormalizedTableRecord, TableContext
 
 logger = logging.getLogger(__name__)
 
@@ -87,9 +88,11 @@ class ComponentsExtractor:
 
     def __init__(self) -> None:
         self.tables: list[Table] = []
+        self.table_records: list[NormalizedTableRecord] = []
         self.sections: list[Section] = []
         self.warnings: list[ParserWarning] = []
         self._table_by_id: dict[str, Table] = {}
+        self._table_records_by_id: dict[str, NormalizedTableRecord] = {}
         self._path: list[str] = []
         self._section_path: list[str] = []
         self._source_order: int = 0
@@ -98,9 +101,11 @@ class ComponentsExtractor:
     def extract(self, cms: dict[str, Any]) -> tuple[list[Section], list[Table], list[ParserWarning]]:
         """Return (sections, tables, warnings)."""
         self.tables = []
+        self.table_records = []
         self.sections = []
         self.warnings = []
         self._table_by_id = {}
+        self._table_records_by_id = {}
         self._path = []
         self._section_path = []
         self._source_order = 0
@@ -109,6 +114,7 @@ class ComponentsExtractor:
         self._traverse(cms)
         self._resolve_references()
         self._assign_table_ids()
+        self.tables = [record.table for record in self.table_records]
         return self.sections, self.tables, self.warnings
 
     def _traverse(self, data: Any) -> None:
@@ -223,37 +229,52 @@ class ComponentsExtractor:
 
         if component_type == "FeeTableReference" and document_id:
             self._source_order += 1
-            self.tables.append(
-                Table(
-                    component_type="FeeTableReference",
-                    document_id=str(document_id),
-                    component_id=component_id,
-                    caption=caption,
-                    section_path=list(self._section_path),
-                    parent_path=list(self._path),
-                    source_order=self._source_order,
-                    source_table_ids=[str(document_id)],
-                    reference_id=str(document_id),
-                )
+            table = Table(
+                component_type="FeeTableReference",
+                document_id=str(document_id),
+                component_id=component_id,
+                caption=caption,
+                section_path=list(self._section_path),
+                parent_path=list(self._path),
+                source_order=self._source_order,
+                source_table_ids=[str(document_id)],
+                reference_id=str(document_id),
             )
+            context = TableContext.from_table(table)
+            record = NormalizedTableRecord(table=table, contexts=(context,))
+            self.tables.append(table)
+            self.table_records.append(record)
             return
 
         if component_type == "FeeTable":
             self._source_order += 1
             table = self._build_table(data, document_id, component_id, caption)
             if table is not None:
+                context = TableContext.from_table(table)
+                record = NormalizedTableRecord(table=table, contexts=(context,))
                 # Distinct components (split tables) keep their own document IDs
                 # and are not merged by caption alone. Duplicate document IDs are
                 # merged so a referenced table and its source stay consistent.
-                if table.document_id and table.document_id in self._table_by_id:
-                    existing = self._table_by_id[table.document_id]
-                    merged = self._merge_tables(existing, table)
-                    self._table_by_id[table.document_id] = merged
-                    self.tables = [merged if t.document_id == table.document_id else t for t in self.tables]
+                if table.document_id and table.document_id in self._table_records_by_id:
+                    existing = self._table_records_by_id[table.document_id]
+                    merged_table = self._merge_tables(existing.table, table)
+                    merged_record = self._merge_table_records(existing, record, merged_table)
+                    self._table_by_id[table.document_id] = merged_table
+                    self._table_records_by_id[table.document_id] = merged_record
+                    self.tables = [
+                        merged_table if t.document_id == table.document_id else t
+                        for t in self.tables
+                    ]
+                    self.table_records = [
+                        merged_record if r.table.document_id == table.document_id else r
+                        for r in self.table_records
+                    ]
                     return
                 if table.document_id:
                     self._table_by_id[table.document_id] = table
+                    self._table_records_by_id[table.document_id] = record
                 self.tables.append(table)
+                self.table_records.append(record)
             return
 
         # FeeTableSection, FeeTableRow, and FeeTableSplitRow are handled through
@@ -430,7 +451,9 @@ class ComponentsExtractor:
 
     def _assign_table_ids(self) -> None:
         """Assign a stable internal identity to every physical table."""
-        for table in self.tables:
+        updated: list[NormalizedTableRecord] = []
+        for record in self.table_records:
+            table = record.table
             parts = [
                 table.component_type or "table",
                 table.document_id or table.component_id or "",
@@ -438,7 +461,10 @@ class ComponentsExtractor:
             ]
             table_id = "::".join(p for p in parts if p)
             # Reassign via model_copy because the model is frozen.
-            self.tables[self.tables.index(table)] = table.model_copy(update={"table_id": table_id})
+            updated_table = table.model_copy(update={"table_id": table_id})
+            updated.append(NormalizedTableRecord(table=updated_table, contexts=record.contexts))
+        self.table_records = updated
+        self.tables = [record.table for record in self.table_records]
 
     def _merge_tables(self, first: Table, second: Table) -> Table:
         """Merge two tables with the same document ID, preserving order and IDs."""
@@ -456,32 +482,50 @@ class ComponentsExtractor:
             }
         )
 
+    def _merge_table_records(
+        self,
+        first: NormalizedTableRecord,
+        second: NormalizedTableRecord,
+        merged_table: Table,
+    ) -> NormalizedTableRecord:
+        """Merge two records for the same document ID, preserving contexts."""
+        combined = list(first.contexts)
+        for context in second.contexts:
+            if context not in combined:
+                combined.append(context)
+        return NormalizedTableRecord(table=merged_table, contexts=tuple(combined))
+
     def _resolve_references(self) -> None:
         """Resolve FeeTableReference placeholders to their target tables."""
-        # Index target tables by document ID.
-        targets: dict[str, Table] = {}
-        for table in self.tables:
-            if table.component_type == "FeeTable" and table.document_id:
-                if table.document_id in targets:
-                    existing = targets[table.document_id]
-                    targets[table.document_id] = self._merge_tables(existing, table)
+        # Index target records by document ID.
+        target_records: dict[str, NormalizedTableRecord] = {}
+        for record in self.table_records:
+            if record.table.component_type == "FeeTable" and record.table.document_id:
+                if record.table.document_id in target_records:
+                    existing = target_records[record.table.document_id]
+                    merged_table = self._merge_tables(existing.table, record.table)
+                    target_records[record.table.document_id] = self._merge_table_records(
+                        existing, record, merged_table
+                    )
                 else:
-                    targets[table.document_id] = table
+                    target_records[record.table.document_id] = record
 
-        reference_tables: list[Table] = []
-        content_tables: list[Table] = []
-        for table in self.tables:
+        reference_records: list[NormalizedTableRecord] = []
+        content_records: list[NormalizedTableRecord] = []
+        for record in self.table_records:
+            table = record.table
             if table.component_type == "FeeTableReference" or (
                 table.source_table_ids and not table.rows and not table.headers
             ):
-                reference_tables.append(table)
+                reference_records.append(record)
             else:
-                content_tables.append(table)
+                content_records.append(record)
 
-        for ref in reference_tables:
+        for ref_record in reference_records:
+            ref = ref_record.table
             target_id = ref.source_table_ids[0]
-            target = targets.get(target_id)
-            if target is None:
+            target_record = target_records.get(target_id)
+            if target_record is None:
                 self.warnings.append(
                     ParserWarning(
                         code="unresolved_table_reference",
@@ -489,38 +533,47 @@ class ComponentsExtractor:
                         context={"document_id": target_id, "component_id": ref.component_id},
                     )
                 )
-                content_tables.append(ref)
+                content_records.append(ref_record)
                 continue
-            merged = self._merge_tables(
-                target,
-                Table(
-                    component_type="FeeTableReference",
-                    document_id=target.document_id,
-                    component_id=ref.component_id,
-                    caption=ref.caption,
-                    section_path=ref.section_path,
-                    parent_path=ref.parent_path,
-                    source_order=ref.source_order,
-                    column_count=target.column_count,
-                    declared_column_count=target.declared_column_count,
-                    headers=[],
-                    rows=[],
-                    source_table_ids=[target_id],
-                    reference_id=ref.reference_id,
-                ),
+            ref_table = Table(
+                component_type="FeeTableReference",
+                document_id=target_record.table.document_id,
+                component_id=ref.component_id,
+                caption=ref.caption,
+                section_path=ref.section_path,
+                parent_path=ref.parent_path,
+                source_order=ref.source_order,
+                column_count=target_record.table.column_count,
+                declared_column_count=target_record.table.declared_column_count,
+                headers=[],
+                rows=[],
+                source_table_ids=[target_id],
+                reference_id=ref.reference_id,
             )
-            targets[target_id] = merged
-            content_tables = [
-                merged
-                if t.document_id == target.document_id
-                and t.component_id == target.component_id
-                and t.component_type != "FeeTableReference"
-                else t
-                for t in content_tables
+            merged_table = self._merge_tables(target_record.table, ref_table)
+            merged_record = self._merge_table_records(
+                target_record,
+                NormalizedTableRecord(table=ref_table, contexts=ref_record.contexts),
+                merged_table,
+            )
+            target_records[target_id] = merged_record
+            content_records = [
+                merged_record
+                if r.table.document_id == target_record.table.document_id
+                and r.table.component_id == target_record.table.component_id
+                and r.table.component_type != "FeeTableReference"
+                else r
+                for r in content_records
             ]
 
-        self.tables = content_tables
-        self._table_by_id = {t.document_id: t for t in content_tables if t.document_id}
+        self.table_records = content_records
+        self.tables = [record.table for record in content_records]
+        self._table_by_id = {t.document_id: t for t in self.tables if t.document_id}
+        self._table_records_by_id = {
+            record.table.document_id: record
+            for record in content_records
+            if record.table.document_id
+        }
 
     def has_any_table(self) -> bool:
         return bool(self.tables)

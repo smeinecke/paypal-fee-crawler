@@ -149,8 +149,11 @@ def extract_html_tables(
         tables.append(
             Table(
                 component_type="FeeTable",
+                component_id=f"html-table-{source_order}",
+                document_id=None,
                 caption=caption or None,
                 section_path=section_path,
+                parent_path=list(section_path),
                 source_order=source_order,
                 column_count=len(headers) or (len(rows[0].cells) if rows else 0),
                 headers=headers,

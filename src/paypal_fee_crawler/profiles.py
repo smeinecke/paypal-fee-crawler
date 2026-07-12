@@ -26,10 +26,22 @@ class TableContext(BaseModel):
 
     component_id: str | None = None
     caption: str | None = None
-    section_path: list[str] = []
-    parent_path: list[str] = []
+    section_path: tuple[str, ...] = ()
+    parent_path: tuple[str, ...] = ()
     source_order: int = 0
     reference_id: str | None = None
+
+    @classmethod
+    def from_table(cls, table: Table) -> TableContext:
+        """Build a context from an existing table."""
+        return cls(
+            component_id=table.component_id,
+            caption=table.caption,
+            section_path=tuple(table.section_path or []),
+            parent_path=tuple(table.parent_path or []),
+            source_order=table.source_order,
+            reference_id=table.reference_id,
+        )
 
 
 @dataclass(frozen=True)
@@ -110,6 +122,25 @@ class TableProfile:
     @property
     def has_additive_percentages(self) -> bool:
         return self.additive_percentage_count > 0
+
+
+@dataclass(frozen=True)
+class NormalizedTableRecord:
+    """Internal pairing of a table with its preserved occurrence contexts."""
+
+    table: Table
+    contexts: tuple[TableContext, ...] = ()
+
+    def merge(self, other: NormalizedTableRecord) -> NormalizedTableRecord:
+        """Return a new record with the same table and merged contexts."""
+        combined = list(self.contexts)
+        for context in other.contexts:
+            if context not in combined:
+                combined.append(context)
+        return NormalizedTableRecord(
+            table=self.table,
+            contexts=tuple(combined),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -319,8 +350,8 @@ def build_table_profile(table: Table, context: TableContext | None = None) -> Ta
             TableContext(
                 component_id=table.component_id,
                 caption=table.caption,
-                section_path=list(table.section_path or []),
-                parent_path=list(table.parent_path or []),
+                section_path=tuple(table.section_path or []),
+                parent_path=tuple(table.parent_path or []),
                 source_order=table.source_order,
                 reference_id=table.reference_id,
             ),
