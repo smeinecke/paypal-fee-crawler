@@ -141,6 +141,30 @@ def test_cli_crawl_command(tmp_path: Path) -> None:
     assert (tmp_path / "json" / "us.json").exists()
 
 
+def test_cli_crawl_command_shadow_mode(tmp_path: Path) -> None:
+    runner = CliRunner()
+    with patch.object(HttpClient, "get", _fake_http_get):
+        result = runner.invoke(
+            main,
+            [
+                "crawl",
+                "--output",
+                str(tmp_path),
+                "--country",
+                "DE",
+                "--request-delay",
+                "0",
+                "--max-workers",
+                "1",
+                "--classifier-mode",
+                "shadow",
+            ],
+        )
+    assert result.exit_code in (0, 1), result.output
+    assert (tmp_path / "json" / "de.json").exists()
+    assert (tmp_path / "meta" / "classification-shadow.json").exists()
+
+
 def test_cli_crawl_command_fail_on_warning(tmp_path: Path) -> None:
     runner = CliRunner()
     with patch.object(HttpClient, "get", _fake_http_get):

@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
 import shutil
 import tempfile
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel
 
 from .exceptions import ValidationError as CrawlerValidationError
 from .models import (
@@ -34,6 +38,25 @@ from .validation import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _to_jsonable(obj: Any) -> Any:
+    """Recursively convert dataclasses, Pydantic models and enums to JSON-compatible plain objects."""
+    if isinstance(obj, BaseModel):
+        return _to_jsonable(obj.model_dump(mode="json"))
+    if isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, (set, frozenset)):
+        return sorted(_to_jsonable(v) for v in obj)
+    if isinstance(obj, (list, tuple)):
+        return [_to_jsonable(v) for v in obj]
+    if isinstance(obj, dict):
+        return {str(k): _to_jsonable(v) for k, v in obj.items()}
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return _to_jsonable(dataclasses.asdict(obj))
+    return str(obj)
 
 
 def _serialize(obj: Any) -> str:
@@ -119,6 +142,7 @@ class OutputPublisher:
         markets: list[Market],
         unsupported: list[UnsupportedCountry],
         change_report: ChangeReport | None = None,
+        shadow_runs: dict[str, Any] | None = None,
     ) -> tuple[bool, Path]:
         """Write all output files to a staging directory and return (changed, staging_path)."""
         staging = self._make_staging()
@@ -210,6 +234,12 @@ class OutputPublisher:
                 _write_json(staging / "change-report.json", change_report.model_dump(mode="json"))
             elif (self.output_dir / "change-report.json").exists():
                 shutil.copy2(self.output_dir / "change-report.json", staging / "change-report.json")
+
+        if shadow_runs:
+            _write_json(
+                meta_dir / "classification-shadow.json",
+                {"schema_version": 1, "generated_at": self.timestamp, "countries": _to_jsonable(shadow_runs)},
+            )
 
         return staging != self.output_dir, staging
 

@@ -6,8 +6,8 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .classify import classify_legacy, classify_structural
-from .models import CountryOutput, CurrencyConversion, DerivedFees, FixedFees, InternationalSurcharge
+from .classify import ClassificationRun, classify_legacy, classify_structural
+from .models import CountryOutput, CurrencyConversion, DerivedFees, FixedFees, InternationalSurcharge, Market
 from .scoring import FeeCategory
 
 
@@ -62,14 +62,14 @@ class CountryComparison:
     structural_classifier_version: str
 
 
-def compare_country(country: CountryOutput) -> CountryComparison:
-    """Run both classifiers on a stored country output and compare results."""
-    market = country.market
+def compare_runs(
+    legacy_run: ClassificationRun,
+    structural_run: ClassificationRun,
+    market: Market,
+) -> CountryComparison:
+    """Compare a legacy and a structural classification run for a single market."""
     market_code = market.paypal_market_code
     locale = market.locale
-
-    legacy_run = classify_legacy(country.tables, market_code=market_code, locale=locale)
-    structural_run = classify_structural(country.tables, market_code=market_code, locale=locale)
 
     legacy = legacy_run.derived
     structural = structural_run.derived
@@ -165,6 +165,14 @@ def compare_country(country: CountryOutput) -> CountryComparison:
         legacy_classifier_version=legacy_run.classifier_version,
         structural_classifier_version=structural_run.classifier_version,
     )
+
+
+def compare_country(country: CountryOutput) -> CountryComparison:
+    """Run both classifiers on a stored country output and compare results."""
+    market = country.market
+    legacy_run = classify_legacy(country.tables, market_code=market.paypal_market_code, locale=market.locale)
+    structural_run = classify_structural(country.tables, market_code=market.paypal_market_code, locale=market.locale)
+    return compare_runs(legacy_run, structural_run, market)
 
 
 @dataclass(frozen=True)
