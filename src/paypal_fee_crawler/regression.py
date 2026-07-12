@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .exceptions import RegressionError
-from .models import ChangeReport, ChangeType, CountryManifest, CountryOutput, UnsupportedCountry
+from .models import ChangeReport, ChangeSeverity, ChangeType, CountryManifest, CountryOutput, UnsupportedCountry
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,32 @@ class RegressionLimits:
     max_row_count_delta_ratio: float = 0.5
     max_country_count_delta_ratio: float = 0.1
     allow_country_drop: bool = False
+
+
+_SEVERITY_BY_KIND: dict[str, ChangeSeverity] = {
+    "structural_regression": ChangeSeverity.REGRESSION,
+    "supported_to_transient": ChangeSeverity.REGRESSION,
+    "supported_to_unsupported": ChangeSeverity.REGRESSION,
+    "removed_country": ChangeSeverity.REGRESSION,
+    "sharp_country_drop": ChangeSeverity.REGRESSION,
+    "discovered_to_missing": ChangeSeverity.REGRESSION,
+    "removed_table": ChangeSeverity.REGRESSION,
+    "sharp_table_drop": ChangeSeverity.REGRESSION,
+    "sharp_row_drop": ChangeSeverity.REGRESSION,
+    "lost_core_category": ChangeSeverity.REGRESSION,
+    "classified_to_unclassified": ChangeSeverity.REGRESSION,
+    "unsupported_to_supported": ChangeSeverity.WARNING,
+    "transient_to_supported": ChangeSeverity.WARNING,
+    "added_country": ChangeSeverity.WARNING,
+    "newly_discovered": ChangeSeverity.INFO,
+    "new_table": ChangeSeverity.INFO,
+}
+
+
+def _change_type(kind: str, **kwargs: Any) -> ChangeType:
+    """Build a ChangeType with severity inferred from its kind."""
+    severity = _SEVERITY_BY_KIND.get(kind, ChangeSeverity.INFO)
+    return ChangeType(kind=kind, severity=severity, **kwargs)
 
 
 @dataclass
@@ -129,21 +155,21 @@ def check_regression(
 
     if current_supported & current_unsupported:
         changes.append(
-            ChangeType(
+            _change_type(
                 kind="structural_regression",
                 message="A market is both supported and unsupported in the current state",
             )
         )
     if current_supported & current_transient:
         changes.append(
-            ChangeType(
+            _change_type(
                 kind="structural_regression",
                 message="A market is both supported and transient in the current state",
             )
         )
     if current_unsupported & current_transient:
         changes.append(
-            ChangeType(
+            _change_type(
                 kind="structural_regression",
                 message="A market is both unsupported and transient in the current state",
             )
@@ -153,7 +179,7 @@ def check_regression(
     for cc in sorted(previous.supported_countries - current_supported):
         if cc in current_transient:
             changes.append(
-                ChangeType(
+                _change_type(
                     kind="supported_to_transient",
                     country_code=cc,
                     message=f"Supported country {cc} became transient",
@@ -161,7 +187,7 @@ def check_regression(
             )
         elif cc in current_unsupported:
             changes.append(
-                ChangeType(
+                _change_type(
                     kind="supported_to_unsupported",
                     country_code=cc,
                     message=f"Supported country {cc} became unsupported",
@@ -170,7 +196,7 @@ def check_regression(
         else:
             if not limits.allow_country_drop:
                 changes.append(
-                    ChangeType(
+                    _change_type(
                         kind="removed_country",
                         country_code=cc,
                         message=f"Supported country {cc} disappeared",
@@ -184,7 +210,7 @@ def check_regression(
         > limits.max_country_count_delta_ratio
     ):
         changes.append(
-            ChangeType(
+            _change_type(
                 kind="sharp_country_drop",
                 message=f"Supported country count dropped by more than {limits.max_country_count_delta_ratio:.0%}",
             )
@@ -195,7 +221,7 @@ def check_regression(
     if removed_discovered and not limits.allow_country_drop:
         for cc in sorted(removed_discovered):
             changes.append(
-                ChangeType(
+                _change_type(
                     kind="discovered_to_missing",
                     country_code=cc,
                     message=f"Discovered country {cc} is no longer known",
@@ -206,7 +232,7 @@ def check_regression(
     for cc in sorted(current_supported - previous.supported_countries):
         if cc in previous.unsupported_countries:
             changes.append(
-                ChangeType(
+                _change_type(
                     kind="unsupported_to_supported",
                     country_code=cc,
                     message=f"Unsupported country {cc} is now supported",
@@ -214,21 +240,21 @@ def check_regression(
             )
         elif cc in previous.transient_countries:
             changes.append(
-                ChangeType(
+                _change_type(
                     kind="transient_to_supported",
                     country_code=cc,
                     message=f"Transient country {cc} is now supported",
                 )
             )
         else:
-            changes.append(ChangeType(kind="added_country", country_code=cc, message=f"Country {cc} newly supported"))
+            changes.append(_change_type(kind="added_country", country_code=cc, message=f"Country {cc} newly supported"))
 
     # Newly discovered but not yet supported.
     for cc in sorted(
         current_discovered - previous.discovered_countries - current_supported - current_unsupported - current_transient
     ):
         changes.append(
-            ChangeType(
+            _change_type(
                 kind="newly_discovered",
                 country_code=cc,
                 message=f"Country {cc} discovered but not yet resolved",
@@ -246,12 +272,12 @@ def check_regression(
         row_count = sum(len(table.rows) for table in output.tables)
 
         if prev_tables > 0 and table_count == 0:
-            changes.append(ChangeType(kind="removed_table", country_code=cc, message=f"All tables removed for {cc}"))
+            changes.append(_change_type(kind="removed_table", country_code=cc, message=f"All tables removed for {cc}"))
         elif prev_tables > 0 and table_count < prev_tables:
             ratio = (prev_tables - table_count) / prev_tables
             if ratio > limits.max_table_count_delta_ratio:
                 changes.append(
-                    ChangeType(
+                    _change_type(
                         kind="sharp_table_drop",
                         country_code=cc,
                         before=prev_tables,
@@ -261,7 +287,7 @@ def check_regression(
                 )
             else:
                 changes.append(
-                    ChangeType(
+                    _change_type(
                         kind="removed_table",
                         country_code=cc,
                         before=prev_tables,
@@ -271,7 +297,7 @@ def check_regression(
                 )
         elif table_count > prev_tables:
             changes.append(
-                ChangeType(
+                _change_type(
                     kind="new_table",
                     country_code=cc,
                     before=prev_tables,
@@ -284,7 +310,7 @@ def check_regression(
             ratio = (prev_rows - row_count) / prev_rows if prev_rows else 0
             if ratio > limits.max_row_count_delta_ratio:
                 changes.append(
-                    ChangeType(
+                    _change_type(
                         kind="sharp_row_drop",
                         country_code=cc,
                         before=prev_rows,
@@ -306,7 +332,7 @@ def check_regression(
         lost_categories = prev_categories - current_categories
         if lost_categories:
             changes.append(
-                ChangeType(
+                _change_type(
                     kind="lost_core_category",
                     country_code=cc,
                     before=sorted(prev_categories),
@@ -317,7 +343,7 @@ def check_regression(
 
         if prev_status in {"complete", "partial"} and output.derived.status == "unclassified":
             changes.append(
-                ChangeType(
+                _change_type(
                     kind="classified_to_unclassified",
                     country_code=cc,
                     before=prev_status,

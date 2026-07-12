@@ -446,12 +446,31 @@ class SchemaVersionInfo(BaseModel):
     description: str | None = None
 
 
+class ChangeSeverity(StrEnum):
+    """Severity of a change record."""
+
+    INFO = "info"
+    WARNING = "warning"
+    REGRESSION = "regression"
+
+
+class ChangeKind(StrEnum):
+    """Classified change kinds for cross-run and cross-classifier differences."""
+
+    CLASSIFICATION_CHANGED = "classification_changed"
+    NEW_DOCUMENT_ID = "new_document_id"
+    PUBLISHED_VALUE_CHANGED = "published_value_changed"
+    UNSUPPORTED_VALUE_CHANGED = "unsupported_value_changed"
+    REGRESSION = "regression"
+
+
 class ChangeType(BaseModel):
     """A single classified change."""
 
     model_config = ConfigDict(frozen=True)
 
     kind: str
+    severity: ChangeSeverity = ChangeSeverity.INFO
     country_code: str | None = None
     identifier: str | None = None
     before: Any | None = None
@@ -472,24 +491,11 @@ class ChangeReport(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _compute_has_regression(cls, data: Any) -> Any:
-        regression_kinds = {
-            "removed_country",
-            "discovered_to_missing",
-            "supported_to_transient",
-            "supported_to_unsupported",
-            "removed_table",
-            "lost_core_category",
-            "structural_regression",
-            "sharp_table_drop",
-            "sharp_row_drop",
-            "sharp_country_drop",
-            "classified_to_unclassified",
-        }
         if isinstance(data, dict):
             changes = data.get("changes", [])
             data["has_regression"] = any(
-                (isinstance(change, dict) and change.get("kind") in regression_kinds)
-                or (getattr(change, "kind", None) in regression_kinds)
+                (isinstance(change, dict) and change.get("severity") == ChangeSeverity.REGRESSION.value)
+                or (getattr(change, "severity", None) == ChangeSeverity.REGRESSION)
                 for change in changes
             )
         return data
