@@ -17,6 +17,7 @@ from .models import (
     CountryOutput,
     DerivedFees,
     PublicCountryOutput,
+    PublicDerivedFees,
 )
 from .normalize import CURRENCY_CODES, normalize_decimal_string
 from .regression import _country_output_hash
@@ -45,7 +46,7 @@ def _validate_currency_codes(data: Any, errors: list[str]) -> None:
             _validate_currency_codes(item, errors)
 
 
-def _validate_table_plausibility(output: CountryOutput, errors: list[str]) -> None:
+def _validate_table_plausibility(output: CountryOutput | PublicCountryOutput, errors: list[str]) -> None:
     if not output.tables:
         errors.append("No fee tables found")
         return
@@ -76,7 +77,7 @@ def _validate_table_plausibility(output: CountryOutput, errors: list[str]) -> No
                             errors.append(f"Implausible percentage: {token.raw}")
 
 
-def _complete_derived_errors(derived: DerivedFees, label: str) -> list[str]:
+def _complete_derived_errors(derived: DerivedFees | PublicDerivedFees, label: str) -> list[str]:
     """Return consistency errors for a ``complete`` derived-fee result.
 
     This is the publication-time backstop for the classifier.  The classifier is
@@ -115,10 +116,27 @@ def _complete_derived_errors(derived: DerivedFees, label: str) -> list[str]:
 
 
 def validate_country_output(data: dict[str, Any], schema_only: bool = False) -> list[str]:
-    """Validate a single per-country JSON object."""
+    """Validate an internal per-country JSON object (allows classifier fields)."""
     errors: list[str] = []
     try:
         output = CountryOutput.model_validate(data)
+    except ValidationError as exc:
+        for error in exc.errors():
+            errors.append(f"Schema validation: {error['loc']}: {error['msg']}")
+        return errors
+
+    _validate_currency_codes(data, errors)
+    errors.extend(_complete_derived_errors(output.derived, f"Country {output.market.paypal_market_code}"))
+    if not schema_only:
+        _validate_table_plausibility(output, errors)
+    return errors
+
+
+def validate_public_country_output(data: dict[str, Any], schema_only: bool = False) -> list[str]:
+    """Validate a public per-country JSON object (rejects internal fields)."""
+    errors: list[str] = []
+    try:
+        output = PublicCountryOutput.model_validate(data)
     except ValidationError as exc:
         for error in exc.errors():
             errors.append(f"Schema validation: {error['loc']}: {error['msg']}")
@@ -173,7 +191,7 @@ def validate_file(path: Path | str, schema_type: str, schema_only: bool = False)
         data = json.load(f)
 
     if schema_type == "country":
-        return validate_country_output(data, schema_only=schema_only)
+        return validate_public_country_output(data, schema_only=schema_only)
     if schema_type == "index":
         return validate_country_index(data)
     if schema_type == "core_fees":
@@ -185,7 +203,7 @@ def validate_file(path: Path | str, schema_type: str, schema_only: bool = False)
 
 def generate_country_schema() -> dict[str, Any]:
     """Generate the JSON schema for per-country output."""
-    schema = PublicCountryOutput.model_json_schema()
+    schema = PublicCountryOutput.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
     schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/paypal-fees-v2.schema.json"
     return schema
@@ -193,7 +211,7 @@ def generate_country_schema() -> dict[str, Any]:
 
 def generate_core_fees_schema() -> dict[str, Any]:
     """Generate the JSON schema for the consolidated core fees file."""
-    schema = CoreFees.model_json_schema()
+    schema = CoreFees.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
     schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/core-fees-v2.schema.json"
     return schema
@@ -201,7 +219,7 @@ def generate_core_fees_schema() -> dict[str, Any]:
 
 def generate_index_schema() -> dict[str, Any]:
     """Generate the JSON schema for the country index file."""
-    schema = CountryIndex.model_json_schema()
+    schema = CountryIndex.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
     schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/index-v2.schema.json"
     return schema
@@ -209,7 +227,7 @@ def generate_index_schema() -> dict[str, Any]:
 
 def generate_manifest_schema() -> dict[str, Any]:
     """Generate the JSON schema for the country manifest file."""
-    schema = CountryManifest.model_json_schema()
+    schema = CountryManifest.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
     schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/manifest-v2.schema.json"
     return schema
@@ -351,13 +369,13 @@ def validate_output_tree(root: Path | str) -> list[str]:
     if len(slugs) != len(set(slugs)):
         errors.append("Duplicate URL slugs in manifest")
 
-    country_files: dict[str, tuple[Path, CountryOutput, dict[str, Any]]] = {}
+    country_files: dict[str, tuple[Path, PublicCountryOutput, dict[str, Any]]] = {}
     for path in (root / "json").glob("*.json"):
         if path.name in {"index.json", "core-fees.json"}:
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            country = CountryOutput.model_validate(data)
+            country = PublicCountryOutput.model_validate(data)
         except Exception as exc:  # nosec B112 # noqa: S112
             errors.append(f"{path}: {exc}")
             continue
@@ -396,7 +414,7 @@ def validate_output_tree(root: Path | str) -> list[str]:
         if entry.content_sha256 != expected_hash:
             errors.append(f"Index content hash for {cc} does not match country file hash")
 
-        country_errors = validate_country_output(data, schema_only=False)
+        country_errors = validate_public_country_output(data, schema_only=False)
         if country_errors:
             errors.append(f"{path}: " + "; ".join(country_errors))
 

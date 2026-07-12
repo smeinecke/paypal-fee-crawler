@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from paypal_fee_crawler.regression import _country_output_hash
-from paypal_fee_crawler.validation import validate_country_output, validate_output_tree
+from paypal_fee_crawler.validation import validate_output_tree, validate_public_country_output
 
 
 def _country(derived: dict[str, Any]) -> dict[str, Any]:
@@ -23,7 +23,6 @@ def _country(derived: dict[str, Any]) -> dict[str, Any]:
         "source": {
             "requested_url": "https://www.paypal.com/de/business/paypal-business-fees",
             "canonical_url": "https://www.paypal.com/de/business/paypal-business-fees",
-            "content_sha256": None,
         },
         "sections": [],
         "tables": [
@@ -74,7 +73,7 @@ def test_complete_country_requires_international_and_fx_categories_when_exposed(
     derived["international_surcharge_exposed"] = True
     derived["currency_conversion_exposed"] = True
 
-    errors = validate_country_output(_country(derived), schema_only=False)
+    errors = validate_public_country_output(_country(derived), schema_only=False)
 
     assert any("international surcharges" in error for error in errors)
     assert any("currency conversion" in error for error in errors)
@@ -87,13 +86,13 @@ def test_complete_country_accepts_missing_unexposed_categories() -> None:
     derived["international_surcharge_exposed"] = False
     derived["currency_conversion_exposed"] = False
 
-    errors = validate_country_output(_country(derived), schema_only=False)
+    errors = validate_public_country_output(_country(derived), schema_only=False)
 
     assert not errors
 
 
 def test_complete_country_accepts_all_required_categories() -> None:
-    errors = validate_country_output(_country(_complete_derived()), schema_only=False)
+    errors = validate_public_country_output(_country(_complete_derived()), schema_only=False)
     assert not errors
 
 
@@ -104,7 +103,7 @@ def _write_json(path: Path, data: Any) -> None:
 
 def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     country_hash = _country_output_hash(country)
-    country["source"]["content_sha256"] = country_hash
+    country["source"]["artifact_sha256"] = country_hash
 
     _write_json(root / "json" / "de.json", country)
     _write_json(

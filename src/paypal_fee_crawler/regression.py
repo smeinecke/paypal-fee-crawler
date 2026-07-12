@@ -104,7 +104,7 @@ def _country_output_hash(data: dict[str, Any]) -> str:
     canonical = {
         "market": data.get("market"),
         "source": {
-            k: v for k, v in (data.get("source") or {}).items() if k not in {"etag", "last_modified", "content_sha256"}
+            k: v for k, v in (data.get("source") or {}).items() if k not in {"etag", "last_modified", "content_sha256", "artifact_sha256"}
         },
         "sections": data.get("sections"),
         "tables": data.get("tables"),

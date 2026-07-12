@@ -18,7 +18,6 @@ from pydantic import BaseModel
 from .exceptions import ValidationError as CrawlerValidationError
 from .models import (
     ChangeReport,
-    CoreFeeEntry,
     CoreFees,
     CountryIndex,
     CountryIndexEntry,
@@ -27,7 +26,9 @@ from .models import (
     CrawlCache,
     CrawlCacheEntry,
     Market,
+    PublicCoreFeeEntry,
     PublicCountryOutput,
+    PublicDerivedFees,
     SchemaVersionInfo,
     UnsupportedCountry,
 )
@@ -141,6 +142,13 @@ class OutputPublisher:
     def _compute_content_sha256(self, data: dict[str, Any]) -> str:
         return _country_output_hash(data)
 
+    def _load_existing_cache(self) -> CrawlCache:
+        """Load the previous crawl cache so 304/reused runs retain cache headers."""
+        path = self.output_dir / "meta" / "crawl-cache.json"
+        if not path.exists():
+            return CrawlCache()
+        return CrawlCache.model_validate_json(path.read_text(encoding="utf-8"))
+
     def publish(
         self,
         outputs: dict[str, CountryOutput],
@@ -160,8 +168,14 @@ class OutputPublisher:
         schemas_dir.mkdir(parents=True, exist_ok=True)
 
         index_entries: list[CountryIndexEntry] = []
-        core_entries: list[CoreFeeEntry] = []
-        cache_entries: dict[str, CrawlCacheEntry] = {}
+        core_entries: list[PublicCoreFeeEntry] = []
+
+        existing_cache = self._load_existing_cache()
+        cache_entries: dict[str, CrawlCacheEntry] = {
+            market_code: entry
+            for market_code, entry in existing_cache.markets.items()
+            if market_code in outputs
+        }
 
         for cc in sorted(outputs.keys()):
             output = outputs[cc]
@@ -172,7 +186,7 @@ class OutputPublisher:
             country_data = public.model_dump(mode="json", exclude_none=True)
             country_data["generated_at"] = public.generated_at
             content_hash = self._compute_content_sha256(country_data)
-            country_data["source"]["content_sha256"] = content_hash
+            country_data["source"]["artifact_sha256"] = content_hash
             _write_json(path, country_data)
 
             if output.source.etag or output.source.last_modified:
@@ -195,11 +209,11 @@ class OutputPublisher:
                 )
             )
             core_entries.append(
-                CoreFeeEntry(
+                PublicCoreFeeEntry(
                     paypal_market_code=output.market.paypal_market_code,
                     iso_country_code=output.market.iso_country_code,
                     derived_status=output.derived.status,
-                    derived=output.derived,
+                    derived=PublicDerivedFees.from_internal(output.derived),
                 )
             )
 
@@ -237,11 +251,10 @@ class OutputPublisher:
         _write_json(schemas_dir / "index-v2.schema.json", generate_index_schema())
         _write_json(schemas_dir / "manifest-v2.schema.json", generate_manifest_schema())
 
-        if cache_entries:
-            _write_json(
-                meta_dir / "crawl-cache.json",
-                CrawlCache(markets=cache_entries).model_dump(mode="json", exclude_none=True),
-            )
+        _write_json(
+            meta_dir / "crawl-cache.json",
+            CrawlCache(markets=cache_entries).model_dump(mode="json", exclude_none=True),
+        )
 
         if self.keep_diagnostics and diagnostics:
             diagnostics_dir = meta_dir / "diagnostics"

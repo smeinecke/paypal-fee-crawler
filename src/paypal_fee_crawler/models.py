@@ -24,6 +24,8 @@ def _migrate_legacy_country_code(data: Any) -> Any:
     if not isinstance(data, dict):
         return data
     data = dict(data)
+    # Remove computed serialization artifacts so they are not treated as extra fields.
+    data.pop("url_slug", None)
     legacy = data.pop("country_code", None)
     if legacy is None:
         return data
@@ -35,16 +37,20 @@ def _migrate_legacy_country_code(data: Any) -> Any:
     return data
 
 
-class Language(BaseModel):
-    """A supported language for a market."""
+class PublicModel(BaseModel):
+    """Base for strict public-facing models that reject unknown fields."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class Language(PublicModel):
+    """A supported language for a market."""
 
     code: str
     name: str | None = None
 
 
-class Market(BaseModel):
+class Market(PublicModel):
     """A discovered PayPal market/country.
 
     PayPal market codes (e.g. ``C2`` for China) are kept separate from ISO
@@ -52,8 +58,6 @@ class Market(BaseModel):
     for backward compatibility and returns the ISO code when known, otherwise
     the raw PayPal market code.
     """
-
-    model_config = ConfigDict(frozen=True)
 
     paypal_market_code: str
     country_name: str
@@ -95,9 +99,9 @@ class Market(BaseModel):
 
 
 class Source(BaseModel):
-    """Source metadata for a crawled fee page."""
+    """Source metadata for a crawled fee page (internal; may include HTTP cache fields)."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     requested_url: str
     canonical_url: str | None = None
@@ -111,10 +115,8 @@ class Source(BaseModel):
     content_sha256: str | None = None
 
 
-class Link(BaseModel):
+class Link(PublicModel):
     """A hyperlink extracted from a rich-text cell."""
-
-    model_config = ConfigDict(frozen=True)
 
     text: str | None = None
     uri: str | None = None
@@ -199,45 +201,37 @@ class Section(BaseModel):
     section_path: list[str] = Field(default_factory=list)
 
 
-class FixedFees(BaseModel):
+class FixedFees(PublicModel):
     """Fixed fees by received currency."""
-
-    model_config = ConfigDict(frozen=True)
 
     currency: str
     amount: str
 
 
-class CommercialFee(BaseModel):
+class CommercialFee(PublicModel):
     """Standard commercial transaction fee."""
-
-    model_config = ConfigDict(frozen=True)
 
     percentage: str | None = None
     fixed_fee_reference: str | None = None
 
 
-class InternationalSurcharge(BaseModel):
+class InternationalSurcharge(PublicModel):
     """International payer-region surcharge."""
-
-    model_config = ConfigDict(frozen=True)
 
     region: str
     percentage_points: str | None = None
 
 
-class CurrencyConversion(BaseModel):
+class CurrencyConversion(PublicModel):
     """Currency conversion spread."""
-
-    model_config = ConfigDict(frozen=True)
 
     spread_percentage: str | None = None
 
 
 class DerivedFees(BaseModel):
-    """Derived core fees with confidence status."""
+    """Derived core fees with confidence status (internal; allows legacy diagnostic fields)."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     status: str = Field(default="unclassified")
     standard_commercial: CommercialFee | None = None
@@ -263,9 +257,9 @@ class DerivedFees(BaseModel):
 
 
 class ParserWarning(BaseModel):
-    """A non-fatal parser warning."""
+    """A non-fatal parser warning (internal; may carry implementation context)."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     code: str
     message: str
@@ -275,7 +269,7 @@ class ParserWarning(BaseModel):
 class CountryOutput(BaseModel):
     """Per-country normalized output (internal; may carry classifier diagnostics)."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     schema_version: int = 1
     generated_at: str | None = None
@@ -287,10 +281,8 @@ class CountryOutput(BaseModel):
     warnings: list[ParserWarning] = Field(default_factory=list)
 
 
-class PublicSource(BaseModel):
+class PublicSource(PublicModel):
     """Public source provenance for a crawled fee page."""
-
-    model_config = ConfigDict(frozen=True)
 
     requested_url: str
     canonical_url: str | None = None
@@ -298,7 +290,7 @@ class PublicSource(BaseModel):
     page_updated_at: str | None = None
     cms_updated_at: str | None = None
     pdf_url: str | None = None
-    content_sha256: str | None = None
+    artifact_sha256: str | None = None
 
     @classmethod
     def from_internal(cls, source: Source) -> PublicSource:
@@ -309,14 +301,11 @@ class PublicSource(BaseModel):
             page_updated_at=source.page_updated_at,
             cms_updated_at=source.cms_updated_at,
             pdf_url=source.pdf_url,
-            content_sha256=source.content_sha256,
         )
 
 
-class PublicWarning(BaseModel):
+class PublicWarning(PublicModel):
     """Public parser warning without implementation context."""
-
-    model_config = ConfigDict(frozen=True)
 
     code: str
     message: str
@@ -326,10 +315,8 @@ class PublicWarning(BaseModel):
         return cls(code=warning.code, message=warning.message)
 
 
-class PublicFeeToken(BaseModel):
+class PublicFeeToken(PublicModel):
     """Public pricing token without classifier metadata."""
-
-    model_config = ConfigDict(frozen=True)
 
     raw: str
     kind: str = Field(default="text")
@@ -350,10 +337,8 @@ class PublicFeeToken(BaseModel):
         )
 
 
-class PublicCell(BaseModel):
+class PublicCell(PublicModel):
     """Public rendered table cell."""
-
-    model_config = ConfigDict(frozen=True)
 
     text: str
     tokens: list[PublicFeeToken] = Field(default_factory=list)
@@ -368,10 +353,8 @@ class PublicCell(BaseModel):
         )
 
 
-class PublicRow(BaseModel):
+class PublicRow(PublicModel):
     """Public table row."""
-
-    model_config = ConfigDict(frozen=True)
 
     cells: list[PublicCell] = Field(default_factory=list)
 
@@ -380,10 +363,8 @@ class PublicRow(BaseModel):
         return cls(cells=[PublicCell.from_internal(c) for c in row.cells])
 
 
-class PublicTableHeader(BaseModel):
+class PublicTableHeader(PublicModel):
     """Public table header cell."""
-
-    model_config = ConfigDict(frozen=True)
 
     text: str
     tokens: list[PublicFeeToken] = Field(default_factory=list)
@@ -398,10 +379,8 @@ class PublicTableHeader(BaseModel):
         )
 
 
-class PublicTable(BaseModel):
+class PublicTable(PublicModel):
     """Public normalized fee table."""
-
-    model_config = ConfigDict(frozen=True)
 
     document_id: str | None = None
     caption: str | None = None
@@ -424,10 +403,8 @@ class PublicTable(BaseModel):
         )
 
 
-class PublicSection(BaseModel):
+class PublicSection(PublicModel):
     """Public page section."""
-
-    model_config = ConfigDict(frozen=True)
 
     heading: str | None = None
     body: str | None = None
@@ -442,10 +419,8 @@ class PublicSection(BaseModel):
         )
 
 
-class PublicDerivedFees(BaseModel):
+class PublicDerivedFees(PublicModel):
     """Public derived core fees without classifier diagnostics."""
-
-    model_config = ConfigDict(frozen=True)
 
     status: str = Field(default="unclassified")
     standard_commercial: CommercialFee | None = None
@@ -474,10 +449,8 @@ class PublicDerivedFees(BaseModel):
         return cls(**derived.model_dump())
 
 
-class PublicCountryOutput(BaseModel):
+class PublicCountryOutput(PublicModel):
     """Public consumer-facing country output."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     schema_version: int = 2
     generated_at: str | None = None
@@ -502,28 +475,23 @@ class PublicCountryOutput(BaseModel):
         )
 
 
-class CrawlCacheEntry(BaseModel):
+class CrawlCacheEntry(PublicModel):
     """Internal HTTP cache entry for a single market."""
-
-    model_config = ConfigDict(frozen=True)
 
     etag: str | None = None
     last_modified: str | None = None
     content_sha256: str | None = None
 
 
-class CrawlCache(BaseModel):
+class CrawlCache(PublicModel):
     """Internal per-market HTTP cache used for conditional requests."""
 
-    model_config = ConfigDict(frozen=True)
-
+    schema_version: int = 2
     markets: dict[str, CrawlCacheEntry] = Field(default_factory=dict)
 
 
-class CountryIndexEntry(BaseModel):
+class CountryIndexEntry(PublicModel):
     """Compact entry in the country index."""
-
-    model_config = ConfigDict(frozen=True)
 
     paypal_market_code: str
     iso_country_code: str | None = None
@@ -559,20 +527,16 @@ class CountryIndexEntry(BaseModel):
         return _migrate_legacy_country_code(data)
 
 
-class CountryIndex(BaseModel):
+class CountryIndex(PublicModel):
     """Index of successfully processed countries."""
-
-    model_config = ConfigDict(frozen=True)
 
     schema_version: int = 2
     generated_at: str | None = None
     countries: list[CountryIndexEntry] = Field(default_factory=list)
 
 
-class UnsupportedCountry(BaseModel):
+class UnsupportedCountry(PublicModel):
     """A market without a discoverable public fee page."""
-
-    model_config = ConfigDict(frozen=True)
 
     paypal_market_code: str
     iso_country_code: str | None = None
@@ -609,10 +573,8 @@ class UnsupportedCountry(BaseModel):
         return _migrate_legacy_country_code(data)
 
 
-class CountryManifest(BaseModel):
+class CountryManifest(PublicModel):
     """Discovered country manifest."""
-
-    model_config = ConfigDict(frozen=True)
 
     schema_version: int = 2
     generated_at: str | None = None
@@ -621,15 +583,13 @@ class CountryManifest(BaseModel):
     fee_page_urls: dict[str, str] = Field(default_factory=dict)
 
 
-class CoreFeeEntry(BaseModel):
-    """A single country's confidently derived core fees."""
-
-    model_config = ConfigDict(frozen=True)
+class PublicCoreFeeEntry(PublicModel):
+    """A single country's confidently derived core fees (public)."""
 
     paypal_market_code: str
     iso_country_code: str | None = None
     derived_status: str
-    derived: DerivedFees
+    derived: PublicDerivedFees
 
     @field_validator("paypal_market_code")
     @classmethod
@@ -656,20 +616,16 @@ class CoreFeeEntry(BaseModel):
         return _migrate_legacy_country_code(data)
 
 
-class CoreFees(BaseModel):
+class CoreFees(PublicModel):
     """Consolidated core fees across all countries."""
-
-    model_config = ConfigDict(frozen=True)
 
     schema_version: int = 2
     generated_at: str | None = None
-    countries: list[CoreFeeEntry] = Field(default_factory=list)
+    countries: list[PublicCoreFeeEntry] = Field(default_factory=list)
 
 
-class SchemaVersionInfo(BaseModel):
+class SchemaVersionInfo(PublicModel):
     """Schema version metadata."""
-
-    model_config = ConfigDict(frozen=True)
 
     schema_version: int = 2
     schema_path: str = "schemas/paypal-fees-v2.schema.json"

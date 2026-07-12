@@ -80,8 +80,8 @@ def test_content_sha256_present() -> None:
         _, staging = publisher.publish(outputs, [], [])
         publisher.commit(staging)
         data = json.loads((output_dir / "json" / "de.json").read_text())
-        assert data["source"]["content_sha256"]
-        assert len(data["source"]["content_sha256"]) == 64
+        assert data["source"]["artifact_sha256"]
+        assert len(data["source"]["artifact_sha256"]) == 64
 
 
 def test_generated_at_present() -> None:
@@ -133,3 +133,148 @@ def test_commit_rolls_back_on_validation_failure() -> None:
         assert not (output_dir / "json" / "us.json").exists()
         # No stale backup should be left behind.
         assert not any(str(p).endswith(".old") for p in output_dir.rglob("*"))
+
+
+def test_public_output_excludes_internal_fields() -> None:
+    output = CountryOutput(
+        schema_version=1,
+        market=Market(paypal_market_code="DE", iso_country_code="DE", country_name="Germany"),
+        source=Source(
+            requested_url="https://example.com/de",
+            canonical_url="https://example.com/de",
+            etag='"abc"',
+            last_modified="Mon, 01 Jan 2024 00:00:00 GMT",
+            content_sha256="raw-content-hash",
+        ),
+        tables=[
+            Table(
+                table_id="t1",
+                component_id="c1",
+                source_table_ids=["s1"],
+                reference_id="r1",
+                parent_path=["p1"],
+                rows=[
+                    Row(
+                        row_id="row-1",
+                        cells=[
+                            Cell(
+                                text="2.99%",
+                                tokens=[
+                                    {
+                                        "raw": "2.99%",
+                                        "kind": "percentage",
+                                        "value": "2.99",
+                                        "token_id": "t1",
+                                        "internal_name": "pct",
+                                        "fee_data_key": "std",
+                                        "content_type": "fee",
+                                    }
+                                ],
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+        derived=DerivedFees(status="unclassified"),
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        output_dir = Path(tmp) / "out"
+        publisher = OutputPublisher(output_dir, timestamp="2025-01-01T00:00:00+00:00")
+        _, staging = publisher.publish({"DE": output}, [], [])
+        publisher.commit(staging)
+
+        data = json.loads((output_dir / "json" / "de.json").read_text())
+        core = json.loads((output_dir / "json" / "core-fees.json").read_text())
+        serialized = json.dumps({"country": data, "core": core})
+
+        forbidden = {
+            "classification_evidence",
+            "unclassified_sections",
+            "token_id",
+            "internal_name",
+            "fee_data_key",
+            "content_type",
+            "row_id",
+            "component_id",
+            "parent_path",
+            "source_table_ids",
+            "reference_id",
+            "etag",
+            "last_modified",
+            "content_sha256",
+        }
+        assert forbidden.isdisjoint(serialized)
+
+
+def test_core_fees_json_uses_public_models() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output_dir = Path(tmp) / "out"
+        publisher = OutputPublisher(output_dir, timestamp="2025-01-01T00:00:00+00:00")
+        outputs = {"DE": _make_output("DE")}
+        _, staging = publisher.publish(outputs, [], [])
+        publisher.commit(staging)
+
+        core = json.loads((output_dir / "json" / "core-fees.json").read_text())
+        entry = core["countries"][0]
+        assert entry["derived_status"] == entry["derived"]["status"]
+        assert "country_code" in entry
+        assert "classification_evidence" not in json.dumps(entry)
+        assert "unclassified_sections" not in json.dumps(entry)
+
+
+def test_cache_retained_after_reused_output() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output_dir = Path(tmp) / "out"
+        publisher = OutputPublisher(output_dir, timestamp="2025-01-01T00:00:00+00:00")
+
+        first = CountryOutput(
+            schema_version=1,
+            market=Market(paypal_market_code="DE", iso_country_code="DE", country_name="Germany"),
+            source=Source(
+                requested_url="https://example.com/de",
+                canonical_url="https://example.com/de",
+                etag='"abc"',
+                last_modified="Mon, 01 Jan 2024 00:00:00 GMT",
+                content_sha256="raw-hash",
+            ),
+            tables=[Table(rows=[Row(cells=[Cell(text="2.99%", tokens=[{"raw": "2.99%", "kind": "percentage", "value": "2.99"}])])])],
+            derived=DerivedFees(status="unclassified"),
+        )
+        _, staging1 = publisher.publish({"DE": first}, [], [])
+        publisher.commit(staging1)
+
+        first_cache = json.loads((output_dir / "meta" / "crawl-cache.json").read_text())
+        assert first_cache["markets"]["DE"]["etag"] == '"abc"'
+
+        # Reused output: no ETag/Last-Modified on the internal source.
+        reused = CountryOutput(
+            schema_version=1,
+            market=Market(paypal_market_code="DE", iso_country_code="DE", country_name="Germany"),
+            source=Source(
+                requested_url="https://example.com/de",
+                canonical_url="https://example.com/de",
+                content_sha256="different-raw-hash",
+            ),
+            tables=[Table(rows=[Row(cells=[Cell(text="2.99%", tokens=[{"raw": "2.99%", "kind": "percentage", "value": "2.99"}])])])],
+            derived=DerivedFees(status="unclassified"),
+        )
+        _, staging2 = publisher.publish({"DE": reused}, [], [])
+        second_cache = json.loads((staging2 / "meta" / "crawl-cache.json").read_text())
+        assert second_cache["markets"]["DE"]["etag"] == '"abc"'
+
+
+def test_diagnostics_only_with_keep_diagnostics() -> None:
+    output = _make_output("DE")
+    with tempfile.TemporaryDirectory() as tmp:
+        output_dir = Path(tmp) / "out"
+        publisher = OutputPublisher(output_dir, timestamp="2025-01-01T00:00:00+00:00", keep_diagnostics=False)
+        _, staging = publisher.publish({"DE": output}, [], [], diagnostics={"DE": {"run": "x"}})
+        publisher.commit(staging)
+        assert not (output_dir / "meta" / "diagnostics").exists()
+
+        publisher2 = OutputPublisher(output_dir, timestamp="2025-01-01T00:00:00+00:00", keep_diagnostics=True)
+        _, staging2 = publisher2.publish({"DE": output}, [], [], diagnostics={"DE": {"run": "x"}})
+        publisher2.commit(staging2)
+        assert (output_dir / "meta" / "diagnostics" / "de.json").exists()
