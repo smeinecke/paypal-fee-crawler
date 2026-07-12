@@ -7,6 +7,7 @@ sensitive to changes that alter the structural fingerprint.
 
 from __future__ import annotations
 
+from paypal_fee_crawler import scoring
 from paypal_fee_crawler.classify import classify_structural
 from paypal_fee_crawler.models import Cell, Row, Table
 from paypal_fee_crawler.pricing_tokens import render_rich_text_node
@@ -81,10 +82,9 @@ def test_metadata_mutation_is_detected() -> None:
     base = _table("Commercial fees", [["Commercial", "2.99% + 0.39 EUR"]], document_id="NEW")
     mutated = base.model_copy(update={"document_id": "FEETB18"})
 
-    mutated_run = classify_structural([mutated])
-    mutated_decision = mutated_run.table_decisions[0]
-    fixed_score = next(s for s in mutated_decision.ranked_scores if s.category.value == "fixed_fee")
-    assert any(s.code.value == "known_document_id" for s in fixed_score.signals)
+    scores = scoring.score_all_categories(mutated)
+    fixed_score = next(s for s in scores if s.category == scoring.FeeCategory.FIXED_FEE)
+    assert any(s.code == scoring.EvidenceCode.KNOWN_DOCUMENT_ID for s in fixed_score.signals)
 
 
 def test_add_noise_row_lowers_confidence() -> None:
@@ -92,7 +92,8 @@ def test_add_noise_row_lowers_confidence() -> None:
     base = _table("Commercial fees", [["Commercial", "2.99% + 0.39 EUR"]])
     mutated = _mutate_add_noise_row(base)
     run = classify_structural([mutated])
-    assert run.table_decisions[0].status in {"selected", "ambiguous", "unclassified"}
+    assert len(run.table_decisions) == 1
+    assert run.table_decisions[0].selected_category is not None
 
 
 def test_cross_market_consistent_category_for_same_structure() -> None:

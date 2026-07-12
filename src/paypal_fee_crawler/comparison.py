@@ -6,8 +6,9 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .classify import CLASSIFIER_VERSION, ClassificationRun, classify_legacy, classify_structural
+from .classify import CLASSIFIER_VERSION, ClassificationRun, TableDecision, classify_legacy, classify_structural
 from .models import CountryOutput, CurrencyConversion, DerivedFees, FixedFees, InternationalSurcharge, Market
+from .registry import FingerprintRegistry
 from .scoring import FeeCategory
 
 
@@ -45,6 +46,23 @@ class ValueChange:
 
 
 @dataclass(frozen=True)
+class TableDecisionChange:
+    table_id: str | None
+    document_id: str | None
+    component_id: str | None
+    fingerprint: str | None
+    legacy_category: str | None
+    structural_category: str | None
+    legacy_score: int | None
+    structural_score: int | None
+    legacy_blockers: tuple[str, ...]
+    structural_blockers: tuple[str, ...]
+    legacy_evidence: tuple[str, ...]
+    structural_evidence: tuple[str, ...]
+    kind: str
+
+
+@dataclass(frozen=True)
 class CountryComparison:
     country_code: str
     market_code: str
@@ -56,10 +74,85 @@ class CountryComparison:
     legacy_selected_categories: tuple[str, ...]
     structural_selected_categories: tuple[str, ...]
     value_changes: tuple[ValueChange, ...]
+    table_decision_changes: tuple[TableDecisionChange, ...]
     observation_count: int
     structural_observations: tuple[dict[str, str | None], ...]
     legacy_classifier_version: str
     structural_classifier_version: str
+
+
+def _table_decision_key(d: TableDecision) -> str:
+    """Stable identity key for a table decision."""
+    return "::".join(
+        str(part)
+        for part in (d.table_id, d.document_id, d.component_id, d.fingerprint)
+        if part
+    )
+
+
+def _compare_table_decisions(
+    legacy: tuple[TableDecision, ...],
+    structural: tuple[TableDecision, ...],
+) -> tuple[TableDecisionChange, ...]:
+    """Compare per-table classification decisions between legacy and structural."""
+    legacy_by_key: dict[str, TableDecision] = {}
+    structural_by_key: dict[str, TableDecision] = {}
+    for d in legacy:
+        legacy_by_key[_table_decision_key(d)] = d
+    for d in structural:
+        structural_by_key[_table_decision_key(d)] = d
+
+    changes: list[TableDecisionChange] = []
+    all_keys = set(legacy_by_key) | set(structural_by_key)
+    for key in sorted(all_keys):
+        legacy_decision = legacy_by_key.get(key)
+        structural_decision = structural_by_key.get(key)
+        if legacy_decision is None or structural_decision is None:
+            kind = "new" if legacy_decision is None else "missing"
+            present = structural_decision if legacy_decision is None else legacy_decision
+            assert present is not None
+            changes.append(
+                TableDecisionChange(
+                    table_id=present.table_id,
+                    document_id=present.document_id,
+                    component_id=present.component_id,
+                    fingerprint=present.fingerprint,
+                    legacy_category=legacy_decision.selected_category.value if legacy_decision and legacy_decision.selected_category else None,
+                    structural_category=structural_decision.selected_category.value if structural_decision and structural_decision.selected_category else None,
+                    legacy_score=legacy_decision.selected_score if legacy_decision else None,
+                    structural_score=structural_decision.selected_score if structural_decision else None,
+                    legacy_blockers=tuple(sorted({b.value for b in legacy_decision.blockers})) if legacy_decision else (),
+                    structural_blockers=tuple(sorted({b.value for b in structural_decision.blockers})) if structural_decision else (),
+                    legacy_evidence=tuple(sorted(legacy_decision.evidence_codes)) if legacy_decision else (),
+                    structural_evidence=tuple(sorted(structural_decision.evidence_codes)) if structural_decision else (),
+                    kind=kind,
+                )
+            )
+            continue
+
+        legacy_cat = legacy_decision.selected_category.value if legacy_decision.selected_category else None
+        structural_cat = structural_decision.selected_category.value if structural_decision.selected_category else None
+        if legacy_cat == structural_cat:
+            continue
+        kind = "new" if legacy_cat is None else "missing" if structural_cat is None else "changed"
+        changes.append(
+            TableDecisionChange(
+                table_id=legacy_decision.table_id,
+                document_id=legacy_decision.document_id,
+                component_id=legacy_decision.component_id,
+                fingerprint=legacy_decision.fingerprint,
+                legacy_category=legacy_cat,
+                structural_category=structural_cat,
+                legacy_score=legacy_decision.selected_score,
+                structural_score=structural_decision.selected_score,
+                legacy_blockers=tuple(sorted({b.value for b in legacy_decision.blockers})),
+                structural_blockers=tuple(sorted({b.value for b in structural_decision.blockers})),
+                legacy_evidence=tuple(sorted(legacy_decision.evidence_codes)),
+                structural_evidence=tuple(sorted(structural_decision.evidence_codes)),
+                kind=kind,
+            )
+        )
+    return tuple(changes)
 
 
 def compare_runs(
@@ -75,6 +168,7 @@ def compare_runs(
     structural = structural_run.derived
 
     value_changes: list[ValueChange] = []
+    table_decision_changes = _compare_table_decisions(legacy_run.table_decisions, structural_run.table_decisions)
 
     legacy_pct = legacy.standard_commercial.percentage if legacy.standard_commercial else None
     structural_pct = structural.standard_commercial.percentage if structural.standard_commercial else None
@@ -160,6 +254,7 @@ def compare_runs(
         legacy_selected_categories=tuple(sorted(legacy_cats)),
         structural_selected_categories=tuple(sorted(structural_cats)),
         value_changes=tuple(value_changes),
+        table_decision_changes=table_decision_changes,
         observation_count=len(structural_run.observations),
         structural_observations=observations,
         legacy_classifier_version=legacy_run.classifier_version,
@@ -171,7 +266,7 @@ def compare_country(country: CountryOutput) -> CountryComparison:
     """Run both classifiers on a stored country output and compare results."""
     market = country.market
     legacy_run = classify_legacy(country.tables, market_code=market.paypal_market_code, locale=market.locale)
-    structural_run = classify_structural(country.tables, market_code=market.paypal_market_code, locale=market.locale)
+    structural_run = classify_structural(country.tables, market_code=market.paypal_market_code, locale=market.locale, registry=FingerprintRegistry.load_builtin())
     return compare_runs(legacy_run, structural_run, market)
 
 
@@ -181,6 +276,7 @@ class ComparisonSummary:
     status_changed: int
     categories_changed: int
     value_changes: int
+    table_decision_changes: int
     total_observations: int
     countries_with_observations: int
     countries_with_value_changes: int
@@ -190,6 +286,7 @@ def _compare_summary(comparisons: list[CountryComparison]) -> ComparisonSummary:
     status_changed = sum(1 for c in comparisons if not c.status_match)
     categories_changed = sum(1 for c in comparisons if not c.selected_categories_match)
     value_changes = sum(len(c.value_changes) for c in comparisons)
+    table_decision_changes = sum(len(c.table_decision_changes) for c in comparisons)
     total_observations = sum(c.observation_count for c in comparisons)
     countries_with_observations = sum(1 for c in comparisons if c.observation_count)
     countries_with_value_changes = sum(1 for c in comparisons if c.value_changes)
@@ -198,6 +295,7 @@ def _compare_summary(comparisons: list[CountryComparison]) -> ComparisonSummary:
         status_changed=status_changed,
         categories_changed=categories_changed,
         value_changes=value_changes,
+        table_decision_changes=table_decision_changes,
         total_observations=total_observations,
         countries_with_observations=countries_with_observations,
         countries_with_value_changes=countries_with_value_changes,
@@ -211,6 +309,79 @@ class ComparisonReport:
     json_path: Path
     summary: ComparisonSummary
     comparisons: tuple[CountryComparison, ...]
+
+
+def compare_against_gold(gold_dir: Path, output_dir: Path, countries: set[str] | None = None) -> ComparisonReport:
+    """Compare structural classifier output against reviewed gold expectations.
+
+    Loads each CountryOutput in GOLD_DIR, treats the stored ``derived`` field as
+    the authoritative reviewed expectation, and runs the structural classifier
+    on the stored tables. The returned report surfaces status, category, and
+    value differences against the gold.
+    """
+    comparisons: list[CountryComparison] = []
+    paths = sorted(gold_dir.glob("*.json"))
+    for path in paths:
+        if countries and path.stem.upper() not in {c.upper() for c in countries}:
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            country = CountryOutput(**data)
+        except Exception as exc:
+            comparisons.append(
+                CountryComparison(
+                    country_code=path.stem.upper(),
+                    market_code=path.stem.upper(),
+                    locale=None,
+                    status_match=False,
+                    legacy_status="failed",
+                    structural_status="failed",
+                    selected_categories_match=False,
+                    legacy_selected_categories=(),
+                    structural_selected_categories=(),
+                    value_changes=(ValueChange("load", None, str(exc), "error"),),
+                    table_decision_changes=(),
+                    observation_count=0,
+                    structural_observations=(),
+                    legacy_classifier_version="gold",
+                    structural_classifier_version=CLASSIFIER_VERSION,
+                )
+            )
+            continue
+
+        market = country.market
+        gold_run = ClassificationRun(
+            derived=country.derived,
+            table_decisions=(),
+            observations=(),
+            classifier_version="gold",
+        )
+        structural_run = classify_structural(
+            country.tables,
+            market_code=market.paypal_market_code,
+            locale=market.locale,
+            registry=FingerprintRegistry.load_builtin(),
+        )
+        comparisons.append(compare_runs(gold_run, structural_run, market))
+
+    summary = _compare_summary(comparisons)
+    report = {
+        "summary": asdict(summary),
+        "countries": [asdict(c) for c in comparisons],
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "classification-comparison.json"
+    json_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+
+    md_path = output_dir / "classification-comparison.md"
+    md_path.write_text(_render_markdown(summary, comparisons), encoding="utf-8")
+
+    return ComparisonReport(
+        json_path=json_path,
+        summary=summary,
+        comparisons=tuple(comparisons),
+    )
 
 
 def compare_classifiers(json_dir: Path, output_dir: Path, countries: set[str] | None = None) -> ComparisonReport:
@@ -237,6 +408,7 @@ def compare_classifiers(json_dir: Path, output_dir: Path, countries: set[str] | 
                     legacy_selected_categories=(),
                     structural_selected_categories=(),
                     value_changes=(ValueChange("load", None, str(exc), "error"),),
+                    table_decision_changes=(),
                     observation_count=0,
                     structural_observations=(),
                     legacy_classifier_version="legacy",

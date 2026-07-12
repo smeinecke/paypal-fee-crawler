@@ -74,7 +74,7 @@ def test_table_profile_from_context() -> None:
         source_order=2,
         reference_id="ref-2",
     )
-    profile = build_table_profile(table, context=context)
+    profile = build_table_profile(table, contexts=(context,))
     assert profile.contexts == (context,)
     assert profile.contexts[0].component_id == "c-2"
 

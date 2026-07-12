@@ -38,6 +38,7 @@ from .models import (
     UnsupportedCountry,
 )
 from .output import OutputPublisher
+from .registry import FingerprintRegistry
 from .regression import PreviousState, RegressionLimits, check_regression, enforce_regression
 from .validation import validate_all_output, validate_country_output
 
@@ -52,6 +53,7 @@ class Crawler:
         self.http_client = HttpClient(config)
         self.warnings: list[ParserWarning] = []
         self._previous_state: PreviousState | None = None
+        self._registry = FingerprintRegistry.load_builtin()
 
     async def __aenter__(self) -> Crawler:
         return self
@@ -287,6 +289,7 @@ class Crawler:
         if cms is not None:
             extractor = ComponentsExtractor()
             sections, tables, warnings = extractor.extract(cms)
+            structural_input = extractor.table_records
             page_id = get_canonical_page_id(cms) or "unknown"
             page_title = self._extract_page_title(response.text, cms)
             page_updated = self._extract_update_date(cms, sections)
@@ -295,6 +298,7 @@ class Crawler:
             pdf_url = self._extract_pdf_url(cms)
         else:
             sections, tables, warnings = extract_html_tables(response.text, str(response.url))
+            structural_input = tables
             page_id = str(response.url).rstrip("/").split("/")[-1] or "unknown"
             page_title = self._extract_page_title(response.text, {})
             page_updated = self._extract_update_date({}, sections)
@@ -306,14 +310,20 @@ class Crawler:
         shadow_run: dict[str, Any] | None = None
         if self.config.classifier_mode == ClassifierMode.STRUCTURAL:
             derived = classify_structural(
-                tables, market_code=market.paypal_market_code, locale=page_locale
+                structural_input,
+                market_code=market.paypal_market_code,
+                locale=page_locale,
+                registry=self._registry,
             ).derived
         elif self.config.classifier_mode == ClassifierMode.SHADOW:
             legacy_run = classify_legacy(
                 tables, market_code=market.paypal_market_code, locale=page_locale
             )
             structural_run = classify_structural(
-                tables, market_code=market.paypal_market_code, locale=page_locale
+                structural_input,
+                market_code=market.paypal_market_code,
+                locale=page_locale,
+                registry=self._registry,
             )
             if legacy_run.derived != structural_run.derived:
                 self.warnings.append(

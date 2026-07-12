@@ -26,8 +26,8 @@ from .models import (
     Table,
 )
 from .normalize import clean_text
-from .profiles import TableProfile, build_table_profile
-from .registry import FingerprintRegistry
+from .profiles import NormalizedTableRecord, TableContext, TableProfile, build_table_profile
+from .registry import FingerprintBuilder, FingerprintRegistry
 from .scoring import FeeCategory
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,7 @@ class ClassificationCandidate:
     confidence: float
     evidence: list[str]
     profile: TableProfile | None = None
+    contexts: tuple[TableContext, ...] = ()
 
 
 # Strong document-id signals. These are corroborated with table content and are
@@ -1595,7 +1596,7 @@ def _derive_structural_from_candidates(
     all_fixed_fees: list[FixedFees] = []
     fixed_by_currency: dict[str, str] = {}
     for candidate in by_category[FeeCategory.FIXED_FEE]:
-        profile = candidate.profile or build_table_profile(candidate.table)
+        profile = candidate.profile or build_table_profile(candidate.table, candidate.contexts)
         decision = extract_fixed_fees(candidate.table, profile)
         observations.extend(decision.observations)
         for sig in decision.evidence:
@@ -1621,7 +1622,7 @@ def _derive_structural_from_candidates(
     if standard_candidates:
         standard_candidates.sort(key=lambda c: c.confidence, reverse=True)
         selected = standard_candidates[0]
-        profile = selected.profile or build_table_profile(selected.table)
+        profile = selected.profile or build_table_profile(selected.table, selected.contexts)
         decision = extract_standard_percentage(
             selected.table,
             profile,
@@ -1639,7 +1640,7 @@ def _derive_structural_from_candidates(
     surcharges: list[InternationalSurcharge] = []
     surcharge_by_region: dict[str, str | None] = {}
     for candidate in by_category[FeeCategory.INTERNATIONAL_SURCHARGE]:
-        profile = candidate.profile or build_table_profile(candidate.table)
+        profile = candidate.profile or build_table_profile(candidate.table, candidate.contexts)
         decision = extract_international_surcharges(candidate.table, profile, market_code)
         observations.extend(decision.observations)
         for sig in decision.evidence:
@@ -1665,7 +1666,7 @@ def _derive_structural_from_candidates(
     last_conversion_candidate: ClassificationCandidate | None = None
     for candidate in by_category[FeeCategory.CURRENCY_CONVERSION]:
         last_conversion_candidate = candidate
-        profile = candidate.profile or build_table_profile(candidate.table)
+        profile = candidate.profile or build_table_profile(candidate.table, candidate.contexts)
         # Conversion requires approved registry evidence for the first structural release.
         has_approved = bool(
             profile.internal_names
@@ -1739,10 +1740,73 @@ def _derive_structural_from_candidates(
     return derived, tuple(observations)
 
 
+def _table_decision_from_structural(
+    table: Table,
+    decision: scoring.ClassificationDecision,
+    contexts: tuple[TableContext, ...],
+) -> TableDecision:
+    """Build a per-table decision record from the structural scorer output."""
+    profile = build_table_profile(table, contexts)
+    fingerprint = str(FingerprintBuilder.build(profile, table))
+    selected_score = decision.selected_score
+    blockers = selected_score.blockers if selected_score else ()
+    evidence_codes = tuple(
+        sorted({s.code.value for s in (selected_score.signals if selected_score else ())})
+    )
+    evidence_sources = tuple(
+        sorted({s.source.value for s in (selected_score.signals if selected_score else ())})
+    )
+    return TableDecision(
+        table_id=table.table_id,
+        document_id=table.document_id,
+        component_id=table.component_id,
+        fingerprint=fingerprint,
+        selected_category=decision.selected_category,
+        selected_score=selected_score.score if selected_score else None,
+        blockers=blockers,
+        evidence_codes=evidence_codes,
+        evidence_sources=evidence_sources,
+    )
+
+
+def _table_decision_from_legacy(candidate: ClassificationCandidate) -> TableDecision:
+    """Build a per-table decision record from a legacy candidate."""
+    table = candidate.table
+    profile = candidate.profile or build_table_profile(table)
+    fingerprint = str(FingerprintBuilder.build(profile, table))
+    score = int(candidate.confidence * scoring.MAX_CATEGORY_SCORE)
+    return TableDecision(
+        table_id=table.table_id,
+        document_id=table.document_id,
+        component_id=table.component_id,
+        fingerprint=fingerprint,
+        selected_category=candidate.category,
+        selected_score=score,
+        blockers=(),
+        evidence_codes=tuple(sorted(set(candidate.evidence))),
+        evidence_sources=(),
+    )
+
+
+@dataclass(frozen=True)
+class TableDecision:
+    """Per-table classification decision with stable identity and evidence."""
+
+    table_id: str | None
+    document_id: str | None
+    component_id: str | None
+    fingerprint: str | None
+    selected_category: FeeCategory | None
+    selected_score: int | None
+    blockers: tuple[scoring.BlockerCode, ...]
+    evidence_codes: tuple[str, ...]
+    evidence_sources: tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class ClassificationRun:
     derived: DerivedFees
-    table_decisions: tuple[scoring.ClassificationDecision, ...]
+    table_decisions: tuple[TableDecision, ...]
     observations: tuple[ClassificationObservation, ...]
     classifier_version: str
 
@@ -1758,16 +1822,17 @@ def classify_legacy(
     """Run the legacy classifier and wrap the result in a common internal format."""
     candidates, other_categories = _classify_all_tables(tables)
     derived = _derive_from_candidates(candidates, market_code, other_categories)
+    table_decisions = tuple(_table_decision_from_legacy(candidate) for candidate in candidates)
     return ClassificationRun(
         derived=derived,
-        table_decisions=(),
+        table_decisions=table_decisions,
         observations=(),
         classifier_version="legacy",
     )
 
 
 def classify_structural(
-    tables: list[Table],
+    tables: list[Table] | list[NormalizedTableRecord],
     market_code: str | None = None,
     locale: str | None = None,
     registry: FingerprintRegistry | None = None,
@@ -1776,18 +1841,27 @@ def classify_structural(
 
     This function uses the scoring engine in ``scoring.py`` to select a category
     for each table, then extracts values using the existing extraction helpers.
+    It accepts either plain ``Table`` objects or ``NormalizedTableRecord``
+    objects that preserve multiple reference contexts.
     """
     candidates: list[ClassificationCandidate] = []
-    decisions: list[scoring.ClassificationDecision] = []
+    table_decisions: list[TableDecision] = []
     observations: list[ClassificationObservation] = []
 
-    for table in tables:
+    for item in tables:
+        if isinstance(item, NormalizedTableRecord):
+            table = item.table
+            contexts = item.contexts
+        else:
+            table = item
+            contexts = (TableContext.from_table(table),)
+
         if not table.rows and not table.headers:
             continue
 
         scores = scoring.score_all_categories(table, market_code, locale, registry)
         decision = scoring.select_category(scores)
-        decisions.append(decision)
+        table_decisions.append(_table_decision_from_structural(table, decision, contexts))
 
         if decision.status == "selected" and decision.selected_category is not None and decision.selected_score is not None:
             selected_score = decision.selected_score
@@ -1797,7 +1871,8 @@ def classify_structural(
                 category=decision.selected_category,
                 confidence=score / scoring.MAX_CATEGORY_SCORE,
                 evidence=[s.detail or s.code for s in selected_score.signals],
-                profile=build_table_profile(table),
+                profile=build_table_profile(table, contexts),
+                contexts=contexts,
             )
             candidates.append(candidate)
 
@@ -1841,7 +1916,7 @@ def classify_structural(
     derived, extract_observations = _derive_structural_from_candidates(candidates, market_code, other_categories)
     return ClassificationRun(
         derived=derived,
-        table_decisions=tuple(decisions),
+        table_decisions=tuple(table_decisions),
         observations=tuple(observations + list(extract_observations)),
         classifier_version=CLASSIFIER_VERSION,
     )

@@ -182,9 +182,9 @@ def test_registry_approved_fingerprint_boosts_score() -> None:
     from paypal_fee_crawler.registry import FingerprintBuilder
 
     table = _table("Commercial transaction fees", [["Commercial transactions", "2.99% + 0.39 EUR"]])
-    run = classify_structural([table])
-    fp = run.table_decisions[0].ranked_scores[0].signals[0].code
-    assert fp == scoring.EvidenceCode.HAS_PERCENTAGE_COLUMN
+    scores = scoring.score_all_categories(table)
+    standard_score = next(s for s in scores if s.category == scoring.FeeCategory.STANDARD_COMMERCIAL)
+    assert standard_score.signals[0].code == scoring.EvidenceCode.HAS_PERCENTAGE_COLUMN
 
     profile = build_table_profile(table)
     fingerprint = str(FingerprintBuilder.build(profile, table))
@@ -201,9 +201,9 @@ def test_registry_approved_fingerprint_boosts_score() -> None:
             )
         }
     )
-    run = classify_structural([table], registry=registry)
-    signals = [s.code for s in run.table_decisions[0].ranked_scores[0].signals]
-    assert scoring.EvidenceCode.KNOWN_FINGERPRINT in signals
+    scores = scoring.score_all_categories(table, registry=registry)
+    standard_score = next(s for s in scores if s.category == scoring.FeeCategory.STANDARD_COMMERCIAL)
+    assert scoring.EvidenceCode.KNOWN_FINGERPRINT in [s.code for s in standard_score.signals]
 
 
 def test_registry_document_id_blocks_incompatible_category() -> None:
@@ -222,9 +222,9 @@ def test_registry_document_id_blocks_incompatible_category() -> None:
             )
         }
     )
-    run = classify_structural([table], registry=registry)
-    standard_score = next(s for s in run.table_decisions[0].ranked_scores if s.category == scoring.FeeCategory.STANDARD_COMMERCIAL)
+    scores = scoring.score_all_categories(table, registry=registry)
+    standard_score = next(s for s in scores if s.category == scoring.FeeCategory.STANDARD_COMMERCIAL)
     assert scoring.BlockerCode.INCOMPATIBLE_FINGERPRINT in standard_score.blockers
 
-    fixed_score = next(s for s in run.table_decisions[0].ranked_scores if s.category == scoring.FeeCategory.FIXED_FEE)
+    fixed_score = next(s for s in scores if s.category == scoring.FeeCategory.FIXED_FEE)
     assert scoring.EvidenceCode.KNOWN_DOCUMENT_ID in [s.code for s in fixed_score.signals]

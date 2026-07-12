@@ -14,7 +14,7 @@ from typing import Any
 import click
 
 from .classify import CLASSIFIER_VERSION
-from .comparison import compare_classifiers
+from .comparison import compare_against_gold, compare_classifiers
 from .crawler import Crawler
 from .exceptions import (
     ConfigurationError,
@@ -383,16 +383,17 @@ def promote_classifiers(
 ) -> None:
     """Promote the structural classifier if the gold corpus and tests pass.
 
-    Loads each CountryOutput from GOLD_DIR and compares legacy vs structural
-    outputs.  Any status change, category change, or value change blocks
-    promotion.  When ``--run-tests`` is set, the pytest fixture test suite is
-    also required to pass.  On success, a promotion report is written and the
+    Loads each CountryOutput from GOLD_DIR, treats the stored ``derived`` field
+    as the reviewed authoritative expectation, and compares the structural
+    classifier output against that gold. Any status, category, or value mismatch
+    blocks promotion. When ``--run-tests`` is set, the pytest fixture test suite
+    is also required to pass. On success, a promotion report is written and the
     classifier version may be bumped with ``--bump``.
     """
     _configure_logging(verbose)
     output_path = Path(output or ".")
 
-    report = compare_classifiers(Path(gold_dir), output_path)
+    report = compare_against_gold(Path(gold_dir), output_path)
     summary = report.summary
     errors: list[str] = []
     if summary.status_changed:
@@ -421,13 +422,14 @@ def promote_classifiers(
     promotion_report = {
         "schema_version": 1,
         "approved_at": _iso_now(),
-        "legacy_classifier_version": "legacy",
+        "gold_classifier_version": "gold",
         "structural_classifier_version": CLASSIFIER_VERSION,
         "summary": {
             "total_countries": summary.total_countries,
             "status_changed": summary.status_changed,
             "categories_changed": summary.categories_changed,
             "value_changes": summary.value_changes,
+            "table_decision_changes": summary.table_decision_changes,
             "total_observations": summary.total_observations,
         },
     }

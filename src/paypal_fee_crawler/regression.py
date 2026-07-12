@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .exceptions import RegressionError
-from .models import ChangeReport, ChangeSeverity, ChangeType, CountryManifest, CountryOutput, UnsupportedCountry
+from .models import ChangeReport, ChangeType, CountryManifest, CountryOutput, UnsupportedCountry
 
 logger = logging.getLogger(__name__)
 
@@ -23,30 +23,9 @@ class RegressionLimits:
     allow_country_drop: bool = False
 
 
-_SEVERITY_BY_KIND: dict[str, ChangeSeverity] = {
-    "structural_regression": ChangeSeverity.REGRESSION,
-    "supported_to_transient": ChangeSeverity.REGRESSION,
-    "supported_to_unsupported": ChangeSeverity.REGRESSION,
-    "removed_country": ChangeSeverity.REGRESSION,
-    "sharp_country_drop": ChangeSeverity.REGRESSION,
-    "discovered_to_missing": ChangeSeverity.REGRESSION,
-    "removed_table": ChangeSeverity.REGRESSION,
-    "sharp_table_drop": ChangeSeverity.REGRESSION,
-    "sharp_row_drop": ChangeSeverity.REGRESSION,
-    "lost_core_category": ChangeSeverity.REGRESSION,
-    "classified_to_unclassified": ChangeSeverity.REGRESSION,
-    "unsupported_to_supported": ChangeSeverity.WARNING,
-    "transient_to_supported": ChangeSeverity.WARNING,
-    "added_country": ChangeSeverity.WARNING,
-    "newly_discovered": ChangeSeverity.INFO,
-    "new_table": ChangeSeverity.INFO,
-}
-
-
 def _change_type(kind: str, **kwargs: Any) -> ChangeType:
-    """Build a ChangeType with severity inferred from its kind."""
-    severity = _SEVERITY_BY_KIND.get(kind, ChangeSeverity.INFO)
-    return ChangeType(kind=kind, severity=severity, **kwargs)
+    """Build a ChangeType whose severity is derived from its kind."""
+    return ChangeType(kind=kind, **kwargs)
 
 
 @dataclass

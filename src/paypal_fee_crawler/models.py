@@ -464,18 +464,43 @@ class ChangeKind(StrEnum):
     REGRESSION = "regression"
 
 
+_CHANGE_SEVERITY_BY_KIND: dict[str, ChangeSeverity] = {
+    "structural_regression": ChangeSeverity.REGRESSION,
+    "supported_to_transient": ChangeSeverity.REGRESSION,
+    "supported_to_unsupported": ChangeSeverity.REGRESSION,
+    "removed_country": ChangeSeverity.REGRESSION,
+    "sharp_country_drop": ChangeSeverity.REGRESSION,
+    "discovered_to_missing": ChangeSeverity.REGRESSION,
+    "removed_table": ChangeSeverity.REGRESSION,
+    "sharp_table_drop": ChangeSeverity.REGRESSION,
+    "sharp_row_drop": ChangeSeverity.REGRESSION,
+    "lost_core_category": ChangeSeverity.REGRESSION,
+    "classified_to_unclassified": ChangeSeverity.REGRESSION,
+    "unsupported_to_supported": ChangeSeverity.WARNING,
+    "transient_to_supported": ChangeSeverity.WARNING,
+    "added_country": ChangeSeverity.WARNING,
+    "newly_discovered": ChangeSeverity.INFO,
+    "new_table": ChangeSeverity.INFO,
+}
+
+
 class ChangeType(BaseModel):
     """A single classified change."""
 
     model_config = ConfigDict(frozen=True)
 
     kind: str
-    severity: ChangeSeverity = ChangeSeverity.INFO
     country_code: str | None = None
     identifier: str | None = None
     before: Any | None = None
     after: Any | None = None
     message: str | None = None
+
+    @computed_field
+    @property
+    def severity(self) -> ChangeSeverity:
+        """Severity derived from the change kind."""
+        return _CHANGE_SEVERITY_BY_KIND.get(self.kind, ChangeSeverity.INFO)
 
 
 class ChangeReport(BaseModel):

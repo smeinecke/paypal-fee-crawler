@@ -16,7 +16,7 @@ from typing import Literal
 from .models import FeeToken, Table
 from .normalize import clean_text
 from .profiles import TableProfile, build_table_profile
-from .registry import FingerprintBuilder, FingerprintRegistry
+from .registry import ClusterRecord, FingerprintBuilder, FingerprintRegistry
 
 
 class FeeCategory(StrEnum):
@@ -88,6 +88,23 @@ class ClassificationDecision:
     winner_margin: int | None
 
 
+def _required_features_satisfied(cluster: ClusterRecord, profile: TableProfile, table: Table) -> bool:
+    """Return True when *table* and *profile* satisfy a cluster's required features."""
+    checks: dict[str, bool] = {
+        "has_percentage": profile.has_percentage,
+        "has_money": profile.has_money,
+        "has_multiple_currencies": profile.has_multiple_currencies,
+        "has_additive_percentages": profile.has_additive_percentages,
+        "mixed_percentage_money_row": bool(profile.mixed_percentage_money_rows),
+        "has_reference": bool(table.reference_id or table.source_table_ids),
+        "has_headers": bool(table.headers),
+        "has_fee_data_keys": bool(profile.fee_data_keys),
+        "has_internal_names": bool(profile.internal_names),
+        "has_content_types": bool(profile.content_types),
+    }
+    return all(checks.get(feature, True) for feature in cluster.required_features)
+
+
 def _registry_signals(
     registry: FingerprintRegistry | None,
     profile: TableProfile,
@@ -101,7 +118,14 @@ def _registry_signals(
         return signals, blockers
     fingerprint = FingerprintBuilder.build(profile, table)
     match = registry.lookup(fingerprint)
-    if match.approved and match.cluster is not None and match.cluster.category == category.value:
+    fingerprint_approved = bool(
+        match.approved
+        and match.cluster is not None
+        and match.cluster.category == category.value
+        and _required_features_satisfied(match.cluster, profile, table)
+    )
+    if fingerprint_approved:
+        assert match.cluster is not None
         signals.append(
             EvidenceSignal(
                 code=EvidenceCode.KNOWN_FINGERPRINT,
@@ -110,11 +134,16 @@ def _registry_signals(
                 detail=f"approved cluster {match.cluster.name}",
             )
         )
+
     document_id = table.document_id or ""
     doc_cluster = registry.cluster_for_document_id(document_id)
-    if doc_cluster is not None and doc_cluster.category != category.value:
+    if doc_cluster is not None and doc_cluster.category != category.value and not fingerprint_approved:
+        # A fingerprint match for the current category is stronger evidence than
+        # a document-id mismatch elsewhere; do not block in that case.
         blockers.append(BlockerCode.INCOMPATIBLE_FINGERPRINT)
-    elif doc_cluster is not None and doc_cluster.category == category.value:
+    elif doc_cluster is not None and doc_cluster.category == category.value and not fingerprint_approved:
+        # Only add registry document-id evidence when the fingerprint did not
+        # already approve the table, so the strongest evidence is recorded.
         signals.append(
             EvidenceSignal(
                 code=EvidenceCode.KNOWN_DOCUMENT_ID,
@@ -124,6 +153,11 @@ def _registry_signals(
             )
         )
     return signals, blockers
+
+
+def _has_registry_document_id(signals: list[EvidenceSignal]) -> bool:
+    """Return True if the registry already supplied a known-document-id signal."""
+    return any(s.code == EvidenceCode.KNOWN_DOCUMENT_ID and s.source == EvidenceSource.REGISTRY for s in signals)
 
 
 MAX_CATEGORY_SCORE = 100
@@ -654,7 +688,7 @@ def score_standard_commercial(
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
 
     doc_id = (table.document_id or "").upper()
-    if doc_id in STANDARD_DOC_IDS:
+    if doc_id in STANDARD_DOC_IDS and not _has_registry_document_id(signals):
         _add_signal(signals, EvidenceCode.KNOWN_DOCUMENT_ID, EvidenceSource.RELATIONSHIP, 20, detail=doc_id)
 
     meta_match, meta_detail = _metadata_matches_category(table, category)
@@ -713,7 +747,7 @@ def score_fixed_fee(
         blockers.append(BlockerCode.ONLY_PERCENTAGES_FOR_FIXED_FEE)
 
     doc_id = (table.document_id or "").upper()
-    if doc_id in FIXED_DOC_IDS:
+    if doc_id in FIXED_DOC_IDS and not _has_registry_document_id(signals):
         _add_signal(signals, EvidenceCode.KNOWN_DOCUMENT_ID, EvidenceSource.RELATIONSHIP, 20, detail=doc_id)
 
     meta_match, meta_detail = _metadata_matches_category(table, category)
@@ -772,7 +806,7 @@ def score_international_surcharge(
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
 
     doc_id = (table.document_id or "").upper()
-    if doc_id in INTERNATIONAL_DOC_IDS:
+    if doc_id in INTERNATIONAL_DOC_IDS and not _has_registry_document_id(signals):
         _add_signal(signals, EvidenceCode.KNOWN_DOCUMENT_ID, EvidenceSource.RELATIONSHIP, 20, detail=doc_id)
 
     meta_match, meta_detail = _metadata_matches_category(table, category)
@@ -831,7 +865,7 @@ def score_conversion(
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
 
     doc_id = (table.document_id or "").upper()
-    if doc_id in CONVERSION_DOC_IDS:
+    if doc_id in CONVERSION_DOC_IDS and not _has_registry_document_id(signals):
         _add_signal(signals, EvidenceCode.KNOWN_DOCUMENT_ID, EvidenceSource.RELATIONSHIP, 20, detail=doc_id)
 
     meta_match, meta_detail = _metadata_matches_category(table, category)

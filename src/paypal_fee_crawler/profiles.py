@@ -251,7 +251,7 @@ def _token_metadata_sets(tokens: list[FeeToken]) -> tuple[set[str], set[str], se
     return keys, names, content_types
 
 
-def build_table_profile(table: Table, context: TableContext | None = None) -> TableProfile:
+def build_table_profile(table: Table, contexts: tuple[TableContext, ...] | None = None) -> TableProfile:
     """Return a deterministic structural profile for *table*."""
     rows = table.rows
     num_rows = len(rows)
@@ -356,8 +356,7 @@ def build_table_profile(table: Table, context: TableContext | None = None) -> Ta
             )
         )
 
-    contexts: tuple[TableContext, ...] = (context,) if context is not None else ()
-    if not contexts:
+    if contexts is None:
         contexts = (
             TableContext(
                 component_id=table.component_id,
