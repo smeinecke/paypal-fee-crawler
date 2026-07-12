@@ -261,13 +261,9 @@ class ComponentsExtractor:
                     merged_record = self._merge_table_records(existing, record, merged_table)
                     self._table_by_id[table.document_id] = merged_table
                     self._table_records_by_id[table.document_id] = merged_record
-                    self.tables = [
-                        merged_table if t.document_id == table.document_id else t
-                        for t in self.tables
-                    ]
+                    self.tables = [merged_table if t.document_id == table.document_id else t for t in self.tables]
                     self.table_records = [
-                        merged_record if r.table.document_id == table.document_id else r
-                        for r in self.table_records
+                        merged_record if r.table.document_id == table.document_id else r for r in self.table_records
                     ]
                     return
                 if table.document_id:
@@ -504,9 +500,7 @@ class ComponentsExtractor:
                 if record.table.document_id in target_records:
                     existing = target_records[record.table.document_id]
                     merged_table = self._merge_tables(existing.table, record.table)
-                    target_records[record.table.document_id] = self._merge_table_records(
-                        existing, record, merged_table
-                    )
+                    target_records[record.table.document_id] = self._merge_table_records(existing, record, merged_table)
                 else:
                     target_records[record.table.document_id] = record
 
@@ -570,9 +564,7 @@ class ComponentsExtractor:
         self.tables = [record.table for record in content_records]
         self._table_by_id = {t.document_id: t for t in self.tables if t.document_id}
         self._table_records_by_id = {
-            record.table.document_id: record
-            for record in content_records
-            if record.table.document_id
+            record.table.document_id: record for record in content_records if record.table.document_id
         }
 
     def has_any_table(self) -> bool:

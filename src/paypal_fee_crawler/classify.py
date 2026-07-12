@@ -48,7 +48,17 @@ class ClassificationCandidate:
 # not treated as sufficient on their own.
 # FEETB16 = standard commercial rate table; FEETB18/306/261 = its commercial fixed-fee tables.
 _STANDARD_DOC_IDS = {"FEETB16", "FEETB359"}
-_FIXED_DOC_IDS = {"FEETB18", "FEETB306", "FEETB261", "FEETB872", "FEETB871", "FEETB354", "FEETB363", "FEETB440", "FEETB441"}
+_FIXED_DOC_IDS = {
+    "FEETB18",
+    "FEETB306",
+    "FEETB261",
+    "FEETB872",
+    "FEETB871",
+    "FEETB354",
+    "FEETB363",
+    "FEETB440",
+    "FEETB441",
+}
 _INTERNATIONAL_DOC_IDS = {"FEETB91", "FEETB100", "FEETB382", "FEETB153", "FEETB533"}
 _CONVERSION_DOC_IDS = {"FEETB539", "FEETB128", "FEETB159", "FEETB160", "FEETB154", "FEETB156", "FEETB157", "FEETB338"}
 
@@ -1192,9 +1202,7 @@ def _normalize_region(text: str) -> str | None:
     return None
 
 
-def _extract_international_surcharges(
-    table: Table, market_code: str | None = None
-) -> list[InternationalSurcharge]:
+def _extract_international_surcharges(table: Table, market_code: str | None = None) -> list[InternationalSurcharge]:
     """Extract region->percentage rows from an international-surcharge table.
 
     When the table lists rows by market group, the row containing the market
@@ -1701,7 +1709,9 @@ def _derive_structural_from_candidates(
         status = "unclassified"
     elif warnings:
         status = "partial"
-    elif standard_percentage and all_fixed_fees and (not intl_exposed or surcharges) and (not conv_exposed or conversion):
+    elif (
+        standard_percentage and all_fixed_fees and (not intl_exposed or surcharges) and (not conv_exposed or conversion)
+    ):
         status = "complete"
     else:
         status = "partial"

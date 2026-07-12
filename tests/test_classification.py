@@ -223,7 +223,9 @@ def test_registry_document_id_blocks_incompatible_category() -> None:
         }
     )
     run = classify_structural([table], registry=registry)
-    standard_score = next(s for s in run.table_decisions[0].ranked_scores if s.category == scoring.FeeCategory.STANDARD_COMMERCIAL)
+    standard_score = next(
+        s for s in run.table_decisions[0].ranked_scores if s.category == scoring.FeeCategory.STANDARD_COMMERCIAL
+    )
     assert scoring.BlockerCode.INCOMPATIBLE_FINGERPRINT in standard_score.blockers
 
     fixed_score = next(s for s in run.table_decisions[0].ranked_scores if s.category == scoring.FeeCategory.FIXED_FEE)

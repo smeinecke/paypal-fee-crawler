@@ -353,7 +353,12 @@ def tokenize_text(text: str) -> list[FeeToken]:
             continue
         seen.add(raw)
         # Avoid matching isolated numbers without context.
-        if not match.group("suffix") and not match.group("currency_pre") and not match.group("currency_post") and not match.group("operator"):
+        if (
+            not match.group("suffix")
+            and not match.group("currency_pre")
+            and not match.group("currency_post")
+            and not match.group("operator")
+        ):
             # Still accept if the surrounding text contains a % or currency nearby.
             start, end = match.start(), match.end()
             window = text[max(0, start - 10) : min(len(text), end + 10)]

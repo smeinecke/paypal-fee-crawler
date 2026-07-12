@@ -358,7 +358,9 @@ def extract_standard_percentage(
             all_text = _norm(" ".join(cell.text for cell in row.cells))
             if _contains_any(first_cell_text, _STD_ROW_EXCLUDE) or _contains_any(all_text, _STD_ROW_EXCLUDE):
                 continue
-            if market_code and (market_code_matches(first_cell_text, market_code) or market_code_matches(all_text, market_code)):
+            if market_code and (
+                market_code_matches(first_cell_text, market_code) or market_code_matches(all_text, market_code)
+            ):
                 candidates.append((row_idx, pct, 5))
                 continue
             if _contains_any(first_cell_text, _STD_ROW_FALLBACK) or _contains_any(all_text, _STD_ROW_FALLBACK):
@@ -373,7 +375,9 @@ def extract_standard_percentage(
                 message="no standard-commercial percentage row found",
             )
         )
-        return ExtractionDecision(value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations))
+        return ExtractionDecision(
+            value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations)
+        )
 
     candidates.sort(key=lambda x: (x[2], -x[0]))
     selected_row, selected_pct, priority = candidates[0]
@@ -636,12 +640,14 @@ def extract_conversion_spread(
     observations: list[ClassificationObservation] = []
     selected_rows: list[int] = []
 
-    text = _norm(" ".join(
-        [table.caption or ""]
-        + list(table.section_path or [])
-        + list(table.parent_path or [])
-        + [header.text for header in table.headers]
-    ))
+    text = _norm(
+        " ".join(
+            [table.caption or ""]
+            + list(table.section_path or [])
+            + list(table.parent_path or [])
+            + [header.text for header in table.headers]
+        )
+    )
 
     conversion_keywords = (
         "currency conversion",
@@ -678,7 +684,9 @@ def extract_conversion_spread(
                 message="conversion table lacks approved evidence or unambiguous label",
             )
         )
-        return ExtractionDecision(value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations))
+        return ExtractionDecision(
+            value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations)
+        )
 
     roles = _column_roles(profile)
     pcts: list[tuple[int, str]] = []
@@ -710,7 +718,9 @@ def extract_conversion_spread(
                 message="no conversion percentage found",
             )
         )
-        return ExtractionDecision(value=None, selected_rows=tuple(selected_rows), evidence=tuple(signals), observations=tuple(observations))
+        return ExtractionDecision(
+            value=None, selected_rows=tuple(selected_rows), evidence=tuple(signals), observations=tuple(observations)
+        )
 
     # Prefer the first structurally assigned percentage.
     selected_row, selected_pct = pcts[0]

@@ -136,32 +136,36 @@ MARKET_ALIASES = {
 REGION_GROUPS = {
     "US_CA": frozenset({"us", "usa", "ca", "canada"}),
     "EEA": frozenset({"eea", "ewr", "ehp", "e.u", "european economic area", "european economic"}),
-    "GB": frozenset({"gb", "uk", "united kingdom", "great britain", "britain", "england", "royaume-uni", "grossbritannien"}),
-    "OTHER": frozenset({
-        "all other",
-        "all other markets",
-        "all other transactions",
-        "rest of world",
-        "rest of the world",
-        "rest of markets",
-        "rest of the markets",
-        "other",
-        "andere",
-        "rest",
-        "todos los demás",
-        "todos los demas",
-        "todas las demás",
-        "todas las demas",
-        "všetky ostatné",
-        "vsetky ostatne",
-        "todos los mercados",
-        "todas las mercados",
-        "všetky trhy",
-        "vsetky trhy",
-        "restantes",
-        "otros mercados",
-        "otras mercados",
-    }),
+    "GB": frozenset(
+        {"gb", "uk", "united kingdom", "great britain", "britain", "england", "royaume-uni", "grossbritannien"}
+    ),
+    "OTHER": frozenset(
+        {
+            "all other",
+            "all other markets",
+            "all other transactions",
+            "rest of world",
+            "rest of the world",
+            "rest of markets",
+            "rest of the markets",
+            "other",
+            "andere",
+            "rest",
+            "todos los demás",
+            "todos los demas",
+            "todas las demás",
+            "todas las demas",
+            "všetky ostatné",
+            "vsetky ostatne",
+            "todos los mercados",
+            "todas las mercados",
+            "všetky trhy",
+            "vsetky trhy",
+            "restantes",
+            "otros mercados",
+            "otras mercados",
+        }
+    ),
 }
 
 # ---------------------------------------------------------------------------
@@ -171,9 +175,13 @@ REGION_GROUPS = {
 # ---------------------------------------------------------------------------
 
 STANDARD_DOC_IDS = frozenset({"FEETB16", "FEETB359"})
-FIXED_DOC_IDS = frozenset({"FEETB18", "FEETB306", "FEETB261", "FEETB872", "FEETB871", "FEETB354", "FEETB363", "FEETB440", "FEETB441"})
+FIXED_DOC_IDS = frozenset(
+    {"FEETB18", "FEETB306", "FEETB261", "FEETB872", "FEETB871", "FEETB354", "FEETB363", "FEETB440", "FEETB441"}
+)
 INTERNATIONAL_DOC_IDS = frozenset({"FEETB91", "FEETB100", "FEETB382", "FEETB153", "FEETB533"})
-CONVERSION_DOC_IDS = frozenset({"FEETB539", "FEETB128", "FEETB159", "FEETB160", "FEETB154", "FEETB156", "FEETB157", "FEETB338"})
+CONVERSION_DOC_IDS = frozenset(
+    {"FEETB539", "FEETB128", "FEETB159", "FEETB160", "FEETB154", "FEETB156", "FEETB157", "FEETB338"}
+)
 
 # ---------------------------------------------------------------------------
 # Lexical keyword lists.  These are intentionally narrower than the legacy
@@ -600,7 +608,13 @@ def _metadata_matches_category(table: Table, category: FeeCategory) -> tuple[boo
 
     hints: dict[FeeCategory, set[str]] = {
         FeeCategory.STANDARD_COMMERCIAL: {
-            "standard", "commercial", "transaction", "payment", "merchant", "percentage", "rate",
+            "standard",
+            "commercial",
+            "transaction",
+            "payment",
+            "merchant",
+            "percentage",
+            "rate",
         },
         FeeCategory.FIXED_FEE: {"fixed", "currency", "per_transaction", "pertransaction"},
         FeeCategory.INTERNATIONAL_SURCHARGE: {"international", "crossborder", "surcharge", "region"},

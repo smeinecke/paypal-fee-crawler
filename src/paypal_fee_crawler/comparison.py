@@ -85,9 +85,7 @@ def compare_runs(
             kind = "missing"
         else:
             kind = "changed"
-        value_changes.append(
-            ValueChange("standard_commercial.percentage", legacy_pct, structural_pct, kind)
-        )
+        value_changes.append(ValueChange("standard_commercial.percentage", legacy_pct, structural_pct, kind))
 
     legacy_fixed = _fixed_fees_set(legacy.commercial_fixed_fees)
     structural_fixed = _fixed_fees_set(structural.commercial_fixed_fees)
@@ -102,9 +100,7 @@ def compare_runs(
                 kind = "missing"
             else:
                 kind = "conflict"
-            value_changes.append(
-                ValueChange(f"fixed_fee.{currency}", legacy_amount, structural_amount, kind)
-            )
+            value_changes.append(ValueChange(f"fixed_fee.{currency}", legacy_amount, structural_amount, kind))
 
     legacy_surcharges = _surcharges_set(legacy.international_surcharges)
     structural_surcharges = _surcharges_set(structural.international_surcharges)
@@ -119,9 +115,7 @@ def compare_runs(
                 kind = "missing"
             else:
                 kind = "conflict"
-            value_changes.append(
-                ValueChange(f"international_surcharge.{region}", legacy_pct, structural_pct, kind)
-            )
+            value_changes.append(ValueChange(f"international_surcharge.{region}", legacy_pct, structural_pct, kind))
 
     legacy_conv = _conversion_spread(legacy.currency_conversion)
     structural_conv = _conversion_spread(structural.currency_conversion)
@@ -132,9 +126,7 @@ def compare_runs(
             kind = "missing"
         else:
             kind = "changed"
-        value_changes.append(
-            ValueChange("currency_conversion.spread_percentage", legacy_conv, structural_conv, kind)
-        )
+        value_changes.append(ValueChange("currency_conversion.spread_percentage", legacy_conv, structural_conv, kind))
 
     legacy_cats = _selected_categories(legacy)
     structural_cats = _selected_categories(structural)
@@ -303,7 +295,9 @@ def _render_markdown(summary: ComparisonSummary, comparisons: list[CountryCompar
             lines.append(f"- Load error: {c.value_changes[0].structural}")
         else:
             for change in c.value_changes:
-                lines.append(f"- `{change.field}`: legacy={change.legacy!r} structural={change.structural!r} ({change.kind})")
+                lines.append(
+                    f"- `{change.field}`: legacy={change.legacy!r} structural={change.structural!r} ({change.kind})"
+                )
         lines.append("")
 
     return "\n".join(lines)

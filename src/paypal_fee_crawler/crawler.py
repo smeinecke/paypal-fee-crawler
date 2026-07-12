@@ -222,7 +222,9 @@ class Crawler:
                 return language[0].strip()
         return None
 
-    async def _crawl_country(self, market: Market) -> tuple[CountryOutput | None, dict[str, Any] | None, UnsupportedCountry | None, bool]:
+    async def _crawl_country(
+        self, market: Market
+    ) -> tuple[CountryOutput | None, dict[str, Any] | None, UnsupportedCountry | None, bool]:
         """Crawl a single country and return its output, shadow run, unsupported record, or transient flag.
 
         The shadow run is returned as a dict only when ``classifier_mode`` is
@@ -305,16 +307,10 @@ class Crawler:
         self.warnings.extend(warnings)
         shadow_run: dict[str, Any] | None = None
         if self.config.classifier_mode == ClassifierMode.STRUCTURAL:
-            derived = classify_structural(
-                tables, market_code=market.paypal_market_code, locale=page_locale
-            ).derived
+            derived = classify_structural(tables, market_code=market.paypal_market_code, locale=page_locale).derived
         elif self.config.classifier_mode == ClassifierMode.SHADOW:
-            legacy_run = classify_legacy(
-                tables, market_code=market.paypal_market_code, locale=page_locale
-            )
-            structural_run = classify_structural(
-                tables, market_code=market.paypal_market_code, locale=page_locale
-            )
+            legacy_run = classify_legacy(tables, market_code=market.paypal_market_code, locale=page_locale)
+            structural_run = classify_structural(tables, market_code=market.paypal_market_code, locale=page_locale)
             if legacy_run.derived != structural_run.derived:
                 self.warnings.append(
                     ParserWarning(
@@ -329,9 +325,7 @@ class Crawler:
                 "comparison": compare_runs(legacy_run, structural_run, market),
             }
         else:
-            derived = classify_legacy(
-                tables, market_code=market.paypal_market_code, locale=page_locale
-            ).derived
+            derived = classify_legacy(tables, market_code=market.paypal_market_code, locale=page_locale).derived
         if page_locale and not market.locale:
             market = market.model_copy(update={"locale": page_locale})
 
@@ -472,7 +466,9 @@ class Crawler:
         )
         staging: Path | None = None
         try:
-            _, staging = publisher.publish(outputs, markets, unsupported, change_report, shadow_runs=shadow_runs or None)
+            _, staging = publisher.publish(
+                outputs, markets, unsupported, change_report, shadow_runs=shadow_runs or None
+            )
             changed, _changed_files = publisher.commit(staging)
         except Exception as exc:
             if staging is not None:

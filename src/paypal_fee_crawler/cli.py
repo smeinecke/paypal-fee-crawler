@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import subprocess
+import subprocess  # nosec B404
 import sys
 from datetime import UTC
 from pathlib import Path
@@ -408,7 +408,7 @@ def promote_classifiers(
 
     if run_tests:
         logger.info("Running fixture test suite")
-        result = subprocess.run([sys.executable, "-m", "pytest", "-q", "tests"], capture_output=True, text=True)
+        result = subprocess.run([sys.executable, "-m", "pytest", "-q", "tests"], capture_output=True, text=True)  # nosec B603
         if result.returncode != 0:
             errors.append("pytest fixture test suite failed")
             logger.error("pytest output:\n%s", result.stdout + result.stderr)
@@ -454,7 +454,7 @@ def _bump_classifier_version(output_path: Path) -> None:
     """Bump the structural classifier version constant in classify.py."""
     classify_path = Path(__file__).with_name("classify.py")
     text = classify_path.read_text(encoding="utf-8")
-    prefix = "CLASSIFIER_VERSION = \""
+    prefix = 'CLASSIFIER_VERSION = "'
     start = text.index(prefix) + len(prefix)
     end = text.index('"', start)
     current = text[start:end]
