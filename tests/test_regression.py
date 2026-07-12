@@ -36,13 +36,21 @@ def test_select_category_uses_selected_score_not_ranked_top() -> None:
     standard = ScoreResult(
         category=scoring.FeeCategory.STANDARD_COMMERCIAL,
         score=75,
-        signals=(EvidenceSignal(code=scoring.EvidenceCode.HAS_PERCENTAGE_COLUMN, source=scoring.EvidenceSource.STRUCTURAL, weight=40),),
+        signals=(
+            EvidenceSignal(
+                code=scoring.EvidenceCode.HAS_PERCENTAGE_COLUMN, source=scoring.EvidenceSource.STRUCTURAL, weight=40
+            ),
+        ),
         blockers=(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY,),
     )
     fixed = ScoreResult(
         category=scoring.FeeCategory.FIXED_FEE,
         score=62,
-        signals=(EvidenceSignal(code=scoring.EvidenceCode.HAS_MONEY_COLUMN, source=scoring.EvidenceSource.STRUCTURAL, weight=40),),
+        signals=(
+            EvidenceSignal(
+                code=scoring.EvidenceCode.HAS_MONEY_COLUMN, source=scoring.EvidenceSource.STRUCTURAL, weight=40
+            ),
+        ),
         blockers=(),
     )
     conversion = ScoreResult(

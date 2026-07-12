@@ -125,7 +125,8 @@ def _registry_signals(
         and _required_features_satisfied(match.cluster, profile, table)
     )
     if fingerprint_approved:
-        assert match.cluster is not None
+        if match.cluster is None:
+            return signals, blockers
         signals.append(
             EvidenceSignal(
                 code=EvidenceCode.KNOWN_FINGERPRINT,

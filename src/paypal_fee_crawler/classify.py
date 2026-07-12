@@ -1690,7 +1690,8 @@ def _derive_structural_from_candidates(
     if conversion_values:
         unique_spreads = set(conversion_values.keys())
         if len(unique_spreads) > 1:
-            assert last_conversion_candidate is not None
+            if last_conversion_candidate is None:
+                raise RuntimeError("invariant: no conversion candidate for spread conflict")
             observations.append(
                 ClassificationObservation(
                     kind=ObservationKind.EXTRACTION_CONFLICT,
@@ -1760,12 +1761,8 @@ def _table_decision_from_structural(
     fingerprint = str(FingerprintBuilder.build(profile, table))
     selected_score = decision.selected_score
     blockers = selected_score.blockers if selected_score else ()
-    evidence_codes = tuple(
-        sorted({s.code.value for s in (selected_score.signals if selected_score else ())})
-    )
-    evidence_sources = tuple(
-        sorted({s.source.value for s in (selected_score.signals if selected_score else ())})
-    )
+    evidence_codes = tuple(sorted({s.code.value for s in (selected_score.signals if selected_score else ())}))
+    evidence_sources = tuple(sorted({s.source.value for s in (selected_score.signals if selected_score else ())}))
     return TableDecision(
         table_id=table.table_id,
         document_id=table.document_id,
@@ -1873,7 +1870,11 @@ def classify_structural(
         decision = scoring.select_category(scores)
         table_decisions.append(_table_decision_from_structural(table, decision, contexts))
 
-        if decision.status == "selected" and decision.selected_category is not None and decision.selected_score is not None:
+        if (
+            decision.status == "selected"
+            and decision.selected_category is not None
+            and decision.selected_score is not None
+        ):
             selected_score = decision.selected_score
             score = selected_score.score
             candidate = ClassificationCandidate(

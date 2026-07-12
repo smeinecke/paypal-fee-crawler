@@ -376,10 +376,7 @@ def _score_standard_row(
     # Rows linked to a validated fixed-fee table (same currency present).
     if fixed_currencies and has_money:
         row_currencies = {
-            token.currency
-            for cell in row.cells
-            for token in cell.tokens
-            if token.kind == "money" and token.currency
+            token.currency for cell in row.cells for token in cell.tokens if token.kind == "money" and token.currency
         }
         if row_currencies & fixed_currencies:
             score += 30
@@ -440,7 +437,9 @@ def extract_standard_percentage(
                 message="no standard-commercial percentage row found",
             )
         )
-        return ExtractionDecision(value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations))
+        return ExtractionDecision(
+            value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations)
+        )
 
     # Sort by score descending, then row index ascending for deterministic order.
     # Row index is used only for deterministic ordering, not as a semantic tie-breaker.
@@ -459,7 +458,9 @@ def extract_standard_percentage(
                     message=f"equally supported standard rates: {top_value}% and {pct}%",
                 )
             )
-            return ExtractionDecision(value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations))
+            return ExtractionDecision(
+                value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations)
+            )
 
     selected_row, selected_pct, selected_score = candidates[0]
     selected_rows.append(selected_row)
@@ -730,12 +731,14 @@ def extract_conversion_spread(
     observations: list[ClassificationObservation] = []
     selected_rows: list[int] = []
 
-    text = _norm(" ".join(
-        [table.caption or ""]
-        + list(table.section_path or [])
-        + list(table.parent_path or [])
-        + [header.text for header in table.headers]
-    ))
+    text = _norm(
+        " ".join(
+            [table.caption or ""]
+            + list(table.section_path or [])
+            + list(table.parent_path or [])
+            + [header.text for header in table.headers]
+        )
+    )
 
     conversion_keywords = (
         "currency conversion",
@@ -772,7 +775,9 @@ def extract_conversion_spread(
                 message="conversion table lacks approved evidence or unambiguous label",
             )
         )
-        return ExtractionDecision(value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations))
+        return ExtractionDecision(
+            value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations)
+        )
 
     roles = _column_roles(profile, table)
     pcts: list[tuple[int, str]] = []
@@ -804,7 +809,9 @@ def extract_conversion_spread(
                 message="no conversion percentage found",
             )
         )
-        return ExtractionDecision(value=None, selected_rows=tuple(selected_rows), evidence=tuple(signals), observations=tuple(observations))
+        return ExtractionDecision(
+            value=None, selected_rows=tuple(selected_rows), evidence=tuple(signals), observations=tuple(observations)
+        )
 
     unique_values = {pct for _, pct in pcts}
     if len(unique_values) > 1:
@@ -816,7 +823,9 @@ def extract_conversion_spread(
                 message=f"conflicting conversion spreads: {sorted(unique_values)}",
             )
         )
-        return ExtractionDecision(value=None, selected_rows=tuple(selected_rows), evidence=tuple(signals), observations=tuple(observations))
+        return ExtractionDecision(
+            value=None, selected_rows=tuple(selected_rows), evidence=tuple(signals), observations=tuple(observations)
+        )
 
     selected_pct = unique_values.pop()
     for row_idx, pct in pcts:

@@ -179,10 +179,7 @@ def _percentage_count(row: Row) -> int:
 def _money_count(row: Row) -> int:
     """Count cells that contain money tokens or plain numeric amounts."""
     return sum(
-        1
-        for cell in row.cells
-        if any(token.kind == "money" for token in cell.tokens)
-        or is_numeric_amount(cell.text)
+        1 for cell in row.cells if any(token.kind == "money" for token in cell.tokens) or is_numeric_amount(cell.text)
     )
 
 
@@ -206,9 +203,7 @@ def _collect_tokens(table: Table) -> list[FeeToken]:
 
 def _additive_percentage_count(row: Row) -> int:
     """Count percentage tokens that are explicitly additive or appear in pairs."""
-    pct_tokens = [
-        token for cell in row.cells for token in cell.tokens if token.kind == "percentage"
-    ]
+    pct_tokens = [token for cell in row.cells for token in cell.tokens if token.kind == "percentage"]
     if len(pct_tokens) > 1:
         return len(pct_tokens)
     if len(pct_tokens) == 1 and pct_tokens[0].operator == "add":
@@ -232,9 +227,7 @@ def _is_probable_note(row_index: int, row: Row, row_count: int) -> bool:
     has_values = any(_cell_has_value(cell) for cell in row.cells)
     if has_values:
         return False
-    return row_index >= row_count - 1 or bool(
-        row.cells and all(len(cell.text.strip()) < 80 for cell in row.cells)
-    )
+    return row_index >= row_count - 1 or bool(row.cells and all(len(cell.text.strip()) < 80 for cell in row.cells))
 
 
 def _token_metadata_sets(tokens: list[FeeToken]) -> tuple[set[str], set[str], set[str]]:
@@ -268,10 +261,7 @@ def build_table_profile(table: Table, contexts: tuple[TableContext, ...] | None 
         pct_count = _percentage_count(row)
         mon_count = _money_count(row)
         row_currencies = {
-            token.currency
-            for cell in row.cells
-            for token in cell.tokens
-            if token.kind == "money" and token.currency
+            token.currency for cell in row.cells for token in cell.tokens if token.kind == "money" and token.currency
         }
         currencies.update(row_currencies)
         if pct_count:
@@ -334,9 +324,7 @@ def build_table_profile(table: Table, contexts: tuple[TableContext, ...] | None 
                 if cell_texts:
                     text_count += 1
                 col_currencies.update(
-                    token.currency
-                    for token in cell.tokens
-                    if token.kind == "money" and token.currency
+                    token.currency for token in cell.tokens if token.kind == "money" and token.currency
                 )
                 col_pattern.append(_cell_kind_string(cell))
             else:

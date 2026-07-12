@@ -83,11 +83,7 @@ class CountryComparison:
 
 def _table_decision_key(d: TableDecision) -> str:
     """Stable identity key for a table decision."""
-    return "::".join(
-        str(part)
-        for part in (d.table_id, d.document_id, d.component_id, d.fingerprint)
-        if part
-    )
+    return "::".join(str(part) for part in (d.table_id, d.document_id, d.component_id, d.fingerprint) if part)
 
 
 def _compare_table_decisions(
@@ -110,21 +106,32 @@ def _compare_table_decisions(
         if legacy_decision is None or structural_decision is None:
             kind = "new" if legacy_decision is None else "missing"
             present = structural_decision if legacy_decision is None else legacy_decision
-            assert present is not None
+            if present is None:
+                continue
             changes.append(
                 TableDecisionChange(
                     table_id=present.table_id,
                     document_id=present.document_id,
                     component_id=present.component_id,
                     fingerprint=present.fingerprint,
-                    legacy_category=legacy_decision.selected_category.value if legacy_decision and legacy_decision.selected_category else None,
-                    structural_category=structural_decision.selected_category.value if structural_decision and structural_decision.selected_category else None,
+                    legacy_category=legacy_decision.selected_category.value
+                    if legacy_decision and legacy_decision.selected_category
+                    else None,
+                    structural_category=structural_decision.selected_category.value
+                    if structural_decision and structural_decision.selected_category
+                    else None,
                     legacy_score=legacy_decision.selected_score if legacy_decision else None,
                     structural_score=structural_decision.selected_score if structural_decision else None,
-                    legacy_blockers=tuple(sorted({b.value for b in legacy_decision.blockers})) if legacy_decision else (),
-                    structural_blockers=tuple(sorted({b.value for b in structural_decision.blockers})) if structural_decision else (),
+                    legacy_blockers=tuple(sorted({b.value for b in legacy_decision.blockers}))
+                    if legacy_decision
+                    else (),
+                    structural_blockers=tuple(sorted({b.value for b in structural_decision.blockers}))
+                    if structural_decision
+                    else (),
                     legacy_evidence=tuple(sorted(legacy_decision.evidence_codes)) if legacy_decision else (),
-                    structural_evidence=tuple(sorted(structural_decision.evidence_codes)) if structural_decision else (),
+                    structural_evidence=tuple(sorted(structural_decision.evidence_codes))
+                    if structural_decision
+                    else (),
                     kind=kind,
                 )
             )
@@ -258,7 +265,12 @@ def compare_country(country: CountryOutput) -> CountryComparison:
     """Run both classifiers on a stored country output and compare results."""
     market = country.market
     legacy_run = classify_legacy(country.tables, market_code=market.paypal_market_code, locale=market.locale)
-    structural_run = classify_structural(country.tables, market_code=market.paypal_market_code, locale=market.locale, registry=FingerprintRegistry.load_builtin())
+    structural_run = classify_structural(
+        country.tables,
+        market_code=market.paypal_market_code,
+        locale=market.locale,
+        registry=FingerprintRegistry.load_builtin(),
+    )
     return compare_runs(legacy_run, structural_run, market)
 
 
