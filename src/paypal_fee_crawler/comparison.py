@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .classify import ClassificationRun, classify_legacy, classify_structural
+from .classify import CLASSIFIER_VERSION, ClassificationRun, classify_legacy, classify_structural
 from .models import CountryOutput, CurrencyConversion, DerivedFees, FixedFees, InternationalSurcharge, Market
 from .scoring import FeeCategory
 
@@ -204,7 +204,16 @@ def _compare_summary(comparisons: list[CountryComparison]) -> ComparisonSummary:
     )
 
 
-def compare_classifiers(json_dir: Path, output_dir: Path, countries: set[str] | None = None) -> Path:
+@dataclass(frozen=True)
+class ComparisonReport:
+    """Aggregate comparison report for a corpus of country outputs."""
+
+    json_path: Path
+    summary: ComparisonSummary
+    comparisons: tuple[CountryComparison, ...]
+
+
+def compare_classifiers(json_dir: Path, output_dir: Path, countries: set[str] | None = None) -> ComparisonReport:
     """Compare legacy and structural classifiers across a corpus and write reports."""
     comparisons: list[CountryComparison] = []
     paths = sorted(json_dir.glob("*.json"))
@@ -231,7 +240,7 @@ def compare_classifiers(json_dir: Path, output_dir: Path, countries: set[str] | 
                     observation_count=0,
                     structural_observations=(),
                     legacy_classifier_version="legacy",
-                    structural_classifier_version="structural-1",
+                    structural_classifier_version=CLASSIFIER_VERSION,
                 )
             )
             continue
@@ -250,7 +259,11 @@ def compare_classifiers(json_dir: Path, output_dir: Path, countries: set[str] | 
     md_path = output_dir / "classification-comparison.md"
     md_path.write_text(_render_markdown(summary, comparisons), encoding="utf-8")
 
-    return json_path
+    return ComparisonReport(
+        json_path=json_path,
+        summary=summary,
+        comparisons=tuple(comparisons),
+    )
 
 
 def _render_markdown(summary: ComparisonSummary, comparisons: list[CountryComparison]) -> str:

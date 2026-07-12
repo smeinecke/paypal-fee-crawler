@@ -1733,6 +1733,9 @@ class ClassificationRun:
     classifier_version: str
 
 
+CLASSIFIER_VERSION = "structural-1"
+
+
 def classify_legacy(
     tables: list[Table],
     market_code: str | None = None,
@@ -1825,5 +1828,5 @@ def classify_structural(
         derived=derived,
         table_decisions=tuple(decisions),
         observations=tuple(observations + list(extract_observations)),
-        classifier_version="structural-1",
+        classifier_version=CLASSIFIER_VERSION,
     )

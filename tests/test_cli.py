@@ -165,6 +165,22 @@ def test_cli_crawl_command_shadow_mode(tmp_path: Path) -> None:
     assert (tmp_path / "meta" / "classification-shadow.json").exists()
 
 
+def test_cli_promote_classifiers_gold_passes(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "promote-classifiers",
+            str(Path(__file__).parent / "fixtures" / "corpus" / "gold"),
+            "--output",
+            str(tmp_path),
+            "--no-tests",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "promotion-report.json").exists()
+
+
 def test_cli_crawl_command_fail_on_warning(tmp_path: Path) -> None:
     runner = CliRunner()
     with patch.object(HttpClient, "get", _fake_http_get):

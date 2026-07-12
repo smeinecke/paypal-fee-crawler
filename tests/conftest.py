@@ -1,4 +1,4 @@
-"""Shared pytest fixtures and helpers."""
+"""Shared pytest fixtures and helpers for the PayPal fee crawler test suite."""
 
 from __future__ import annotations
 
@@ -40,3 +40,15 @@ def us_real_html(fixtures_dir: Path) -> str:
 @pytest.fixture
 def gb_real_html(fixtures_dir: Path) -> str:
     return (fixtures_dir / "paypal-gb-real.html").read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def gold_corpus_dir(fixtures_dir: Path) -> Path:
+    """Directory containing hand-reviewed gold corpus fixtures."""
+    return fixtures_dir / "corpus" / "gold"
+
+
+@pytest.fixture
+def synthetic_corpus_dir(fixtures_dir: Path) -> Path:
+    """Directory containing synthetic corpus fixtures."""
+    return fixtures_dir / "corpus" / "synthetic"

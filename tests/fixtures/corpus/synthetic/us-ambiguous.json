@@ -1,0 +1,144 @@
+{
+  "derived": {
+    "chargeback": null,
+    "classification_evidence": [
+      "caption/section matches fixed-fee keywords",
+      "fixed-fee table FEETB999: 2 row(s)"
+    ],
+    "commercial_fixed_fees": [
+      {
+        "amount": "0.39",
+        "currency": "USD"
+      }
+    ],
+    "currency_conversion": null,
+    "currency_conversion_exposed": false,
+    "dispute": null,
+    "donations": null,
+    "goods_and_services": null,
+    "international_surcharge_exposed": false,
+    "international_surcharges": [],
+    "micropayments": null,
+    "nonprofit": null,
+    "standard_commercial": null,
+    "status": "partial",
+    "unclassified_sections": []
+  },
+  "generated_at": "2026-07-12T13:51:26.302666+00:00",
+  "market": {
+    "country_code": "US",
+    "country_name": "United States",
+    "iso_country_code": "US",
+    "languages": [],
+    "locale": "en",
+    "paypal_market_code": "US",
+    "preferred_language": null,
+    "region": null,
+    "url_prefix": null,
+    "url_slug": "us"
+  },
+  "schema_version": 1,
+  "sections": [],
+  "source": {
+    "canonical_url": "https://example.com",
+    "cms_updated_at": null,
+    "content_sha256": null,
+    "etag": null,
+    "last_modified": null,
+    "page_id": "test",
+    "page_title": "test",
+    "page_updated_at": null,
+    "pdf_url": null,
+    "requested_url": "https://example.com"
+  },
+  "tables": [
+    {
+      "caption": "Commercial and fixed fee schedule",
+      "column_count": null,
+      "component_id": null,
+      "component_type": null,
+      "declared_column_count": null,
+      "document_id": "FEETB999",
+      "headers": [],
+      "parent_path": [],
+      "reference_id": null,
+      "rows": [
+        {
+          "cells": [
+            {
+              "links": [],
+              "text": "Commercial",
+              "tokens": []
+            },
+            {
+              "links": [],
+              "text": "2.99% + 0.39 USD",
+              "tokens": [
+                {
+                  "amount": null,
+                  "content_type": null,
+                  "currency": null,
+                  "fee_data_key": null,
+                  "internal_name": null,
+                  "kind": "percentage",
+                  "operator": null,
+                  "raw": "2.99%",
+                  "token_id": null,
+                  "value": "2.99"
+                },
+                {
+                  "amount": "0.39",
+                  "content_type": null,
+                  "currency": "USD",
+                  "fee_data_key": null,
+                  "internal_name": null,
+                  "kind": "money",
+                  "operator": "add",
+                  "raw": "+0.39USD",
+                  "token_id": null,
+                  "value": null
+                }
+              ]
+            }
+          ],
+          "row_id": null
+        },
+        {
+          "cells": [
+            {
+              "links": [],
+              "text": "USD",
+              "tokens": []
+            },
+            {
+              "links": [],
+              "text": "0.39 USD",
+              "tokens": [
+                {
+                  "amount": "0.39",
+                  "content_type": null,
+                  "currency": "USD",
+                  "fee_data_key": null,
+                  "internal_name": null,
+                  "kind": "money",
+                  "operator": null,
+                  "raw": "0.39USD",
+                  "token_id": null,
+                  "value": null
+                }
+              ]
+            }
+          ],
+          "row_id": null
+        }
+      ],
+      "section_path": [
+        "Commercial and fixed fee schedule"
+      ],
+      "source_order": 0,
+      "source_table_ids": [],
+      "table_id": null
+    }
+  ],
+  "warnings": []
+}

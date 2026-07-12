@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import subprocess
 import sys
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
 import click
 
+from .classify import CLASSIFIER_VERSION
 from .comparison import compare_classifiers
 from .crawler import Crawler
 from .exceptions import (
@@ -358,11 +361,110 @@ def compare_classifiers_cmd(
     countries = set(country) if country else None
     output_path = output or "."
     try:
-        report_path = compare_classifiers(Path(json_dir), Path(output_path), countries)
+        report = compare_classifiers(Path(json_dir), Path(output_path), countries)
     except Exception as exc:
         logger.error("Comparison failed: %s", exc)
         sys.exit(ExitCode.PARSER_FAILURE)
-    click.echo(f"Comparison report written to {report_path}")
+    click.echo(f"Comparison report written to {report.json_path}")
+
+
+@main.command("promote-classifiers")
+@click.argument("gold_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--output", type=click.Path(), help="Output directory for promotion report.")
+@click.option("--run-tests/--no-tests", default=True, help="Run the pytest fixture test suite.")
+@click.option("--bump", is_flag=True, help="Bump the structural classifier version in classify.py on success.")
+@click.option("--verbose", is_flag=True, help="Enable verbose logging.")
+def promote_classifiers(
+    gold_dir: str,
+    output: str | None,
+    run_tests: bool,
+    bump: bool,
+    verbose: bool,
+) -> None:
+    """Promote the structural classifier if the gold corpus and tests pass.
+
+    Loads each CountryOutput from GOLD_DIR and compares legacy vs structural
+    outputs.  Any status change, category change, or value change blocks
+    promotion.  When ``--run-tests`` is set, the pytest fixture test suite is
+    also required to pass.  On success, a promotion report is written and the
+    classifier version may be bumped with ``--bump``.
+    """
+    _configure_logging(verbose)
+    output_path = Path(output or ".")
+
+    report = compare_classifiers(Path(gold_dir), output_path)
+    summary = report.summary
+    errors: list[str] = []
+    if summary.status_changed:
+        errors.append(f"status changed for {summary.status_changed} countries")
+    if summary.categories_changed:
+        errors.append(f"categories changed for {summary.categories_changed} countries")
+    if summary.value_changes:
+        errors.append(f"{summary.value_changes} value changes")
+    if report.comparisons and any(not c.selected_categories_match for c in report.comparisons):
+        errors.append("some countries have mismatched selected categories")
+    if report.comparisons and any(not c.status_match for c in report.comparisons):
+        errors.append("some countries have mismatched status")
+
+    if run_tests:
+        logger.info("Running fixture test suite")
+        result = subprocess.run([sys.executable, "-m", "pytest", "-q", "tests"], capture_output=True, text=True)
+        if result.returncode != 0:
+            errors.append("pytest fixture test suite failed")
+            logger.error("pytest output:\n%s", result.stdout + result.stderr)
+
+    if errors:
+        for error in errors:
+            logger.error("Promotion blocked: %s", error)
+        sys.exit(ExitCode.PARSER_FAILURE)
+
+    promotion_report = {
+        "schema_version": 1,
+        "approved_at": _iso_now(),
+        "legacy_classifier_version": "legacy",
+        "structural_classifier_version": CLASSIFIER_VERSION,
+        "summary": {
+            "total_countries": summary.total_countries,
+            "status_changed": summary.status_changed,
+            "categories_changed": summary.categories_changed,
+            "value_changes": summary.value_changes,
+            "total_observations": summary.total_observations,
+        },
+    }
+    output_path.mkdir(parents=True, exist_ok=True)
+    promotion_path = output_path / "promotion-report.json"
+    promotion_path.write_text(json.dumps(promotion_report, indent=2, sort_keys=True), encoding="utf-8")
+
+    click.echo(f"Promotion report written to {promotion_path}")
+    click.echo(f"Structural classifier version: {CLASSIFIER_VERSION}")
+
+    if bump:
+        _bump_classifier_version(output_path)
+        click.echo("Bumped structural classifier version in classify.py")
+
+
+def _iso_now() -> str:
+    """Return an ISO 8601 UTC timestamp."""
+    from datetime import datetime
+
+    return datetime.now(UTC).isoformat()
+
+
+def _bump_classifier_version(output_path: Path) -> None:
+    """Bump the structural classifier version constant in classify.py."""
+    classify_path = Path(__file__).with_name("classify.py")
+    text = classify_path.read_text(encoding="utf-8")
+    prefix = "CLASSIFIER_VERSION = \""
+    start = text.index(prefix) + len(prefix)
+    end = text.index('"', start)
+    current = text[start:end]
+    parts = current.split("-")
+    if parts and parts[-1].isdigit():
+        parts[-1] = str(int(parts[-1]) + 1)
+    else:
+        parts.append("2")
+    new = "-".join(parts)
+    classify_path.write_text(text[:start] + new + text[end:], encoding="utf-8")
 
 
 if __name__ == "__main__":
