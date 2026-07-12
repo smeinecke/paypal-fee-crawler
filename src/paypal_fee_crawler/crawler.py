@@ -33,8 +33,11 @@ from .models import (
     CountryOutput,
     CrawlConfiguration,
     CrawlReport,
+    CrawlState,
+    DerivedFees,
     Market,
     ParserWarning,
+    PublicCountryOutput,
     Source,
     UnsupportedCountry,
 )
@@ -44,6 +47,26 @@ from .regression import PreviousState, RegressionLimits, check_regression, enfor
 from .validation import validate_all_output, validate_country_output
 
 logger = logging.getLogger(__name__)
+
+
+def _placeholder_tables(table_count: int, row_count: int) -> list:
+    """Return a list of tables with a matching total row count.
+
+    The public v3 country files do not contain the full table structure, but the
+    regression guard still needs accurate structural counts when a previous run
+    is reused after a transient failure.
+    """
+    from .models import Row, Table
+
+    if table_count <= 0 or row_count <= 0:
+        return []
+    base = row_count // table_count
+    extra = row_count % table_count
+    tables = []
+    for i in range(table_count):
+        rows = [Row() for _ in range(base + (1 if i < extra else 0))]
+        tables.append(Table(rows=rows))
+    return tables
 
 
 class Crawler:
@@ -99,17 +122,64 @@ class Crawler:
             return None
 
     def _load_previous_country_output(self, market: Market) -> CountryOutput | None:
-        """Load the previous country output from disk, if available and valid."""
+        """Load the previous country output from disk, if available and valid.
+
+        Public v3 country files no longer contain the full internal structure, so
+        we reconstitute a minimal internal ``CountryOutput`` from the public file
+        and the compact ``crawl-state.json`` sidecar.
+        """
         if not self.config.output_dir:
             return None
-        prev_path = Path(self.config.output_dir) / "json" / f"{market.url_slug}.json"
+        output_dir = Path(self.config.output_dir)
+        prev_path = output_dir / "json" / f"{market.url_slug}.json"
+        state_path = output_dir / "meta" / "crawl-state.json"
         if not prev_path.exists():
             return None
         try:
-            return CountryOutput.model_validate_json(prev_path.read_text())
+            public = PublicCountryOutput.model_validate_json(prev_path.read_text())
         except Exception as exc:
-            logger.debug("Could not load previous output for %s: %s", market.paypal_market_code, exc)
+            logger.debug("Could not load previous public output for %s: %s", market.paypal_market_code, exc)
             return None
+
+        state_entry = None
+        if state_path.exists():
+            try:
+                state = CrawlState.model_validate_json(state_path.read_text())
+                state_entry = state.markets.get(market.paypal_market_code)
+            except Exception as exc:
+                logger.debug("Could not load crawl state for %s: %s", market.paypal_market_code, exc)
+
+        source_url = None
+        source_updated_at = None
+        raw_content_sha256 = None
+        table_count = 0
+        row_count = 0
+        if state_entry is not None:
+            source_url = state_entry.source_url
+            source_updated_at = state_entry.source_updated_at
+            raw_content_sha256 = state_entry.raw_content_sha256
+            table_count = state_entry.table_count
+            row_count = state_entry.row_count
+
+        source = Source(
+            requested_url=source_url or "",
+            canonical_url=source_url,
+            page_updated_at=source_updated_at,
+            content_sha256=raw_content_sha256,
+        )
+
+        # Preserve previous structural counts for regression comparison even
+        # though the public file does not contain the tables.
+        tables = _placeholder_tables(table_count, row_count)
+
+        return CountryOutput(
+            schema_version=1,
+            generated_at=public.generated_at,
+            market=Market.model_validate(public.market.model_dump(mode="json")),
+            source=source,
+            tables=tables,
+            derived=DerivedFees.model_validate(public.derived.model_dump(mode="json")),
+        )
 
     def _load_crawl_cache(self, market: Market) -> CachedSource | None:
         """Load cached HTTP headers for conditional requests from a sidecar file."""
@@ -438,6 +508,9 @@ class Crawler:
                             diagnostics[cc] = diagnostic_run
                         if shadow is not None:
                             shadow_runs[cc] = shadow
+                        if diagnostic_run is None and shadow is None:
+                            # 304 Not Modified: previous output reused unchanged.
+                            reused.append(cc)
                     elif unsup is not None:
                         unsupported.append(unsup)
                     elif transient:

@@ -46,7 +46,7 @@ def _validate_currency_codes(data: Any, errors: list[str]) -> None:
             _validate_currency_codes(item, errors)
 
 
-def _validate_table_plausibility(output: CountryOutput | PublicCountryOutput, errors: list[str]) -> None:
+def _validate_table_plausibility(output: CountryOutput, errors: list[str]) -> None:
     if not output.tables:
         errors.append("No fee tables found")
         return
@@ -142,10 +142,9 @@ def validate_public_country_output(data: dict[str, Any], schema_only: bool = Fal
             errors.append(f"Schema validation: {error['loc']}: {error['msg']}")
         return errors
 
-    _validate_currency_codes(data, errors)
-    errors.extend(_complete_derived_errors(output.derived, f"Country {output.market.paypal_market_code}"))
     if not schema_only:
-        _validate_table_plausibility(output, errors)
+        _validate_currency_codes(data, errors)
+        errors.extend(_complete_derived_errors(output.derived, f"Country {output.market.paypal_market_code}"))
     return errors
 
 
@@ -205,7 +204,7 @@ def generate_country_schema() -> dict[str, Any]:
     """Generate the JSON schema for per-country output."""
     schema = PublicCountryOutput.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/paypal-fees-v2.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/paypal-fees-v3.schema.json"
     return schema
 
 
@@ -213,7 +212,7 @@ def generate_core_fees_schema() -> dict[str, Any]:
     """Generate the JSON schema for the consolidated core fees file."""
     schema = CoreFees.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/core-fees-v2.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/core-fees-v3.schema.json"
     return schema
 
 
@@ -221,7 +220,7 @@ def generate_index_schema() -> dict[str, Any]:
     """Generate the JSON schema for the country index file."""
     schema = CountryIndex.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/index-v2.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/index-v3.schema.json"
     return schema
 
 
@@ -229,7 +228,7 @@ def generate_manifest_schema() -> dict[str, Any]:
     """Generate the JSON schema for the country manifest file."""
     schema = CountryManifest.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/manifest-v2.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/manifest-v3.schema.json"
     return schema
 
 
@@ -315,16 +314,17 @@ def validate_output_tree(root: Path | str) -> list[str]:
         root / "json" / "core-fees.json",
         root / "meta" / "countries.json",
         root / "meta" / "schema-version.json",
+        root / "meta" / "crawl-state.json",
     ]
     for path in required:
         if not path.exists():
             errors.append(f"Missing required file: {_safe_rel(path, root)}")
 
     schema_files = [
-        "paypal-fees-v2.schema.json",
-        "core-fees-v2.schema.json",
-        "index-v2.schema.json",
-        "manifest-v2.schema.json",
+        "paypal-fees-v3.schema.json",
+        "core-fees-v3.schema.json",
+        "index-v3.schema.json",
+        "manifest-v3.schema.json",
     ]
     for name in schema_files:
         if not (root / "schemas" / name).exists():
@@ -397,18 +397,17 @@ def validate_output_tree(root: Path | str) -> list[str]:
             errors.append(f"Index entry {cc} has no country file")
             continue
         path, country, data = country_files[cc]
-        expected_data_url = f"json/{country.market.url_slug}.json"
+        slug = cc.lower()
+        expected_data_url = f"json/{slug}.json"
         if entry.data_url != expected_data_url:
             errors.append(f"Index data_url for {cc} is {entry.data_url}, expected {expected_data_url}")
         rel = path.relative_to(root)
         if str(rel) != entry.data_url:
             errors.append(f"Country file path {rel} does not match index data_url {entry.data_url}")
-        if path.name != f"{country.market.url_slug}.json":
-            errors.append(f"Filename {path.name} does not match market slug {country.market.url_slug}")
+        if path.name != f"{slug}.json":
+            errors.append(f"Filename {path.name} does not match market slug {slug}")
         if cc != country.market.paypal_market_code:
             errors.append(f"Index market code {cc} disagrees with country file {country.market.paypal_market_code}")
-        if not country.tables:
-            errors.append(f"Country {cc} has no fee tables")
 
         expected_hash = _country_output_hash(data)
         if entry.content_sha256 != expected_hash:

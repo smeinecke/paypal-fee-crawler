@@ -11,7 +11,22 @@ import pytest
 
 from paypal_fee_crawler import output as output_module
 from paypal_fee_crawler.exceptions import ValidationError as CrawlerValidationError
-from paypal_fee_crawler.models import Cell, CountryOutput, DerivedFees, Market, Row, Source, Table
+from paypal_fee_crawler.models import (
+    Cell,
+    CommercialFee,
+    CountryOutput,
+    CurrencyConversion,
+    DerivedFees,
+    FixedFees,
+    InternationalSurcharge,
+    Market,
+    ParserWarning,
+    Row,
+    Section,
+    Source,
+    Table,
+    TableHeader,
+)
 from paypal_fee_crawler.output import OutputPublisher
 from paypal_fee_crawler.validation import validate_output_tree
 
@@ -52,10 +67,11 @@ def test_publish_generates_expected_files() -> None:
         assert (staging / "json" / "core-fees.json").exists()
         assert (staging / "meta" / "countries.json").exists()
         assert (staging / "meta" / "unsupported-countries.json").exists()
-        assert (staging / "schemas" / "paypal-fees-v2.schema.json").exists()
-        assert (staging / "schemas" / "core-fees-v2.schema.json").exists()
-        assert (staging / "schemas" / "index-v2.schema.json").exists()
-        assert (staging / "schemas" / "manifest-v2.schema.json").exists()
+        assert (staging / "meta" / "crawl-state.json").exists()
+        assert (staging / "schemas" / "paypal-fees-v3.schema.json").exists()
+        assert (staging / "schemas" / "core-fees-v3.schema.json").exists()
+        assert (staging / "schemas" / "index-v3.schema.json").exists()
+        assert (staging / "schemas" / "manifest-v3.schema.json").exists()
 
 
 def test_commit_detects_no_change_on_second_run() -> None:
@@ -72,16 +88,19 @@ def test_commit_detects_no_change_on_second_run() -> None:
         assert not changed2
 
 
-def test_content_sha256_present() -> None:
+def test_artifact_sha256_present() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         output_dir = Path(tmp) / "out"
         publisher = OutputPublisher(output_dir, timestamp="2025-01-01T00:00:00+00:00")
         outputs = {"DE": _make_output("DE")}
         _, staging = publisher.publish(outputs, [], [])
         publisher.commit(staging)
-        data = json.loads((output_dir / "json" / "de.json").read_text())
-        assert data["source"]["artifact_sha256"]
-        assert len(data["source"]["artifact_sha256"]) == 64
+        index = json.loads((output_dir / "json" / "index.json").read_text())
+        state = json.loads((output_dir / "meta" / "crawl-state.json").read_text())
+        assert index["countries"][0]["content_sha256"]
+        assert len(index["countries"][0]["content_sha256"]) == 64
+        assert state["markets"]["DE"]["artifact_sha256"] == index["countries"][0]["content_sha256"]
+        assert state["markets"]["DE"]["raw_content_sha256"] is None
 
 
 def test_generated_at_present() -> None:
@@ -135,24 +154,70 @@ def test_commit_rolls_back_on_validation_failure() -> None:
         assert not any(str(p).endswith(".old") for p in output_dir.rglob("*"))
 
 
+FORBIDDEN_PUBLIC_KEYS = {
+    "source",
+    "sections",
+    "tables",
+    "warnings",
+    "heading",
+    "body",
+    "section_path",
+    "parent_path",
+    "caption",
+    "document_id",
+    "headers",
+    "rows",
+    "cells",
+    "tokens",
+    "links",
+    "fixed_fee_reference",
+    "url_slug",
+    "preferred_language",
+    "url_prefix",
+}
+
+
+def collect_keys(value: object) -> set[str]:
+    if isinstance(value, dict):
+        return set(value) | {key for nested in value.values() for key in collect_keys(nested)}
+    if isinstance(value, list):
+        return {key for nested in value for key in collect_keys(nested)}
+    return set()
+
+
 def test_public_output_excludes_internal_fields() -> None:
     output = CountryOutput(
         schema_version=1,
-        market=Market(paypal_market_code="DE", iso_country_code="DE", country_name="Germany"),
+        market=Market(
+            paypal_market_code="DE",
+            iso_country_code="DE",
+            country_name="Germany",
+            locale="de_DE",
+            region="Europe",
+            languages=[{"code": "de", "name": "German"}],
+            preferred_language="de",
+            url_prefix="https://example.com/de",
+        ),
         source=Source(
             requested_url="https://example.com/de",
             canonical_url="https://example.com/de",
+            page_title="Fees",
             etag='"abc"',
             last_modified="Mon, 01 Jan 2024 00:00:00 GMT",
             content_sha256="raw-content-hash",
         ),
+        sections=[Section(heading="Fees", body="Fee text", section_path=["Fees"])],
         tables=[
             Table(
                 table_id="t1",
                 component_id="c1",
                 source_table_ids=["s1"],
                 reference_id="r1",
-                parent_path=["p1"],
+                section_path=["Fees"],
+                parent_path=["Fees"],
+                caption="Commercial fees",
+                document_id="DOC-1",
+                headers=[TableHeader(text="Rate", tokens=[{"raw": "Rate", "kind": "text"}])],
                 rows=[
                     Row(
                         row_id="row-1",
@@ -170,42 +235,36 @@ def test_public_output_excludes_internal_fields() -> None:
                                         "content_type": "fee",
                                     }
                                 ],
+                                links=[{"text": "terms", "uri": "https://example.com/terms"}],
                             )
                         ],
                     )
                 ],
             )
         ],
-        derived=DerivedFees(status="unclassified"),
+        derived=DerivedFees(
+            status="complete",
+            standard_commercial=CommercialFee(percentage="2.99", fixed_fee_reference="fixed"),
+            commercial_fixed_fees=[FixedFees(currency="EUR", amount="0.39")],
+            international_surcharges=[InternationalSurcharge(region="EEA", percentage_points="0")],
+            currency_conversion=CurrencyConversion(spread_percentage="4.00"),
+            international_surcharge_exposed=False,
+            currency_conversion_exposed=True,
+        ),
+        warnings=[ParserWarning(code="W1", message="warning")],
     )
 
     with tempfile.TemporaryDirectory() as tmp:
         output_dir = Path(tmp) / "out"
-        publisher = OutputPublisher(output_dir, timestamp="2025-01-01T00:00:00+00:00")
+        publisher = OutputPublisher(output_dir, timestamp="2025-01-01T00:00:00+00:00", keep_diagnostics=True)
         _, staging = publisher.publish({"DE": output}, [], [])
         publisher.commit(staging)
 
         data = json.loads((output_dir / "json" / "de.json").read_text())
-        core = json.loads((output_dir / "json" / "core-fees.json").read_text())
-        serialized = json.dumps({"country": data, "core": core})
+        assert FORBIDDEN_PUBLIC_KEYS.isdisjoint(collect_keys(data))
 
-        forbidden = {
-            "classification_evidence",
-            "unclassified_sections",
-            "token_id",
-            "internal_name",
-            "fee_data_key",
-            "content_type",
-            "row_id",
-            "component_id",
-            "parent_path",
-            "source_table_ids",
-            "reference_id",
-            "etag",
-            "last_modified",
-            "content_sha256",
-        }
-        assert forbidden.isdisjoint(serialized)
+        diagnostic = json.loads((output_dir / "meta" / "diagnostics" / "de.json").read_text())
+        assert FORBIDDEN_PUBLIC_KEYS.issubset(collect_keys(diagnostic))
 
 
 def test_core_fees_json_uses_public_models() -> None:

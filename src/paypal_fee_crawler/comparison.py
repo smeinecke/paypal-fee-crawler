@@ -476,15 +476,21 @@ def compare_against_gold(gold_dir: Path, output_dir: Path, countries: set[str] |
     )
 
 
-def compare_classifiers(json_dir: Path, output_dir: Path, countries: set[str] | None = None) -> ComparisonReport:
-    """Compare legacy and structural classifiers across a corpus and write reports."""
+def compare_classifiers(diagnostics_dir: Path, output_dir: Path, countries: set[str] | None = None) -> ComparisonReport:
+    """Compare legacy and structural classifiers across a corpus and write reports.
+
+    Loads each diagnostic sidecar from ``diagnostics_dir``, extracts the
+    internal ``normalized_output`` (which contains the full table structure),
+    and re-classifies it with both engines.
+    """
     comparisons: list[CountryComparison] = []
-    paths = sorted(json_dir.glob("*.json"))
+    paths = sorted(diagnostics_dir.glob("*.json"))
     for path in paths:
         if countries and path.stem.upper() not in {c.upper() for c in countries}:
             continue
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            wrapper = json.loads(path.read_text(encoding="utf-8"))
+            data = wrapper.get("normalized_output") or wrapper
             country = CountryOutput(**data)
         except Exception as exc:
             # Skip malformed files and report them in the output.

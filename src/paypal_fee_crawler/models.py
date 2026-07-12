@@ -209,10 +209,22 @@ class FixedFees(PublicModel):
 
 
 class CommercialFee(PublicModel):
-    """Standard commercial transaction fee."""
+    """Standard commercial transaction fee (internal; may reference a fixed-fee table)."""
 
     percentage: str | None = None
     fixed_fee_reference: str | None = None
+
+
+class PublicCommercialFee(PublicModel):
+    """Consumer-facing commercial fee without internal table references."""
+
+    percentage: str | None = None
+
+    @classmethod
+    def from_internal(cls, fee: CommercialFee | None) -> PublicCommercialFee | None:
+        if fee is None:
+            return None
+        return cls(percentage=fee.percentage)
 
 
 class InternationalSurcharge(PublicModel):
@@ -281,158 +293,20 @@ class CountryOutput(BaseModel):
     warnings: list[ParserWarning] = Field(default_factory=list)
 
 
-class PublicSource(PublicModel):
-    """Public source provenance for a crawled fee page."""
-
-    requested_url: str
-    canonical_url: str | None = None
-    page_title: str | None = None
-    page_updated_at: str | None = None
-    cms_updated_at: str | None = None
-    pdf_url: str | None = None
-    artifact_sha256: str | None = None
-
-    @classmethod
-    def from_internal(cls, source: Source) -> PublicSource:
-        return cls(
-            requested_url=source.requested_url,
-            canonical_url=source.canonical_url,
-            page_title=source.page_title,
-            page_updated_at=source.page_updated_at,
-            cms_updated_at=source.cms_updated_at,
-            pdf_url=source.pdf_url,
-        )
-
-
-class PublicWarning(PublicModel):
-    """Public parser warning without implementation context."""
-
-    code: str
-    message: str
-
-    @classmethod
-    def from_internal(cls, warning: ParserWarning) -> PublicWarning:
-        return cls(code=warning.code, message=warning.message)
-
-
-class PublicFeeToken(PublicModel):
-    """Public pricing token without classifier metadata."""
-
-    raw: str
-    kind: str = Field(default="text")
-    value: str | None = None
-    amount: str | None = None
-    currency: str | None = None
-    operator: str | None = None
-
-    @classmethod
-    def from_internal(cls, token: FeeToken) -> PublicFeeToken:
-        return cls(
-            raw=token.raw,
-            kind=token.kind,
-            value=token.value,
-            amount=token.amount,
-            currency=token.currency,
-            operator=token.operator,
-        )
-
-
-class PublicCell(PublicModel):
-    """Public rendered table cell."""
-
-    text: str
-    tokens: list[PublicFeeToken] = Field(default_factory=list)
-    links: list[Link] = Field(default_factory=list)
-
-    @classmethod
-    def from_internal(cls, cell: Cell) -> PublicCell:
-        return cls(
-            text=cell.text,
-            tokens=[PublicFeeToken.from_internal(t) for t in cell.tokens],
-            links=list(cell.links),
-        )
-
-
-class PublicRow(PublicModel):
-    """Public table row."""
-
-    cells: list[PublicCell] = Field(default_factory=list)
-
-    @classmethod
-    def from_internal(cls, row: Row) -> PublicRow:
-        return cls(cells=[PublicCell.from_internal(c) for c in row.cells])
-
-
-class PublicTableHeader(PublicModel):
-    """Public table header cell."""
-
-    text: str
-    tokens: list[PublicFeeToken] = Field(default_factory=list)
-    links: list[Link] = Field(default_factory=list)
-
-    @classmethod
-    def from_internal(cls, header: TableHeader) -> PublicTableHeader:
-        return cls(
-            text=header.text,
-            tokens=[PublicFeeToken.from_internal(t) for t in header.tokens],
-            links=list(header.links),
-        )
-
-
-class PublicTable(PublicModel):
-    """Public normalized fee table."""
-
-    document_id: str | None = None
-    caption: str | None = None
-    section_path: list[str] = Field(default_factory=list)
-    column_count: int | None = None
-    declared_column_count: int | None = None
-    headers: list[PublicTableHeader] = Field(default_factory=list)
-    rows: list[PublicRow] = Field(default_factory=list)
-
-    @classmethod
-    def from_internal(cls, table: Table) -> PublicTable:
-        return cls(
-            document_id=table.document_id,
-            caption=table.caption,
-            section_path=list(table.section_path),
-            column_count=table.column_count,
-            declared_column_count=table.declared_column_count,
-            headers=[PublicTableHeader.from_internal(h) for h in table.headers],
-            rows=[PublicRow.from_internal(r) for r in table.rows],
-        )
-
-
-class PublicSection(PublicModel):
-    """Public page section."""
-
-    heading: str | None = None
-    body: str | None = None
-    section_path: list[str] = Field(default_factory=list)
-
-    @classmethod
-    def from_internal(cls, section: Section) -> PublicSection:
-        return cls(
-            heading=section.heading,
-            body=section.body,
-            section_path=list(section.section_path),
-        )
-
-
 class PublicDerivedFees(PublicModel):
     """Public derived core fees without classifier diagnostics."""
 
     status: str = Field(default="unclassified")
-    standard_commercial: CommercialFee | None = None
+    standard_commercial: PublicCommercialFee | None = None
     commercial_fixed_fees: list[FixedFees] = Field(default_factory=list)
     international_surcharges: list[InternationalSurcharge] = Field(default_factory=list)
     currency_conversion: CurrencyConversion | None = None
     international_surcharge_exposed: bool = False
     currency_conversion_exposed: bool = False
-    goods_and_services: CommercialFee | None = None
-    micropayments: CommercialFee | None = None
-    donations: CommercialFee | None = None
-    nonprofit: CommercialFee | None = None
+    goods_and_services: PublicCommercialFee | None = None
+    micropayments: PublicCommercialFee | None = None
+    donations: PublicCommercialFee | None = None
+    nonprofit: PublicCommercialFee | None = None
     chargeback: str | None = None
     dispute: str | None = None
 
@@ -446,32 +320,79 @@ class PublicDerivedFees(PublicModel):
 
     @classmethod
     def from_internal(cls, derived: DerivedFees) -> PublicDerivedFees:
-        return cls(**derived.model_dump())
+        return cls(
+            status=derived.status,
+            standard_commercial=PublicCommercialFee.from_internal(derived.standard_commercial),
+            commercial_fixed_fees=[
+                FixedFees(currency=f.currency, amount=f.amount) for f in derived.commercial_fixed_fees
+            ],
+            international_surcharges=[
+                InternationalSurcharge(region=s.region, percentage_points=s.percentage_points)
+                for s in derived.international_surcharges
+            ],
+            currency_conversion=(
+                CurrencyConversion(spread_percentage=derived.currency_conversion.spread_percentage)
+                if derived.currency_conversion
+                else None
+            ),
+            international_surcharge_exposed=derived.international_surcharge_exposed,
+            currency_conversion_exposed=derived.currency_conversion_exposed,
+            goods_and_services=PublicCommercialFee.from_internal(derived.goods_and_services),
+            micropayments=PublicCommercialFee.from_internal(derived.micropayments),
+            donations=PublicCommercialFee.from_internal(derived.donations),
+            nonprofit=PublicCommercialFee.from_internal(derived.nonprofit),
+            chargeback=derived.chargeback,
+            dispute=derived.dispute,
+        )
+
+
+class PublicMarket(PublicModel):
+    """Consumer-facing market identity for a country fee result."""
+
+    paypal_market_code: str
+    iso_country_code: str | None = None
+    country_name: str
+    locale: str | None = None
+
+    @field_validator("paypal_market_code")
+    @classmethod
+    def _validate_paypal_market_code(cls, value: str) -> str:
+        return normalize_paypal_market_code(value)
+
+    @field_validator("iso_country_code")
+    @classmethod
+    def _validate_iso_country_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or len(value) != 2 or not value.isalpha():
+            raise ValueError(f"Invalid ISO country code: {value!r}")
+        return value.upper()
+
+    @classmethod
+    def from_internal(cls, market: Market) -> PublicMarket:
+        return cls(
+            paypal_market_code=market.paypal_market_code,
+            iso_country_code=market.iso_country_code,
+            country_name=market.country_name,
+            locale=market.locale,
+        )
 
 
 class PublicCountryOutput(PublicModel):
-    """Public consumer-facing country output."""
+    """Compact public consumer-facing country fee result."""
 
-    schema_version: int = 2
+    schema_version: int = 3
     generated_at: str | None = None
-    market: Market
-    source: PublicSource
-    sections: list[PublicSection] = Field(default_factory=list)
-    tables: list[PublicTable] = Field(default_factory=list)
+    market: PublicMarket
     derived: PublicDerivedFees
-    warnings: list[PublicWarning] = Field(default_factory=list)
 
     @classmethod
     def from_internal(cls, output: CountryOutput) -> PublicCountryOutput:
         return cls(
-            schema_version=2,
+            schema_version=3,
             generated_at=output.generated_at,
-            market=output.market,
-            source=PublicSource.from_internal(output.source),
-            sections=[PublicSection.from_internal(s) for s in output.sections],
-            tables=[PublicTable.from_internal(t) for t in output.tables],
+            market=PublicMarket.from_internal(output.market),
             derived=PublicDerivedFees.from_internal(output.derived),
-            warnings=[PublicWarning.from_internal(w) for w in output.warnings],
         )
 
 
@@ -488,6 +409,29 @@ class CrawlCache(PublicModel):
 
     schema_version: int = 2
     markets: dict[str, CrawlCacheEntry] = Field(default_factory=dict)
+
+
+class CrawlStateEntry(PublicModel):
+    """Compact regression state for a single processed market."""
+
+    raw_content_sha256: str | None = None
+    artifact_sha256: str | None = None
+    classifier_version: str | None = None
+    derived_status: str | None = None
+    selected_categories: list[str] = Field(default_factory=list)
+    table_count: int = 0
+    row_count: int = 0
+    table_fingerprints: list[str] = Field(default_factory=list)
+    source_url: str | None = None
+    source_updated_at: str | None = None
+
+
+class CrawlState(PublicModel):
+    """Compact regression state for all processed markets."""
+
+    schema_version: int = 1
+    generated_at: str | None = None
+    markets: dict[str, CrawlStateEntry] = Field(default_factory=dict)
 
 
 class CountryIndexEntry(PublicModel):
@@ -530,7 +474,7 @@ class CountryIndexEntry(PublicModel):
 class CountryIndex(PublicModel):
     """Index of successfully processed countries."""
 
-    schema_version: int = 2
+    schema_version: int = 3
     generated_at: str | None = None
     countries: list[CountryIndexEntry] = Field(default_factory=list)
 
@@ -576,7 +520,7 @@ class UnsupportedCountry(PublicModel):
 class CountryManifest(PublicModel):
     """Discovered country manifest."""
 
-    schema_version: int = 2
+    schema_version: int = 3
     generated_at: str | None = None
     markets: list[Market] = Field(default_factory=list)
     unsupported: list[UnsupportedCountry] = Field(default_factory=list)
@@ -619,7 +563,7 @@ class PublicCoreFeeEntry(PublicModel):
 class CoreFees(PublicModel):
     """Consolidated core fees across all countries."""
 
-    schema_version: int = 2
+    schema_version: int = 3
     generated_at: str | None = None
     countries: list[PublicCoreFeeEntry] = Field(default_factory=list)
 
@@ -627,14 +571,14 @@ class CoreFees(PublicModel):
 class SchemaVersionInfo(PublicModel):
     """Schema version metadata."""
 
-    schema_version: int = 2
-    schema_path: str = "schemas/paypal-fees-v2.schema.json"
+    schema_version: int = 3
+    schema_path: str = "schemas/paypal-fees-v3.schema.json"
     schemas: list[str] = Field(
         default_factory=lambda: [
-            "schemas/paypal-fees-v2.schema.json",
-            "schemas/core-fees-v2.schema.json",
-            "schemas/index-v2.schema.json",
-            "schemas/manifest-v2.schema.json",
+            "schemas/paypal-fees-v3.schema.json",
+            "schemas/core-fees-v3.schema.json",
+            "schemas/index-v3.schema.json",
+            "schemas/manifest-v3.schema.json",
         ]
     )
     description: str | None = None

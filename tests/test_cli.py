@@ -236,9 +236,18 @@ def test_cli_compare_classifiers(tmp_path: Path) -> None:
         source=Source(requested_url="https://example.com/de"),
         tables=[table],
     )
-    json_dir = tmp_path / "json"
-    json_dir.mkdir()
-    (json_dir / "de.json").write_text(country.model_dump_json(), encoding="utf-8")
+    diagnostics_dir = tmp_path / "diagnostics"
+    diagnostics_dir.mkdir()
+    (diagnostics_dir / "de.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "normalized_output": country.model_dump(mode="json"),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     output_dir = tmp_path / "compare"
 
     runner = CliRunner()
@@ -246,7 +255,8 @@ def test_cli_compare_classifiers(tmp_path: Path) -> None:
         main,
         [
             "compare-classifiers",
-            str(json_dir),
+            "--diagnostics-dir",
+            str(diagnostics_dir),
             "--output",
             str(output_dir),
         ],

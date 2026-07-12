@@ -15,6 +15,7 @@ from paypal_fee_crawler.validation import (
     generate_core_fees_schema,
     generate_country_schema,
     generate_index_schema,
+    generate_manifest_schema,
     validate_all_output,
     validate_country_output,
     validate_file,
@@ -95,7 +96,7 @@ def test_validate_file_bad_schema_type(tmp_path: Path) -> None:
 def test_generate_country_schema_has_id() -> None:
     schema = generate_country_schema()
     assert "$id" in schema
-    assert "paypal-fees-v2.schema.json" in schema["$id"]
+    assert "paypal-fees-v3.schema.json" in schema["$id"]
 
 
 def test_validate_output_tree_valid() -> None:
@@ -126,7 +127,7 @@ def test_validate_output_tree_hash_mismatch() -> None:
         outputs = {"DE": _make_output("DE")}
         _, staging = publisher.publish(outputs, [], [])
         data = json.loads((staging / "json" / "de.json").read_text())
-        data["tables"][0]["rows"].append({"cells": []})
+        data["market"]["country_name"] = "Different"
         (staging / "json" / "de.json").write_text(json.dumps(data), encoding="utf-8")
         errors = validate_output_tree(staging)
         assert any("hash" in e.lower() for e in errors)
@@ -139,18 +140,18 @@ def test_public_validation_rejects_internal_fields() -> None:
         outputs = {"DE": _make_output("DE")}
         _, staging = publisher.publish(outputs, [], [])
         data = json.loads((staging / "json" / "de.json").read_text())
-        data["tables"][0]["rows"][0]["cells"][0]["tokens"][0]["token_id"] = "x"
+        data["source"] = {"requested_url": "https://example.com/de"}
 
         errors = validate_public_country_output(data)
-        assert any("token_id" in e for e in errors)
+        assert any("source" in e for e in errors)
 
 
 def test_public_country_schema_includes_computed_fields() -> None:
-    country = generate_country_schema()
+    manifest = generate_manifest_schema()
     index = generate_index_schema()
     core = generate_core_fees_schema()
 
-    market = country["$defs"]["Market"]
+    market = manifest["$defs"]["Market"]
     assert "country_code" in market["properties"]
     assert "url_slug" in market["properties"]
 

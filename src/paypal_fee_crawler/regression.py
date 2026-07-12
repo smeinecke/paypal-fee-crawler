@@ -9,14 +9,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .comparison import _selected_categories_from_derived
 from .exceptions import RegressionError
 from .models import (
     AcceptedRegressions,
     ChangeReport,
     ChangeType,
     ClassifierMetadata,
+    CountryIndex,
     CountryManifest,
     CountryOutput,
+    CrawlState,
     UnsupportedCountry,
 )
 
@@ -96,35 +99,33 @@ class PreviousState:
             except Exception as exc:  # nosec B112 # noqa: S112
                 logger.warning("Could not load previous classifier metadata: %s", exc)
 
-        for path in (output_dir / "json").glob("*.json"):
-            if path.name in {"index.json", "core-fees.json"}:
-                continue
+        index_path = output_dir / "json" / "index.json"
+        if index_path.exists():
             try:
-                data = CountryOutput.model_validate_json(path.read_text())
-            except Exception:  # nosec B112 # noqa: S112
-                continue
-            cc = data.market.paypal_market_code
-            state.supported_countries.add(cc)
-            state.country_tables[cc] = len(data.tables)
-            state.country_rows[cc] = sum(len(table.rows) for table in data.tables)
-            state.derived_status[cc] = data.derived.status
-            categories: set[str] = set()
-            if data.derived.standard_commercial:
-                categories.add("standard_commercial")
-            if data.derived.commercial_fixed_fees:
-                categories.add("commercial_fixed_fees")
-            if data.derived.international_surcharges:
-                categories.add("international_surcharges")
-            if data.derived.currency_conversion:
-                categories.add("currency_conversion")
-            state.core_categories[cc] = categories
+                index = CountryIndex.model_validate_json(index_path.read_text())
+                state.supported_countries = {entry.paypal_market_code for entry in index.countries}
+            except Exception as exc:  # nosec B112 # noqa: S112
+                logger.warning("Could not load previous country index: %s", exc)
+
+        state_path = output_dir / "meta" / "crawl-state.json"
+        if state_path.exists():
+            try:
+                crawl_state = CrawlState.model_validate_json(state_path.read_text())
+                for cc, entry in crawl_state.markets.items():
+                    state.country_tables[cc] = entry.table_count
+                    state.country_rows[cc] = entry.row_count
+                    state.derived_status[cc] = entry.derived_status or "unclassified"
+                    state.core_categories[cc] = set(entry.selected_categories)
+            except Exception as exc:  # nosec B112 # noqa: S112
+                logger.warning("Could not load previous crawl state: %s", exc)
+
         # Backward-compatible alias includes all discovered markets.
         state.countries = state.discovered_countries
         return state
 
 
 def _country_output_hash(data: dict[str, Any]) -> str:
-    """Return a deterministic hash of the normalized business content of a country output."""
+    """Return a deterministic hash of the public business content of a country output."""
     canonical = {
         "market": data.get("market"),
         "source": {
@@ -343,15 +344,7 @@ def check_regression(
                     )
                 )
 
-        current_categories: set[str] = set()
-        if output.derived.standard_commercial:
-            current_categories.add("standard_commercial")
-        if output.derived.commercial_fixed_fees:
-            current_categories.add("commercial_fixed_fees")
-        if output.derived.international_surcharges:
-            current_categories.add("international_surcharges")
-        if output.derived.currency_conversion:
-            current_categories.add("currency_conversion")
+        current_categories = _selected_categories_from_derived(output.derived)
 
         lost_categories = prev_categories - current_categories
         for category in sorted(lost_categories):

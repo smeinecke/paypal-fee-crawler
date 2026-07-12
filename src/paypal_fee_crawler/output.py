@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from .comparison import _selected_categories_from_derived
 from .exceptions import ValidationError as CrawlerValidationError
 from .models import (
     ChangeReport,
@@ -26,6 +28,8 @@ from .models import (
     CountryOutput,
     CrawlCache,
     CrawlCacheEntry,
+    CrawlState,
+    CrawlStateEntry,
     Market,
     PublicCoreFeeEntry,
     PublicCountryOutput,
@@ -143,12 +147,85 @@ class OutputPublisher:
     def _compute_content_sha256(self, data: dict[str, Any]) -> str:
         return _country_output_hash(data)
 
+    def _build_state_entry(
+        self,
+        output: CountryOutput,
+        artifact_sha256: str,
+        existing_state: CrawlState | None,
+        diagnostics: dict[str, Any] | None,
+    ) -> CrawlStateEntry:
+        classifier_version = None
+        if diagnostics:
+            run = diagnostics.get(output.market.paypal_market_code)
+            if run is not None:
+                classifier_version = getattr(run, "classifier_version", None)
+
+        existing_entry = self._existing_state_entry(output, existing_state, artifact_sha256)
+        if existing_entry is not None:
+            table_fingerprints = list(existing_entry.table_fingerprints)
+            if classifier_version is None and existing_entry.classifier_version is not None:
+                classifier_version = existing_entry.classifier_version
+        else:
+            table_fingerprints = self._table_fingerprints_for_output(output)
+
+        return CrawlStateEntry(
+            raw_content_sha256=output.source.content_sha256,
+            artifact_sha256=artifact_sha256,
+            classifier_version=classifier_version,
+            derived_status=output.derived.status,
+            selected_categories=sorted(_selected_categories_from_derived(output.derived)),
+            table_count=len(output.tables),
+            row_count=sum(len(table.rows) for table in output.tables),
+            table_fingerprints=table_fingerprints,
+            source_url=output.source.canonical_url or output.source.requested_url,
+            source_updated_at=output.source.page_updated_at,
+        )
+
+    def _existing_state_entry(
+        self,
+        output: CountryOutput,
+        existing_state: CrawlState | None,
+        artifact_sha256: str,
+    ) -> CrawlStateEntry | None:
+        """Return the matching prior state entry if this output is unchanged."""
+        if existing_state is None:
+            return None
+        existing_entry = existing_state.markets.get(output.market.paypal_market_code)
+        if (
+            existing_entry is not None
+            and existing_entry.artifact_sha256 == artifact_sha256
+            and existing_entry.raw_content_sha256 == output.source.content_sha256
+        ):
+            return existing_entry
+        return None
+
+    def _table_fingerprints_for_output(self, output: CountryOutput) -> list[str]:
+        """Return fresh table fingerprints for a newly generated output."""
+        fingerprints: list[str] = []
+        for table in output.tables:
+            table_dump = table.model_dump(mode="json", exclude_none=True)
+            table_hash = hashlib.sha256(
+                json.dumps(table_dump, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+            ).hexdigest()
+            fingerprints.append(f"sha256:{table_hash}")
+        return fingerprints
+
     def _load_existing_cache(self) -> CrawlCache:
         """Load the previous crawl cache so 304/reused runs retain cache headers."""
         path = self.output_dir / "meta" / "crawl-cache.json"
         if not path.exists():
             return CrawlCache()
         return CrawlCache.model_validate_json(path.read_text(encoding="utf-8"))
+
+    def _load_existing_state(self) -> CrawlState | None:
+        """Load the previous crawl state so unchanged runs can reuse table fingerprints."""
+        path = self.output_dir / "meta" / "crawl-state.json"
+        if not path.exists():
+            return None
+        try:
+            return CrawlState.model_validate_json(path.read_text(encoding="utf-8"))
+        except Exception:  # nosec B112 # noqa: S112
+            return None
 
     def publish(
         self,
@@ -177,6 +254,9 @@ class OutputPublisher:
             market_code: entry for market_code, entry in existing_cache.markets.items() if market_code in outputs
         }
 
+        existing_state = self._load_existing_state()
+        state_entries: dict[str, CrawlStateEntry] = {}
+
         for cc in sorted(outputs.keys()):
             output = outputs[cc]
             public = PublicCountryOutput.from_internal(output)
@@ -186,7 +266,6 @@ class OutputPublisher:
             country_data = public.model_dump(mode="json", exclude_none=True)
             country_data["generated_at"] = public.generated_at
             content_hash = self._compute_content_sha256(country_data)
-            country_data["source"]["artifact_sha256"] = content_hash
             _write_json(path, country_data)
 
             if output.source.etag or output.source.last_modified:
@@ -217,6 +296,10 @@ class OutputPublisher:
                 )
             )
 
+            state_entries[output.market.paypal_market_code] = self._build_state_entry(
+                output, content_hash, existing_state, diagnostics
+            )
+
         index = CountryIndex(generated_at=self.timestamp, countries=index_entries)
         index_data = index.model_dump(mode="json", exclude_none=True)
         index_data["generated_at"] = index.generated_at
@@ -242,18 +325,23 @@ class OutputPublisher:
         _write_json(
             meta_dir / "schema-version.json",
             SchemaVersionInfo(
-                description="Public schema for PayPal fee data v2",
+                description="Public schema for PayPal fee data v3",
             ).model_dump(mode="json", exclude_none=True),
         )
 
-        _write_json(schemas_dir / "paypal-fees-v2.schema.json", generate_country_schema())
-        _write_json(schemas_dir / "core-fees-v2.schema.json", generate_core_fees_schema())
-        _write_json(schemas_dir / "index-v2.schema.json", generate_index_schema())
-        _write_json(schemas_dir / "manifest-v2.schema.json", generate_manifest_schema())
+        _write_json(schemas_dir / "paypal-fees-v3.schema.json", generate_country_schema())
+        _write_json(schemas_dir / "core-fees-v3.schema.json", generate_core_fees_schema())
+        _write_json(schemas_dir / "index-v3.schema.json", generate_index_schema())
+        _write_json(schemas_dir / "manifest-v3.schema.json", generate_manifest_schema())
 
         _write_json(
             meta_dir / "crawl-cache.json",
             CrawlCache(markets=cache_entries).model_dump(mode="json", exclude_none=True),
+        )
+
+        _write_json(
+            meta_dir / "crawl-state.json",
+            CrawlState(generated_at=self.timestamp, markets=state_entries).model_dump(mode="json"),
         )
 
         if classifier_metadata is not None:
@@ -266,16 +354,18 @@ class OutputPublisher:
         if accepted_path.exists():
             shutil.copy2(accepted_path, meta_dir / "accepted-regressions.json")
 
-        if self.keep_diagnostics and diagnostics:
+        if self.keep_diagnostics:
             diagnostics_dir = meta_dir / "diagnostics"
             diagnostics_dir.mkdir(parents=True, exist_ok=True)
-            for cc in sorted(diagnostics.keys()):
+            for cc in sorted(outputs.keys()):
+                run = diagnostics.get(cc) if diagnostics else None
                 _write_json(
                     diagnostics_dir / f"{cc.lower()}.json",
                     {
-                        "schema_version": 2,
+                        "schema_version": 1,
                         "generated_at": self.timestamp,
-                        "run": _to_jsonable(diagnostics[cc]),
+                        "normalized_output": outputs[cc].model_dump(mode="json", exclude_none=True),
+                        "classification_run": _to_jsonable(run) if run is not None else None,
                     },
                 )
 

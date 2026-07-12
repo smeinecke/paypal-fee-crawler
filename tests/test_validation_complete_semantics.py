@@ -10,40 +10,15 @@ from paypal_fee_crawler.validation import validate_output_tree, validate_public_
 
 def _country(derived: dict[str, Any]) -> dict[str, Any]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "generated_at": None,
         "market": {
             "paypal_market_code": "DE",
             "iso_country_code": "DE",
             "country_name": "Germany",
-            "region": "europe",
             "locale": "de_DE",
-            "languages": [],
         },
-        "source": {
-            "requested_url": "https://www.paypal.com/de/business/paypal-business-fees",
-            "canonical_url": "https://www.paypal.com/de/business/paypal-business-fees",
-        },
-        "sections": [],
-        "tables": [
-            {
-                "document_id": "FEETB16",
-                "headers": [],
-                "rows": [
-                    {
-                        "cells": [
-                            {
-                                "text": "2,99% + Festgebühr",
-                                "tokens": [{"raw": "2,99%", "kind": "percentage", "value": "2.99"}],
-                                "links": [],
-                            }
-                        ]
-                    }
-                ],
-            }
-        ],
         "derived": derived,
-        "warnings": [],
     }
 
 
@@ -103,13 +78,12 @@ def _write_json(path: Path, data: Any) -> None:
 
 def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     country_hash = _country_output_hash(country)
-    country["source"]["artifact_sha256"] = country_hash
 
     _write_json(root / "json" / "de.json", country)
     _write_json(
         root / "json" / "index.json",
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "generated_at": None,
             "countries": [
                 {
@@ -128,7 +102,7 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     _write_json(
         root / "json" / "core-fees.json",
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "generated_at": None,
             "countries": [
                 {
@@ -143,7 +117,7 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     _write_json(
         root / "meta" / "countries.json",
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "generated_at": None,
             "markets": [
                 {
@@ -161,13 +135,26 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     )
     _write_json(
         root / "meta" / "schema-version.json",
-        {"schema_version": 2, "schema_path": "schemas/paypal-fees-v2.schema.json"},
+        {
+            "schema_version": 3,
+            "schema_path": "schemas/paypal-fees-v3.schema.json",
+            "schemas": [
+                "schemas/paypal-fees-v3.schema.json",
+                "schemas/core-fees-v3.schema.json",
+                "schemas/index-v3.schema.json",
+                "schemas/manifest-v3.schema.json",
+            ],
+        },
+    )
+    _write_json(
+        root / "meta" / "crawl-state.json",
+        {"schema_version": 1, "generated_at": None, "markets": {}},
     )
     for schema_name in [
-        "paypal-fees-v2.schema.json",
-        "core-fees-v2.schema.json",
-        "index-v2.schema.json",
-        "manifest-v2.schema.json",
+        "paypal-fees-v3.schema.json",
+        "core-fees-v3.schema.json",
+        "index-v3.schema.json",
+        "manifest-v3.schema.json",
     ]:
         _write_json(root / "schemas" / schema_name, {"type": "object"})
 

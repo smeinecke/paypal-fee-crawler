@@ -342,26 +342,32 @@ def inspect(html_file: str) -> None:
 
 
 @main.command("compare-classifiers")
-@click.argument("json_dir", type=click.Path(exists=True, file_okay=False))
+@click.option(
+    "--diagnostics-dir",
+    required=True,
+    type=click.Path(exists=True, file_okay=False),
+    help="Directory containing diagnostic sidecars (e.g. meta/diagnostics).",
+)
 @click.option("--output", type=click.Path(), help="Output directory for comparison reports.")
 @click.option("--country", multiple=True, help="Country code to compare (can be repeated).")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging.")
 def compare_classifiers_cmd(
-    json_dir: str,
+    diagnostics_dir: str,
     output: str | None,
     country: tuple[str, ...],
     verbose: bool,
 ) -> None:
-    """Compare legacy and structural classifiers over existing country output.
+    """Compare legacy and structural classifiers over diagnostic sidecars.
 
-    Loads each CountryOutput from JSON_DIR, re-classifies its tables with both
-    engines, and writes a deterministic JSON and Markdown report.
+    Loads the internal ``normalized_output`` from each diagnostic file in
+    DIAGNOSTICS_DIR, re-classifies its tables with both engines, and writes a
+    deterministic JSON and Markdown report.
     """
     _configure_logging(verbose)
     countries = set(country) if country else None
     output_path = output or "."
     try:
-        report = compare_classifiers(Path(json_dir), Path(output_path), countries)
+        report = compare_classifiers(Path(diagnostics_dir), Path(output_path), countries)
     except Exception as exc:
         logger.error("Comparison failed: %s", exc)
         sys.exit(ExitCode.PARSER_FAILURE)
