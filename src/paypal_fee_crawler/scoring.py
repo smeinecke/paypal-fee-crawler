@@ -15,7 +15,8 @@ from typing import Literal
 
 from .models import FeeToken, Table
 from .normalize import clean_text
-from .profiles import build_table_profile
+from .profiles import TableProfile, build_table_profile
+from .registry import FingerprintBuilder, FingerprintRegistry
 
 
 class FeeCategory(StrEnum):
@@ -54,6 +55,7 @@ class BlockerCode(StrEnum):
     ONLY_MONEY_FOR_PERCENTAGE_CATEGORY = "only_money_for_percentage_category"
     NO_USABLE_VALUES = "no_usable_values"
     INCOMPATIBLE_COLUMN_SHAPE = "incompatible_column_shape"
+    INCOMPATIBLE_FINGERPRINT = "incompatible_fingerprint"
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,44 @@ class ClassificationDecision:
     ranked_scores: tuple[ScoreResult, ...]
     ambiguity_reason: str | None
     winner_margin: int | None
+
+
+def _registry_signals(
+    registry: FingerprintRegistry | None,
+    profile: TableProfile,
+    table: Table,
+    category: FeeCategory,
+) -> tuple[list[EvidenceSignal], list[BlockerCode]]:
+    """Return registry-derived signals and blockers for a category."""
+    signals: list[EvidenceSignal] = []
+    blockers: list[BlockerCode] = []
+    if registry is None:
+        return signals, blockers
+    fingerprint = FingerprintBuilder.build(profile, table)
+    match = registry.lookup(fingerprint)
+    if match.approved and match.cluster is not None and match.cluster.category == category.value:
+        signals.append(
+            EvidenceSignal(
+                code=EvidenceCode.KNOWN_FINGERPRINT,
+                source=EvidenceSource.REGISTRY,
+                weight=20,
+                detail=f"approved cluster {match.cluster.name}",
+            )
+        )
+    document_id = table.document_id or ""
+    doc_cluster = registry.cluster_for_document_id(document_id)
+    if doc_cluster is not None and doc_cluster.category != category.value:
+        blockers.append(BlockerCode.INCOMPATIBLE_FINGERPRINT)
+    elif doc_cluster is not None and doc_cluster.category == category.value:
+        signals.append(
+            EvidenceSignal(
+                code=EvidenceCode.KNOWN_DOCUMENT_ID,
+                source=EvidenceSource.REGISTRY,
+                weight=15,
+                detail=f"document_id {document_id} in cluster {doc_cluster.name}",
+            )
+        )
+    return signals, blockers
 
 
 MAX_CATEGORY_SCORE = 100
@@ -579,12 +619,21 @@ def _metadata_matches_category(table: Table, category: FeeCategory) -> tuple[boo
 # ---------------------------------------------------------------------------
 
 
-def score_standard_commercial(table: Table, market_code: str | None = None, locale: str | None = None) -> ScoreResult:
+def score_standard_commercial(
+    table: Table,
+    market_code: str | None = None,
+    locale: str | None = None,
+    registry: FingerprintRegistry | None = None,
+) -> ScoreResult:
     """Score a table for the standard-commercial category."""
     category = FeeCategory.STANDARD_COMMERCIAL
     profile = build_table_profile(table)
     signals: list[EvidenceSignal] = []
     blockers: list[BlockerCode] = []
+
+    registry_signals, registry_blockers = _registry_signals(registry, profile, table, category)
+    signals.extend(registry_signals)
+    blockers.extend(registry_blockers)
 
     if not profile.has_percentage:
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
@@ -630,12 +679,21 @@ def score_standard_commercial(table: Table, market_code: str | None = None, loca
     )
 
 
-def score_fixed_fee(table: Table, market_code: str | None = None, locale: str | None = None) -> ScoreResult:
+def score_fixed_fee(
+    table: Table,
+    market_code: str | None = None,
+    locale: str | None = None,
+    registry: FingerprintRegistry | None = None,
+) -> ScoreResult:
     """Score a table for the fixed-fee category."""
     category = FeeCategory.FIXED_FEE
     profile = build_table_profile(table)
     signals: list[EvidenceSignal] = []
     blockers: list[BlockerCode] = []
+
+    registry_signals, registry_blockers = _registry_signals(registry, profile, table, category)
+    signals.extend(registry_signals)
+    blockers.extend(registry_blockers)
 
     if not profile.has_money:
         blockers.append(BlockerCode.ONLY_PERCENTAGES_FOR_FIXED_FEE)
@@ -680,12 +738,21 @@ def score_fixed_fee(table: Table, market_code: str | None = None, locale: str | 
     )
 
 
-def score_international_surcharge(table: Table, market_code: str | None = None, locale: str | None = None) -> ScoreResult:
+def score_international_surcharge(
+    table: Table,
+    market_code: str | None = None,
+    locale: str | None = None,
+    registry: FingerprintRegistry | None = None,
+) -> ScoreResult:
     """Score a table for the international-surcharge category."""
     category = FeeCategory.INTERNATIONAL_SURCHARGE
     profile = build_table_profile(table)
     signals: list[EvidenceSignal] = []
     blockers: list[BlockerCode] = []
+
+    registry_signals, registry_blockers = _registry_signals(registry, profile, table, category)
+    signals.extend(registry_signals)
+    blockers.extend(registry_blockers)
 
     if not profile.has_percentage:
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
@@ -730,12 +797,21 @@ def score_international_surcharge(table: Table, market_code: str | None = None, 
     )
 
 
-def score_conversion(table: Table, market_code: str | None = None, locale: str | None = None) -> ScoreResult:
+def score_conversion(
+    table: Table,
+    market_code: str | None = None,
+    locale: str | None = None,
+    registry: FingerprintRegistry | None = None,
+) -> ScoreResult:
     """Score a table for the currency-conversion category."""
     category = FeeCategory.CURRENCY_CONVERSION
     profile = build_table_profile(table)
     signals: list[EvidenceSignal] = []
     blockers: list[BlockerCode] = []
+
+    registry_signals, registry_blockers = _registry_signals(registry, profile, table, category)
+    signals.extend(registry_signals)
+    blockers.extend(registry_blockers)
 
     if not profile.has_percentage:
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
@@ -797,13 +873,18 @@ def score_conversion(table: Table, market_code: str | None = None, locale: str |
 # ---------------------------------------------------------------------------
 
 
-def score_all_categories(table: Table, market_code: str | None = None, locale: str | None = None) -> tuple[ScoreResult, ...]:
+def score_all_categories(
+    table: Table,
+    market_code: str | None = None,
+    locale: str | None = None,
+    registry: FingerprintRegistry | None = None,
+) -> tuple[ScoreResult, ...]:
     """Return comparable scores for all four core categories."""
     return (
-        score_standard_commercial(table, market_code, locale),
-        score_fixed_fee(table, market_code, locale),
-        score_international_surcharge(table, market_code, locale),
-        score_conversion(table, market_code, locale),
+        score_standard_commercial(table, market_code, locale, registry),
+        score_fixed_fee(table, market_code, locale, registry),
+        score_international_surcharge(table, market_code, locale, registry),
+        score_conversion(table, market_code, locale, registry),
     )
 
 

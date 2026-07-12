@@ -6,6 +6,7 @@ from paypal_fee_crawler import scoring
 from paypal_fee_crawler.classify import classify_legacy, classify_structural, classify_tables
 from paypal_fee_crawler.models import Row, Table
 from paypal_fee_crawler.pricing_tokens import render_rich_text_node
+from paypal_fee_crawler.registry import ClusterRecord, ClusterStatus, FingerprintRegistry
 
 
 def _table(caption: str, rows: list[list[str]], section_path: list[str] | None = None) -> Table:
@@ -174,3 +175,56 @@ def test_region_from_text_grouped_regions() -> None:
     assert scoring.region_from_text("GB") == "GB"
     assert scoring.region_from_text("EEA") == "EEA"
     assert scoring.region_from_text("Other") == "OTHER"
+
+
+def test_registry_approved_fingerprint_boosts_score() -> None:
+    from paypal_fee_crawler.profiles import build_table_profile
+    from paypal_fee_crawler.registry import FingerprintBuilder
+
+    table = _table("Commercial transaction fees", [["Commercial transactions", "2.99% + 0.39 EUR"]])
+    run = classify_structural([table])
+    fp = run.table_decisions[0].ranked_scores[0].signals[0].code
+    assert fp == scoring.EvidenceCode.HAS_PERCENTAGE_COLUMN
+
+    profile = build_table_profile(table)
+    fingerprint = str(FingerprintBuilder.build(profile, table))
+    registry = FingerprintRegistry(
+        {
+            "commercial": ClusterRecord(
+                name="commercial",
+                category="standard_commercial",
+                fingerprints=frozenset({fingerprint}),
+                document_ids=frozenset(),
+                required_features=frozenset(),
+                reviewed_examples=frozenset(),
+                status=ClusterStatus.APPROVED,
+            )
+        }
+    )
+    run = classify_structural([table], registry=registry)
+    signals = [s.code for s in run.table_decisions[0].ranked_scores[0].signals]
+    assert scoring.EvidenceCode.KNOWN_FINGERPRINT in signals
+
+
+def test_registry_document_id_blocks_incompatible_category() -> None:
+    table = _table("Commercial transaction fees", [["Commercial transactions", "2.99% + 0.39 EUR"]])
+    table = table.model_copy(update={"document_id": "FEETB18"})
+    registry = FingerprintRegistry(
+        {
+            "fixed": ClusterRecord(
+                name="fixed",
+                category="fixed_fee",
+                fingerprints=frozenset(),
+                document_ids=frozenset({"FEETB18"}),
+                required_features=frozenset(),
+                reviewed_examples=frozenset(),
+                status=ClusterStatus.APPROVED,
+            )
+        }
+    )
+    run = classify_structural([table], registry=registry)
+    standard_score = next(s for s in run.table_decisions[0].ranked_scores if s.category == scoring.FeeCategory.STANDARD_COMMERCIAL)
+    assert scoring.BlockerCode.INCOMPATIBLE_FINGERPRINT in standard_score.blockers
+
+    fixed_score = next(s for s in run.table_decisions[0].ranked_scores if s.category == scoring.FeeCategory.FIXED_FEE)
+    assert scoring.EvidenceCode.KNOWN_DOCUMENT_ID in [s.code for s in fixed_score.signals]

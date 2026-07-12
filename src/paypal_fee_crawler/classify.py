@@ -27,6 +27,7 @@ from .models import (
 )
 from .normalize import clean_text
 from .profiles import TableProfile, build_table_profile
+from .registry import FingerprintRegistry
 from .scoring import FeeCategory
 
 logger = logging.getLogger(__name__)
@@ -1752,6 +1753,7 @@ def classify_structural(
     tables: list[Table],
     market_code: str | None = None,
     locale: str | None = None,
+    registry: FingerprintRegistry | None = None,
 ) -> ClassificationRun:
     """Run the structural scoring classifier and produce derived fees.
 
@@ -1766,7 +1768,7 @@ def classify_structural(
         if not table.rows and not table.headers:
             continue
 
-        scores = scoring.score_all_categories(table, market_code, locale)
+        scores = scoring.score_all_categories(table, market_code, locale, registry)
         decision = scoring.select_category(scores)
         decisions.append(decision)
 
