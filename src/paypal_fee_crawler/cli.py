@@ -11,6 +11,7 @@ from typing import Any
 
 import click
 
+from .comparison import compare_classifiers
 from .crawler import Crawler
 from .exceptions import (
     ConfigurationError,
@@ -335,6 +336,33 @@ def inspect(html_file: str) -> None:
     except Exception as exc:
         click.echo(f"Failed to extract CMS context: {exc}")
         sys.exit(ExitCode.PARSER_FAILURE)
+
+
+@main.command("compare-classifiers")
+@click.argument("json_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--output", type=click.Path(), help="Output directory for comparison reports.")
+@click.option("--country", multiple=True, help="Country code to compare (can be repeated).")
+@click.option("--verbose", is_flag=True, help="Enable verbose logging.")
+def compare_classifiers_cmd(
+    json_dir: str,
+    output: str | None,
+    country: tuple[str, ...],
+    verbose: bool,
+) -> None:
+    """Compare legacy and structural classifiers over existing country output.
+
+    Loads each CountryOutput from JSON_DIR, re-classifies its tables with both
+    engines, and writes a deterministic JSON and Markdown report.
+    """
+    _configure_logging(verbose)
+    countries = set(country) if country else None
+    output_path = output or "."
+    try:
+        report_path = compare_classifiers(Path(json_dir), Path(output_path), countries)
+    except Exception as exc:
+        logger.error("Comparison failed: %s", exc)
+        sys.exit(ExitCode.PARSER_FAILURE)
+    click.echo(f"Comparison report written to {report_path}")
 
 
 if __name__ == "__main__":

@@ -314,7 +314,7 @@ def build_table_profile(table: Table, context: TableContext | None = None) -> Ta
                 cell = row.cells[col]
                 cell_pcts = sum(1 for token in cell.tokens if token.kind == "percentage")
                 cell_mons = sum(1 for token in cell.tokens if token.kind == "money")
-                cell_texts = int(cell.text.strip() and not cell_pcts and not cell_mons)
+                cell_texts = int(bool(cell.text.strip() and not cell_pcts and not cell_mons))
                 if cell_pcts:
                     pct_count += 1
                 if cell_mons:
