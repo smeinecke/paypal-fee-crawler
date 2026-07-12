@@ -11,6 +11,7 @@ from enum import StrEnum
 
 from .models import FixedFees, InternationalSurcharge, Row, Table
 from .normalize import clean_text
+from .pricing_tokens import CURRENCY_CODES, is_numeric_amount, parse_amount
 from .profiles import TableProfile
 from .scoring import (
     EvidenceCode,
@@ -55,6 +56,8 @@ class ColumnRoleAssignment:
     label_column: int | None
     percentage_columns: tuple[int, ...]
     money_columns: tuple[int, ...]
+    currency_label_column: int | None
+    amount_column: int | None
     confidence: int
 
 
@@ -105,8 +108,13 @@ def _moneys_in_row(row: Row) -> list[tuple[int, str, str]]:
     return found
 
 
-def _column_roles(profile: TableProfile) -> ColumnRoleAssignment:
-    """Infer label, percentage, and money columns from a profile."""
+def _is_iso_currency_code(text: str) -> bool:
+    """Return True if *text* is a three-letter ISO 4217 currency code."""
+    return len(text) == 3 and text.isalpha() and text.upper() in CURRENCY_CODES
+
+
+def _column_roles(profile: TableProfile, table: Table) -> ColumnRoleAssignment:
+    """Infer label, percentage, money, currency-label, and amount columns."""
     percentage_columns = tuple(sorted(profile.percentage_columns))
     money_columns = tuple(sorted(profile.money_columns))
 
@@ -119,6 +127,49 @@ def _column_roles(profile: TableProfile) -> ColumnRoleAssignment:
         if col.text_row_count > 0:
             label_column = col.column_index
             break
+
+    # Infer the currency-label column from non-value cells that contain valid
+    # ISO 4217 codes.  The leftmost column matching is preferred.
+    currency_label_column: int | None = None
+    for col in profile.columns:
+        if col.column_index in percentage_columns or col.column_index in money_columns:
+            continue
+        valid = True
+        for row in table.rows:
+            if col.column_index >= len(row.cells):
+                continue
+            cell = row.cells[col.column_index].text.strip()
+            if not cell:
+                continue
+            if not _is_iso_currency_code(cell):
+                valid = False
+                break
+        if valid:
+            currency_label_column = col.column_index
+            break
+
+    # Infer the amount column.  Prefer columns with money tokens, then fall back
+    # to columns whose cells are plain numeric amounts.
+    amount_column: int | None = None
+    if len(money_columns) == 1:
+        amount_column = money_columns[0]
+    else:
+        for col in profile.columns:
+            if col.column_index in percentage_columns:
+                continue
+            valid = True
+            for row in table.rows:
+                if col.column_index >= len(row.cells):
+                    continue
+                cell = row.cells[col.column_index].text.strip()
+                if not cell:
+                    continue
+                if not is_numeric_amount(cell):
+                    valid = False
+                    break
+            if valid:
+                amount_column = col.column_index
+                break
 
     # Confidence: full assignment if we have value columns and a label.
     if percentage_columns and label_column is not None:
@@ -134,6 +185,8 @@ def _column_roles(profile: TableProfile) -> ColumnRoleAssignment:
         label_column=label_column,
         percentage_columns=percentage_columns,
         money_columns=money_columns,
+        currency_label_column=currency_label_column,
+        amount_column=amount_column,
         confidence=confidence,
     )
 
@@ -257,6 +310,14 @@ _STD_ROW_EXCLUDE = (
     "fixed fees",
     "festgebühr",
     "feste gebühr",
+    "personal",
+    "friends",
+    "friends and family",
+    "friends & family",
+    "friend",
+    "family",
+    "personal payments",
+    "personal payment",
 )
 
 # Fallback labels for a localized or catch-all standard-commercial row.
@@ -287,6 +348,62 @@ _STD_ROW_FALLBACK = (
 )
 
 
+def _score_standard_row(
+    row: Row,
+    row_idx: int,
+    profile: TableProfile,
+    fixed_currencies: set[str],
+    market_code: str | None,
+) -> int | None:
+    """Return a non-negative score for a standard-commercial row, or None if excluded."""
+    pct = _first_percentage_in_row(row)
+    if not pct:
+        return None
+
+    first_cell_text = _norm(row.cells[0].text) if row.cells else ""
+    all_text = _norm(" ".join(cell.text for cell in row.cells))
+
+    if _contains_any(first_cell_text, _STD_ROW_EXCLUDE) or _contains_any(all_text, _STD_ROW_EXCLUDE):
+        return None
+
+    score = 0
+
+    # Mixed percentage-plus-fixed expressions are the strongest signal.
+    has_money = any(_moneys_in_row(row))
+    if has_money and row_idx in profile.mixed_percentage_money_rows:
+        score += 50
+
+    # Rows linked to a validated fixed-fee table (same currency present).
+    if fixed_currencies and has_money:
+        row_currencies = {
+            token.currency
+            for cell in row.cells
+            for token in cell.tokens
+            if token.kind == "money" and token.currency
+        }
+        if row_currencies & fixed_currencies:
+            score += 30
+
+    # Rows with a percentage in an inferred percentage column.
+    row_pct_cols = {c for c, _ in _percentages_in_row(row)}
+    if row_pct_cols & profile.percentage_columns:
+        score += 20
+
+    # Positive lexical evidence.
+    if _contains_any(first_cell_text, _STD_ROW_INCLUDE) or _contains_any(all_text, _STD_ROW_INCLUDE):
+        score += 10
+
+    # Fallback market or catch-all labels.
+    if market_code and (
+        market_code_matches(first_cell_text, market_code) or market_code_matches(all_text, market_code)
+    ):
+        score += 5
+    if _contains_any(first_cell_text, _STD_ROW_FALLBACK) or _contains_any(all_text, _STD_ROW_FALLBACK):
+        score += 5
+
+    return score if score > 0 else None
+
+
 def extract_standard_percentage(
     table: Table,
     profile: TableProfile,
@@ -295,74 +412,24 @@ def extract_standard_percentage(
 ) -> ExtractionDecision[str]:
     """Extract the standard commercial percentage for a table.
 
-    Selection priority:
-    1. a row containing both a percentage and a fixed monetary component;
-    2. a row linked to a validated fixed-fee table (same currency present);
-    3. a structurally coherent percentage-only row;
-    4. lexical row evidence;
-    5. otherwise ambiguous.
+    Candidate rows are scored structurally and lexically; the highest-scoring
+    value wins.  If two rows tie with the same top score but different values,
+    the extraction fails closed and reports a conflict.
     """
     signals: list[EvidenceSignal] = []
     observations: list[ClassificationObservation] = []
     selected_rows: list[int] = []
-    candidates: list[tuple[int, str, int]] = []  # (row, pct, priority)
+    candidates: list[tuple[int, str, int]] = []  # (row, pct, score)
 
     fixed_currencies = {f.currency for f in (fixed_fees or [])}
 
     for row_idx, row in enumerate(table.rows):
+        row_score = _score_standard_row(row, row_idx, profile, fixed_currencies, market_code)
+        if row_score is None:
+            continue
         pct = _first_percentage_in_row(row)
-        if not pct:
-            continue
-
-        first_cell_text = _norm(row.cells[0].text) if row.cells else ""
-        all_text = _norm(" ".join(cell.text for cell in row.cells))
-
-        if _contains_any(first_cell_text, _STD_ROW_EXCLUDE) or _contains_any(all_text, _STD_ROW_EXCLUDE):
-            continue
-
-        # Priority 1: mixed percentage and money row.
-        has_money = any(_moneys_in_row(row))
-        if has_money and row_idx in profile.mixed_percentage_money_rows:
-            candidates.append((row_idx, pct, 1))
-            continue
-
-        # Priority 2: fixed-fee table linkage (same currency).
-        if fixed_currencies:
-            row_currencies = {
-                token.currency
-                for cell in row.cells
-                for token in cell.tokens
-                if token.kind == "money" and token.currency
-            }
-            if row_currencies & fixed_currencies:
-                candidates.append((row_idx, pct, 2))
-                continue
-
-        # Priority 3: structurally coherent percentage-only row.
-        row_pct_cols = [c for c, _ in _percentages_in_row(row)]
-        if row_pct_cols:
-            candidates.append((row_idx, pct, 3))
-            continue
-
-        # Priority 4: lexical evidence.
-        if _contains_any(first_cell_text, _STD_ROW_INCLUDE) or _contains_any(all_text, _STD_ROW_INCLUDE):
-            candidates.append((row_idx, pct, 4))
-
-    # If no keyword candidates, allow a market-specific or catch-all fallback.
-    if not candidates:
-        for row_idx, row in enumerate(table.rows):
-            pct = _first_percentage_in_row(row)
-            if not pct:
-                continue
-            first_cell_text = _norm(row.cells[0].text) if row.cells else ""
-            all_text = _norm(" ".join(cell.text for cell in row.cells))
-            if _contains_any(first_cell_text, _STD_ROW_EXCLUDE) or _contains_any(all_text, _STD_ROW_EXCLUDE):
-                continue
-            if market_code and (market_code_matches(first_cell_text, market_code) or market_code_matches(all_text, market_code)):
-                candidates.append((row_idx, pct, 5))
-                continue
-            if _contains_any(first_cell_text, _STD_ROW_FALLBACK) or _contains_any(all_text, _STD_ROW_FALLBACK):
-                candidates.append((row_idx, pct, 5))
+        if pct:
+            candidates.append((row_idx, pct, row_score))
 
     if not candidates:
         observations.append(
@@ -375,15 +442,33 @@ def extract_standard_percentage(
         )
         return ExtractionDecision(value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations))
 
-    candidates.sort(key=lambda x: (x[2], -x[0]))
-    selected_row, selected_pct, priority = candidates[0]
+    # Sort by score descending, then row index ascending for deterministic order.
+    # Row index is used only for deterministic ordering, not as a semantic tie-breaker.
+    candidates.sort(key=lambda x: (-x[2], x[0]))
+    top_score = candidates[0][2]
+    top_value = candidates[0][1]
+
+    # Check for equally supported rows with different values.
+    for _row_idx, pct, score in candidates:
+        if score == top_score and pct != top_value:
+            observations.append(
+                ClassificationObservation(
+                    kind=ObservationKind.EXTRACTION_CONFLICT,
+                    category=FeeCategory.STANDARD_COMMERCIAL,
+                    table_id=table.table_id or table.document_id,
+                    message=f"equally supported standard rates: {top_value}% and {pct}%",
+                )
+            )
+            return ExtractionDecision(value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations))
+
+    selected_row, selected_pct, selected_score = candidates[0]
     selected_rows.append(selected_row)
     _add_evidence(
         signals,
         EvidenceCode.HAS_PERCENTAGE_COLUMN,
         EvidenceSource.STRUCTURAL,
         10,
-        detail=f"priority {priority} row {selected_row}: {selected_pct}%",
+        detail=f"score {selected_score} row {selected_row}: {selected_pct}%",
     )
     return ExtractionDecision(
         value=selected_pct,
@@ -399,27 +484,32 @@ def extract_standard_percentage(
 
 
 def extract_fixed_fees(table: Table, profile: TableProfile) -> ExtractionDecision[list[FixedFees]]:
-    """Extract fixed-fee rows as a list of (currency, amount) values."""
+    """Extract fixed-fee rows as a list of (currency, amount) values.
+
+    Supports money tokens (e.g. ``0.39 EUR``), separate currency-label and
+    numeric-amount columns (e.g. ``EUR | 0.39``), and ISO 4217 currency-label
+    validation.  Duplicate identical (currency, amount) pairs are skipped and
+    conflicting values are reported as extraction conflicts.
+    """
     signals: list[EvidenceSignal] = []
     observations: list[ClassificationObservation] = []
     fees: list[FixedFees] = []
     by_currency: dict[str, str] = {}
     selected_rows: list[int] = []
 
-    roles = _column_roles(profile)
-    currency_column: int | None = None
-    if len(roles.money_columns) == 1:
-        currency_column = roles.money_columns[0]
+    roles = _column_roles(profile, table)
+    currency_label_column = roles.currency_label_column
+    amount_column = roles.amount_column
 
     for row_idx, row in enumerate(table.rows):
         if profile.rows[row_idx].is_probable_header or profile.rows[row_idx].is_probable_note:
             continue
 
-        moneys = _moneys_in_row(row)
-        if not moneys:
-            continue
+        amount: str | None = None
+        currency: str | None = None
 
-        if len(moneys) != 1:
+        moneys = _moneys_in_row(row)
+        if len(moneys) > 1:
             observations.append(
                 ClassificationObservation(
                     kind=ObservationKind.EXTRACTION_CONFLICT,
@@ -430,23 +520,25 @@ def extract_fixed_fees(table: Table, profile: TableProfile) -> ExtractionDecisio
             )
             continue
 
-        col, amount, currency = moneys[0]
+        if moneys:
+            col, amount, currency = moneys[0]
+        elif currency_label_column is not None and amount_column is not None:
+            if currency_label_column < len(row.cells) and amount_column < len(row.cells):
+                label_text = row.cells[currency_label_column].text.strip()
+                amount_text = row.cells[amount_column].text.strip()
+                if _is_iso_currency_code(label_text):
+                    amount = parse_amount(amount_text)
+                    currency = label_text.upper()
+        else:
+            continue
 
-        # If there is a separate currency-label column, use it when the money
-        # token did not carry a currency (unlikely for our tokenizer, but
-        # defensively handled).
-        if not currency and currency_column is not None and currency_column < len(row.cells):
-            label = row.cells[currency_column].text.strip()
-            if label and len(label) == 3 and label.upper().isalpha():
-                currency = label.upper()
-
-        if not currency:
+        if not currency or not amount:
             observations.append(
                 ClassificationObservation(
                     kind=ObservationKind.EXTRACTION_CONFLICT,
                     category=FeeCategory.FIXED_FEE,
                     table_id=table.table_id or table.document_id,
-                    message=f"row {row_idx} has no determinable currency",
+                    message=f"row {row_idx} has no determinable currency or amount",
                 )
             )
             continue
@@ -461,6 +553,8 @@ def extract_fixed_fees(table: Table, profile: TableProfile) -> ExtractionDecisio
                     message=f"conflicting fixed fee for {currency}: {existing} vs {amount}",
                 )
             )
+            continue
+        if existing == amount:
             continue
 
         by_currency[currency] = amount
@@ -520,7 +614,7 @@ def extract_international_surcharges(
     selected_rows: list[int] = []
     seen_regions: set[str] = set()
 
-    roles = _column_roles(profile)
+    roles = _column_roles(profile, table)
     label_column = roles.label_column
     percentage_columns = roles.percentage_columns
 
@@ -680,7 +774,7 @@ def extract_conversion_spread(
         )
         return ExtractionDecision(value=None, selected_rows=(), evidence=tuple(signals), observations=tuple(observations))
 
-    roles = _column_roles(profile)
+    roles = _column_roles(profile, table)
     pcts: list[tuple[int, str]] = []
     for row_idx, row in enumerate(table.rows):
         if profile.rows[row_idx].is_probable_header or profile.rows[row_idx].is_probable_note:
@@ -695,11 +789,11 @@ def extract_conversion_spread(
                     message=f"row {row_idx} has multiple conversion percentages",
                 )
             )
+            continue
         for col, pct in row_pcts:
             if roles.percentage_columns and col not in roles.percentage_columns:
                 continue
             pcts.append((row_idx, pct))
-            selected_rows.append(row_idx)
 
     if not pcts:
         observations.append(
@@ -712,14 +806,28 @@ def extract_conversion_spread(
         )
         return ExtractionDecision(value=None, selected_rows=tuple(selected_rows), evidence=tuple(signals), observations=tuple(observations))
 
-    # Prefer the first structurally assigned percentage.
-    selected_row, selected_pct = pcts[0]
+    unique_values = {pct for _, pct in pcts}
+    if len(unique_values) > 1:
+        observations.append(
+            ClassificationObservation(
+                kind=ObservationKind.EXTRACTION_CONFLICT,
+                category=FeeCategory.CURRENCY_CONVERSION,
+                table_id=table.table_id or table.document_id,
+                message=f"conflicting conversion spreads: {sorted(unique_values)}",
+            )
+        )
+        return ExtractionDecision(value=None, selected_rows=tuple(selected_rows), evidence=tuple(signals), observations=tuple(observations))
+
+    selected_pct = unique_values.pop()
+    for row_idx, pct in pcts:
+        if pct == selected_pct:
+            selected_rows.append(row_idx)
     _add_evidence(
         signals,
         EvidenceCode.HAS_PERCENTAGE_COLUMN,
         EvidenceSource.STRUCTURAL,
         10,
-        detail=f"row {selected_row}: {selected_pct}%",
+        detail=f"conversion spread {selected_pct}%",
     )
     return ExtractionDecision(
         value=selected_pct,

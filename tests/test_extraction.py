@@ -84,7 +84,7 @@ def test_fixed_fee_detects_conflict() -> None:
 def test_column_roles_label_and_value() -> None:
     table = _table([["Region", "Surcharge"], ["EEA", "+0.49%"]])
     profile = build_table_profile(table)
-    roles = _column_roles(profile)
+    roles = _column_roles(profile, table)
     assert roles.label_column == 0
     assert roles.percentage_columns == (1,)
     assert roles.money_columns == ()

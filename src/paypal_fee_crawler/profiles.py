@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ConfigDict
 
 from .models import Cell, FeeToken, Row, Table
+from .pricing_tokens import is_numeric_amount
 
 
 class TableContext(BaseModel):
@@ -164,12 +165,25 @@ def _cell_has_kind(cell: Cell, kind: str) -> bool:
     return any(token.kind == kind for token in cell.tokens)
 
 
+def _cell_has_value(cell: Cell) -> bool:
+    """Return True if *cell* carries a percentage, money, or numeric amount."""
+    if any(token.kind in {"percentage", "money"} for token in cell.tokens):
+        return True
+    return is_numeric_amount(cell.text)
+
+
 def _percentage_count(row: Row) -> int:
     return sum(1 for cell in row.cells for token in cell.tokens if token.kind == "percentage")
 
 
 def _money_count(row: Row) -> int:
-    return sum(1 for cell in row.cells for token in cell.tokens if token.kind == "money")
+    """Count cells that contain money tokens or plain numeric amounts."""
+    return sum(
+        1
+        for cell in row.cells
+        if any(token.kind == "money" for token in cell.tokens)
+        or is_numeric_amount(cell.text)
+    )
 
 
 def _has_percentage(row: Row) -> bool:
@@ -208,17 +222,14 @@ def _is_probable_header(row_index: int, row: Row) -> bool:
         return False
     if row.cells and all(_cell_has_kind(cell, "text") for cell in row.cells):
         return True
-    return not any(_cell_has_kind(cell, "percentage") or _cell_has_kind(cell, "money") for cell in row.cells)
+    return not any(_cell_has_value(cell) for cell in row.cells)
 
 
 def _is_probable_note(row_index: int, row: Row, row_count: int) -> bool:
     """A note/footer row has no value-bearing tokens and appears after data rows."""
     if row_index == 0:
         return False
-    has_values = any(
-        _cell_has_kind(cell, "percentage") or _cell_has_kind(cell, "money")
-        for cell in row.cells
-    )
+    has_values = any(_cell_has_value(cell) for cell in row.cells)
     if has_values:
         return False
     return row_index >= row_count - 1 or bool(
@@ -314,12 +325,13 @@ def build_table_profile(table: Table, context: TableContext | None = None) -> Ta
                 cell = row.cells[col]
                 cell_pcts = sum(1 for token in cell.tokens if token.kind == "percentage")
                 cell_mons = sum(1 for token in cell.tokens if token.kind == "money")
-                cell_texts = int(bool(cell.text.strip() and not cell_pcts and not cell_mons))
+                cell_amount = cell_mons + (1 if is_numeric_amount(cell.text) else 0)
+                cell_texts = int(bool(cell.text.strip() and not cell_pcts and not cell_amount))
                 if cell_pcts:
                     pct_count += 1
-                if cell_mons:
+                if cell_amount:
                     mon_count += 1
-                if cell_texts and not cell_pcts and not cell_mons:
+                if cell_texts:
                     text_count += 1
                 col_currencies.update(
                     token.currency

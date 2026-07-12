@@ -82,6 +82,7 @@ class ScoreResult:
 class ClassificationDecision:
     status: Literal["selected", "ambiguous", "unclassified"]
     selected_category: FeeCategory | None
+    selected_score: ScoreResult | None
     ranked_scores: tuple[ScoreResult, ...]
     ambiguity_reason: str | None
     winner_margin: int | None
@@ -901,6 +902,7 @@ def select_category(
         return ClassificationDecision(
             status="unclassified",
             selected_category=None,
+            selected_score=None,
             ranked_scores=ranked,
             ambiguity_reason="no eligible category",
             winner_margin=None,
@@ -913,6 +915,7 @@ def select_category(
         return ClassificationDecision(
             status="unclassified",
             selected_category=None,
+            selected_score=None,
             ranked_scores=ranked,
             ambiguity_reason=f"winner score {winner.score} below minimum {minimum_score}",
             winner_margin=None,
@@ -922,6 +925,7 @@ def select_category(
         return ClassificationDecision(
             status="ambiguous",
             selected_category=None,
+            selected_score=None,
             ranked_scores=ranked,
             ambiguity_reason=(
                 f"winner {winner.category.value} score {winner.score} and runner-up "
@@ -934,7 +938,8 @@ def select_category(
     return ClassificationDecision(
         status="selected",
         selected_category=winner.category,
+        selected_score=winner,
         ranked_scores=ranked,
         ambiguity_reason=None,
-        winner_margin=(winner.score - runner_up.score) if runner_up else MAX_CATEGORY_SCORE,
+        winner_margin=(winner.score - runner_up.score) if runner_up else None,
     )

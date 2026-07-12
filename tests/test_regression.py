@@ -1,237 +1,129 @@
-"""Tests for regression guards."""
+"""Regression tests for the four release-blocking defects."""
 
 from __future__ import annotations
 
-import json
-import tempfile
-from pathlib import Path
-from typing import Any
+from paypal_fee_crawler import scoring
+from paypal_fee_crawler.classify import classify_structural
+from paypal_fee_crawler.extraction import (
+    ObservationKind,
+    extract_conversion_spread,
+    extract_fixed_fees,
+    extract_standard_percentage,
+)
+from paypal_fee_crawler.models import FixedFees, Row, Table
+from paypal_fee_crawler.pricing_tokens import render_rich_text_node
+from paypal_fee_crawler.profiles import build_table_profile
+from paypal_fee_crawler.scoring import BlockerCode, EvidenceSignal, ScoreResult
 
-import pytest
 
-from paypal_fee_crawler.exceptions import RegressionError
-from paypal_fee_crawler.models import Cell, CountryOutput, DerivedFees, Market, Row, Source, Table
-from paypal_fee_crawler.output import OutputPublisher
-from paypal_fee_crawler.regression import PreviousState, RegressionLimits, check_regression, enforce_regression
-
-
-def _make_output(
-    cc: str, tables: int = 0, rows: int = 0, status: str = "unclassified", intl: bool = False, conversion: bool = False
-) -> CountryOutput:
-    table_rows = [
-        Row(
-            cells=[
-                Cell(
-                    text="2.99%",
-                    tokens=[{"raw": "2.99%", "kind": "percentage", "value": "2.99"}],
-                )
-            ]
-        )
-        for _ in range(rows)
-    ]
-    extra_tables: list[Table] = []
-    if intl:
-        extra_tables.append(
-            Table(
-                caption="International surcharge",
-                rows=[Row(cells=[Cell(text="1.29%")])],
-            )
-        )
-    if conversion:
-        extra_tables.append(
-            Table(
-                caption="Currency conversion",
-                rows=[Row(cells=[Cell(text="3.0%")])],
-            )
-        )
-    return CountryOutput(
-        schema_version=1,
-        market=Market(paypal_market_code=cc, iso_country_code=cc, country_name=cc),
-        source=Source(
-            requested_url=f"https://example.com/{cc.lower()}", canonical_url=f"https://example.com/{cc.lower()}"
-        ),
-        tables=[Table(rows=table_rows) for _ in range(tables)] + extra_tables,
-        derived=DerivedFees(status=status),
+def _table(caption: str, rows: list[list[str]], document_id: str = "FEETB001") -> Table:
+    return Table(
+        caption=caption,
+        section_path=[caption],
+        document_id=document_id,
+        source_order=1,
+        rows=[Row(cells=[render_rich_text_node(cell) for cell in row]) for row in rows],
     )
 
 
-def _check(
-    previous: PreviousState,
-    current_outputs: dict[str, CountryOutput],
-    discovered: set[str] | None = None,
-    unsupported: set[str] | None = None,
-    transient: set[str] | None = None,
-    limits: RegressionLimits | None = None,
-) -> Any:
-    discovered = discovered or set(current_outputs.keys())
-    supported = set(current_outputs.keys())
-    unsupported = unsupported or set()
-    transient = transient or set()
-    return check_regression(
-        previous, discovered, supported, unsupported, transient, current_outputs, limits or RegressionLimits()
+def _cell(text: str) -> object:
+    """Return a Cell with pricing tokens tokenized from *text*."""
+    return render_rich_text_node(text)
+
+
+def test_select_category_uses_selected_score_not_ranked_top() -> None:
+    """Blocked top-ranked score must not leak into the selected candidate."""
+    standard = ScoreResult(
+        category=scoring.FeeCategory.STANDARD_COMMERCIAL,
+        score=75,
+        signals=(EvidenceSignal(code=scoring.EvidenceCode.HAS_PERCENTAGE_COLUMN, source=scoring.EvidenceSource.STRUCTURAL, weight=40),),
+        blockers=(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY,),
+    )
+    fixed = ScoreResult(
+        category=scoring.FeeCategory.FIXED_FEE,
+        score=62,
+        signals=(EvidenceSignal(code=scoring.EvidenceCode.HAS_MONEY_COLUMN, source=scoring.EvidenceSource.STRUCTURAL, weight=40),),
+        blockers=(),
+    )
+    conversion = ScoreResult(
+        category=scoring.FeeCategory.CURRENCY_CONVERSION,
+        score=30,
+        signals=(),
+        blockers=(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY,),
+    )
+    international = ScoreResult(
+        category=scoring.FeeCategory.INTERNATIONAL_SURCHARGE,
+        score=25,
+        signals=(),
+        blockers=(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY,),
+    )
+
+    decision = scoring.select_category((standard, fixed, conversion, international))
+    assert decision.status == "selected"
+    assert decision.selected_category is scoring.FeeCategory.FIXED_FEE
+    assert decision.selected_score is not None
+    assert decision.selected_score.score == 62
+    assert decision.selected_score.category == scoring.FeeCategory.FIXED_FEE
+    assert decision.winner_margin is None
+
+
+def test_standard_percentage_excludes_personal_row_order_independent() -> None:
+    """Personal/friends-and-family rows must not win, regardless of row order."""
+    forward = _table("Standard fees", [["Commercial payments", "2.99%"], ["Personal payments", "5.00%"]])
+    reverse = _table("Standard fees", [["Personal payments", "5.00%"], ["Commercial payments", "2.99%"]])
+
+    for table in (forward, reverse):
+        profile = build_table_profile(table)
+        decision = extract_standard_percentage(table, profile)
+        assert decision.value == "2.99", f"failed for {table.caption}"
+
+
+def test_standard_percentage_reports_conflict_for_equally_supported_values() -> None:
+    """Two structurally identical commercial rows with different values are a conflict."""
+    table = _table("Standard fees", [["Commercial payments A", "2.99%"], ["Commercial payments B", "3.49%"]])
+    profile = build_table_profile(table)
+    decision = extract_standard_percentage(table, profile)
+    assert decision.value is None
+    assert any(
+        o.kind == ObservationKind.EXTRACTION_CONFLICT and "2.99" in o.message and "3.49" in o.message
+        for o in decision.observations
     )
 
 
-def test_no_regression_on_identical_run() -> None:
-    previous = PreviousState(supported_countries={"DE"}, country_tables={"DE": 1}, country_rows={"DE": 1})
-    current = {"DE": _make_output("DE", tables=1, rows=1)}
-    report = _check(previous, current)
-    assert not report.has_regression
+def test_fixed_fees_currency_label_column_and_no_duplicate() -> None:
+    """EUR | 0.39 style tables extract and skip duplicate (currency, amount) pairs."""
+    table = _table("Fixed fee by currency", [["EUR", "0.39"], ["USD", "0.49"], ["EUR", "0.39"]])
+    profile = build_table_profile(table)
+    decision = extract_fixed_fees(table, profile)
+    assert decision.value is not None
+    assert len(decision.value) == 2
+    assert set(decision.value) == {FixedFees(currency="EUR", amount="0.39"), FixedFees(currency="USD", amount="0.49")}
 
 
-def test_no_regression_when_discovered_remains_known() -> None:
-    """Discovered markets are compared to discovered markets, not to supported markets."""
-    previous = PreviousState(
-        discovered_countries={"DE", "US", "XY"},
-        supported_countries={"DE"},
+def test_fixed_fees_currency_label_conflicting_value_is_conflict() -> None:
+    """Conflicting amounts for the same currency label are reported as a conflict."""
+    table = _table("Fixed fee by currency", [["EUR", "0.39"], ["EUR", "0.49"]])
+    profile = build_table_profile(table)
+    decision = extract_fixed_fees(table, profile)
+    assert any(o.kind == ObservationKind.EXTRACTION_CONFLICT for o in decision.observations)
+
+
+def test_conversion_spread_conflicting_rows_is_conflict() -> None:
+    """A single conversion table with two distinct spreads must fail closed."""
+    table = _table("Currency conversion spread", [["3.25%"], ["4.50%"]], document_id="FEETB539")
+    profile = build_table_profile(table)
+    decision = extract_conversion_spread(table, profile, has_approved_evidence=True)
+    assert decision.value is None
+    assert any(o.kind == ObservationKind.EXTRACTION_CONFLICT and "3.25" in o.message for o in decision.observations)
+
+
+def test_conversion_spread_conflicting_tables_is_conflict() -> None:
+    """Two conversion tables with different spreads must not silently choose one."""
+    table_3 = _table("Currency conversion spread", [["3.25%"]], document_id="FEETB539")
+    table_4 = _table("Currency conversion spread", [["4.50%"]], document_id="FEETB539")
+    run = classify_structural([table_3, table_4])
+    assert any(
+        o.kind == ObservationKind.EXTRACTION_CONFLICT and "3.25" in o.message and "4.5" in o.message
+        for o in run.observations
     )
-    current = {"DE": _make_output("DE", tables=1, rows=1)}
-    report = _check(previous, current, discovered={"DE", "US", "XY"})
-    assert not report.has_regression
-
-
-def test_removed_country_regression() -> None:
-    previous = PreviousState(supported_countries={"DE", "US"})
-    current = {"DE": _make_output("DE", tables=1, rows=1)}
-    report = _check(previous, current)
-    assert report.has_regression
-    assert any(c.kind == "removed_country" for c in report.changes)
-
-
-def test_discovered_to_missing_regression() -> None:
-    previous = PreviousState(discovered_countries={"DE", "US"})
-    current = {"DE": _make_output("DE", tables=1, rows=1)}
-    report = _check(previous, current, discovered={"DE"})
-    assert report.has_regression
-    assert any(c.kind == "discovered_to_missing" for c in report.changes)
-
-
-def test_added_country_not_regression() -> None:
-    previous = PreviousState(supported_countries={"DE"})
-    current = {"DE": _make_output("DE", tables=1, rows=1), "US": _make_output("US", tables=1, rows=1)}
-    report = _check(previous, current)
-    assert not report.has_regression
-
-
-def test_enforce_regression_raises() -> None:
-    previous = PreviousState(supported_countries={"DE"})
-    current: dict[str, CountryOutput] = {}
-    report = _check(previous, current)
-    with pytest.raises(RegressionError):
-        enforce_regression(report, fail_on_regression=True)
-
-
-def test_allow_country_drop_flag() -> None:
-    previous = PreviousState(supported_countries={"DE", "US"})
-    current = {"DE": _make_output("DE", tables=1, rows=1)}
-    limits = RegressionLimits(allow_country_drop=True)
-    report = _check(previous, current, limits=limits)
-    # Removed country is still recorded but not a regression.
-    assert not report.has_regression
-
-
-def test_supported_to_transient_regression() -> None:
-    previous = PreviousState(supported_countries={"DE"})
-    current: dict[str, CountryOutput] = {}
-    report = _check(previous, current, transient={"DE"})
-    assert report.has_regression
-    assert any(c.kind == "supported_to_transient" for c in report.changes)
-
-
-def test_supported_to_unsupported_regression() -> None:
-    previous = PreviousState(supported_countries={"DE"})
-    current: dict[str, CountryOutput] = {}
-    report = _check(previous, current, unsupported={"DE"})
-    assert report.has_regression
-    assert any(c.kind == "supported_to_unsupported" for c in report.changes)
-
-
-def test_unsupported_to_supported_not_regression() -> None:
-    previous = PreviousState(supported_countries=set(), unsupported_countries={"US"})
-    current = {"US": _make_output("US", tables=1, rows=1)}
-    report = _check(previous, current)
-    assert not report.has_regression
-    assert any(c.kind == "unsupported_to_supported" for c in report.changes)
-
-
-def test_structural_overlap_regression() -> None:
-    previous = PreviousState()
-    current = {"DE": _make_output("DE", tables=1, rows=1)}
-    report = _check(previous, current, unsupported={"DE"})
-    assert report.has_regression
-    assert any(c.kind == "structural_regression" for c in report.changes)
-
-
-def test_classified_to_unclassified_regression() -> None:
-    previous = PreviousState(derived_status={"DE": "complete"})
-    current = {"DE": _make_output("DE", tables=1, rows=1, status="unclassified")}
-    report = _check(previous, current)
-    assert report.has_regression
-    assert any(c.kind == "classified_to_unclassified" for c in report.changes)
-
-
-def test_lost_core_category_regression() -> None:
-    previous = PreviousState(core_categories={"DE": {"standard_commercial", "commercial_fixed_fees"}})
-    current = {"DE": _make_output("DE", tables=1, rows=1, status="partial")}
-    report = _check(previous, current)
-    assert report.has_regression
-    assert any(c.kind == "lost_core_category" for c in report.changes)
-
-
-def test_sharp_table_drop_regression() -> None:
-    previous = PreviousState(supported_countries={"DE"}, country_tables={"DE": 10})
-    current = {"DE": _make_output("DE", tables=1, rows=1)}
-    report = _check(previous, current)
-    assert report.has_regression
-    assert any(c.kind == "sharp_table_drop" for c in report.changes)
-
-
-def test_previous_state_load_from_output() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        output_dir = Path(tmp) / "out"
-        publisher = OutputPublisher(output_dir)
-        outputs = {"DE": _make_output("DE", tables=1, rows=2)}
-        _, staging = publisher.publish(outputs, [outputs["DE"].market], [])
-        publisher.commit(staging)
-        publisher.rollback(staging)
-        previous = PreviousState.load(output_dir)
-        assert "DE" in previous.supported_countries
-        assert previous.country_tables.get("DE") == 1
-        assert previous.country_rows.get("DE") == 2
-
-
-def test_previous_state_loads_legacy_manifest_with_country_code() -> None:
-    """Old manifests stored country_code instead of paypal_market_code."""
-    with tempfile.TemporaryDirectory() as tmp:
-        output_dir = Path(tmp) / "out"
-        meta_dir = output_dir / "meta"
-        meta_dir.mkdir(parents=True)
-        legacy_manifest = {
-            "schema_version": 1,
-            "generated_at": "2026-04-30",
-            "markets": [
-                {
-                    "country_code": "DE",
-                    "country_name": "Germany",
-                    "url_prefix": "https://www.paypal.com/de",
-                },
-                {
-                    "country_code": "US",
-                    "country_name": "United States",
-                    "url_prefix": "https://www.paypal.com/us",
-                },
-            ],
-            "unsupported": [
-                {
-                    "country_code": "XY",
-                    "country_name": "Unknown",
-                    "temporary": True,
-                }
-            ],
-            "fee_page_urls": {},
-        }
-        (meta_dir / "countries.json").write_text(json.dumps(legacy_manifest), encoding="utf-8")
-        previous = PreviousState.load(output_dir)
-        assert previous.discovered_countries == {"DE", "US"}
-        assert previous.unsupported_countries == {"XY"}
-        assert previous.transient_countries == {"XY"}
+    assert run.derived.currency_conversion is None

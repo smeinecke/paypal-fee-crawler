@@ -1662,7 +1662,9 @@ def _derive_structural_from_candidates(
     # Currency conversion.
     conversion: CurrencyConversion | None = None
     conversion_values: Counter[str] = Counter()
+    last_conversion_candidate: ClassificationCandidate | None = None
     for candidate in by_category[FeeCategory.CURRENCY_CONVERSION]:
+        last_conversion_candidate = candidate
         profile = candidate.profile or build_table_profile(candidate.table)
         # Conversion requires approved registry evidence for the first structural release.
         has_approved = bool(
@@ -1677,8 +1679,20 @@ def _derive_structural_from_candidates(
         if decision.value:
             conversion_values[decision.value] += 1
     if conversion_values:
-        selected_spread = conversion_values.most_common(1)[0][0]
-        conversion = CurrencyConversion(spread_percentage=selected_spread)
+        unique_spreads = set(conversion_values.keys())
+        if len(unique_spreads) > 1:
+            assert last_conversion_candidate is not None
+            observations.append(
+                ClassificationObservation(
+                    kind=ObservationKind.EXTRACTION_CONFLICT,
+                    category=FeeCategory.CURRENCY_CONVERSION,
+                    table_id=last_conversion_candidate.table.document_id or last_conversion_candidate.table.table_id,
+                    message=f"conflicting conversion spreads across tables: {sorted(unique_spreads)}",
+                )
+            )
+        else:
+            selected_spread = next(iter(unique_spreads))
+            conversion = CurrencyConversion(spread_percentage=selected_spread)
 
     exposed_categories: set[FeeCategory] = {
         category for category, category_candidates in by_category.items() if category_candidates
@@ -1775,13 +1789,14 @@ def classify_structural(
         decision = scoring.select_category(scores)
         decisions.append(decision)
 
-        if decision.status == "selected" and decision.selected_category is not None:
-            score = decision.ranked_scores[0].score
+        if decision.status == "selected" and decision.selected_category is not None and decision.selected_score is not None:
+            selected_score = decision.selected_score
+            score = selected_score.score
             candidate = ClassificationCandidate(
                 table=table,
                 category=decision.selected_category,
                 confidence=score / scoring.MAX_CATEGORY_SCORE,
-                evidence=[s.detail or s.code for s in decision.ranked_scores[0].signals],
+                evidence=[s.detail or s.code for s in selected_score.signals],
                 profile=build_table_profile(table),
             )
             candidates.append(candidate)
@@ -1796,7 +1811,7 @@ def classify_structural(
                     )
                 )
 
-            signal_sources = {s.source for s in decision.ranked_scores[0].signals}
+            signal_sources = {s.source for s in selected_score.signals}
             if signal_sources == {scoring.EvidenceSource.LEXICAL}:
                 observations.append(
                     ClassificationObservation(
@@ -1812,7 +1827,7 @@ def classify_structural(
                 scoring.EvidenceCode.METADATA_KEY_MATCH,
                 scoring.EvidenceCode.INTERNAL_NAME_MATCH,
                 scoring.EvidenceCode.KNOWN_FINGERPRINT,
-            } & {s.code for s in decision.ranked_scores[0].signals}:
+            } & {s.code for s in selected_score.signals}:
                 observations.append(
                     ClassificationObservation(
                         kind=ObservationKind.UNKNOWN_FINGERPRINT,
