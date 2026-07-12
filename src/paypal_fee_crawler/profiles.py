@@ -274,7 +274,11 @@ def build_table_profile(table: Table, context: TableContext | None = None) -> Ta
         text_count = 0
         col_currencies: set[str] = set()
         col_pattern: list[str] = []
-        for row in rows:
+        data_rows = 0
+        for idx, row in enumerate(rows):
+            if row_profiles[idx].is_probable_header or row_profiles[idx].is_probable_note:
+                continue
+            data_rows += 1
             if col < len(row.cells):
                 cell = row.cells[col]
                 cell_pcts = sum(1 for token in cell.tokens if token.kind == "percentage")
@@ -294,9 +298,9 @@ def build_table_profile(table: Table, context: TableContext | None = None) -> Ta
                 col_pattern.append(_cell_kind_string(cell))
             else:
                 col_pattern.append("missing")
-        if pct_count > 0 and pct_count / max(num_rows, 1) > 0.5:
+        if data_rows and pct_count > 0 and pct_count / data_rows > 0.5:
             percentage_columns.add(col)
-        if mon_count > 0 and mon_count / max(num_rows, 1) > 0.5:
+        if data_rows and mon_count > 0 and mon_count / data_rows > 0.5:
             money_columns.add(col)
         column_profiles.append(
             ColumnProfile(

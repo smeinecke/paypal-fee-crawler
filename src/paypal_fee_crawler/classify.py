@@ -5,9 +5,16 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from dataclasses import dataclass
-from enum import StrEnum
 
 from . import scoring
+from .extraction import (
+    ClassificationObservation,
+    ObservationKind,
+    extract_conversion_spread,
+    extract_fixed_fees,
+    extract_international_surcharges,
+    extract_standard_percentage,
+)
 from .models import (
     Cell,
     CommercialFee,
@@ -19,6 +26,7 @@ from .models import (
     Table,
 )
 from .normalize import clean_text
+from .profiles import TableProfile, build_table_profile
 from .scoring import FeeCategory
 
 logger = logging.getLogger(__name__)
@@ -32,6 +40,7 @@ class ClassificationCandidate:
     category: FeeCategory
     confidence: float
     evidence: list[str]
+    profile: TableProfile | None = None
 
 
 # Strong document-id signals. These are corroborated with table content and are
@@ -1556,20 +1565,163 @@ def _derive_from_candidates(
     )
 
 
-class ObservationKind(StrEnum):
-    LOW_MARGIN = "low_margin"
-    LEXICAL_ONLY_DECISION = "lexical_only_decision"
-    EXTRACTION_CONFLICT = "extraction_conflict"
-    UNKNOWN_DOCUMENT_ID = "unknown_document_id"
-    UNKNOWN_FINGERPRINT = "unknown_fingerprint"
+def _derive_structural_from_candidates(
+    candidates: list[ClassificationCandidate],
+    market_code: str | None = None,
+    other_categories: list[str] | None = None,
+) -> tuple[DerivedFees, tuple[ClassificationObservation, ...]]:
+    """Build DerivedFees using the new schema-driven extraction helpers.
 
+    Returns the derived fees plus any extraction-level observations.
+    """
+    observations: list[ClassificationObservation] = []
+    evidence: list[str] = []
+    warnings: list[str] = []
 
-@dataclass(frozen=True)
-class ClassificationObservation:
-    kind: ObservationKind
-    category: FeeCategory | None = None
-    table_id: str | None = None
-    message: str = ""
+    by_category: dict[FeeCategory, list[ClassificationCandidate]] = {
+        FeeCategory.STANDARD_COMMERCIAL: [],
+        FeeCategory.FIXED_FEE: [],
+        FeeCategory.INTERNATIONAL_SURCHARGE: [],
+        FeeCategory.CURRENCY_CONVERSION: [],
+    }
+    for candidate in candidates:
+        if candidate.category in by_category:
+            by_category[candidate.category].append(candidate)
+        if candidate.category != FeeCategory.OTHER:
+            evidence.extend(candidate.evidence)
+
+    # Fixed fees first so standard extraction can reference fixed currencies.
+    all_fixed_fees: list[FixedFees] = []
+    fixed_by_currency: dict[str, str] = {}
+    for candidate in by_category[FeeCategory.FIXED_FEE]:
+        profile = candidate.profile or build_table_profile(candidate.table)
+        decision = extract_fixed_fees(candidate.table, profile)
+        observations.extend(decision.observations)
+        for sig in decision.evidence:
+            evidence.append(sig.detail or sig.code)
+        for fee in decision.value or []:
+            existing = fixed_by_currency.get(fee.currency)
+            if existing is not None and existing != fee.amount:
+                observations.append(
+                    ClassificationObservation(
+                        kind=ObservationKind.EXTRACTION_CONFLICT,
+                        category=FeeCategory.FIXED_FEE,
+                        table_id=candidate.table.document_id or candidate.table.table_id,
+                        message=f"conflicting fixed fee for {fee.currency}: {existing} vs {fee.amount}",
+                    )
+                )
+                continue
+            fixed_by_currency[fee.currency] = fee.amount
+            all_fixed_fees.append(fee)
+
+    # Standard commercial.
+    standard_percentage: str | None = None
+    standard_candidates = by_category[FeeCategory.STANDARD_COMMERCIAL]
+    if standard_candidates:
+        standard_candidates.sort(key=lambda c: c.confidence, reverse=True)
+        selected = standard_candidates[0]
+        profile = selected.profile or build_table_profile(selected.table)
+        decision = extract_standard_percentage(
+            selected.table,
+            profile,
+            market_code,
+            fixed_fees=all_fixed_fees,
+        )
+        observations.extend(decision.observations)
+        for sig in decision.evidence:
+            evidence.append(sig.detail or sig.code)
+        standard_percentage = decision.value
+        if standard_percentage:
+            evidence.append(f"standard_commercial table {selected.table.document_id or selected.table.caption}")
+
+    # International surcharges.
+    surcharges: list[InternationalSurcharge] = []
+    surcharge_by_region: dict[str, str | None] = {}
+    for candidate in by_category[FeeCategory.INTERNATIONAL_SURCHARGE]:
+        profile = candidate.profile or build_table_profile(candidate.table)
+        decision = extract_international_surcharges(candidate.table, profile, market_code)
+        observations.extend(decision.observations)
+        for sig in decision.evidence:
+            evidence.append(sig.detail or sig.code)
+        for surcharge in decision.value or []:
+            existing = surcharge_by_region.get(surcharge.region)
+            if existing is not None and existing != surcharge.percentage_points:
+                observations.append(
+                    ClassificationObservation(
+                        kind=ObservationKind.EXTRACTION_CONFLICT,
+                        category=FeeCategory.INTERNATIONAL_SURCHARGE,
+                        table_id=candidate.table.document_id or candidate.table.table_id,
+                        message=f"conflicting surcharge for {surcharge.region}: {existing} vs {surcharge.percentage_points}",
+                    )
+                )
+                continue
+            surcharge_by_region[surcharge.region] = surcharge.percentage_points
+            surcharges.append(surcharge)
+
+    # Currency conversion.
+    conversion: CurrencyConversion | None = None
+    conversion_values: Counter[str] = Counter()
+    for candidate in by_category[FeeCategory.CURRENCY_CONVERSION]:
+        profile = candidate.profile or build_table_profile(candidate.table)
+        # Conversion requires approved registry evidence for the first structural release.
+        has_approved = bool(
+            profile.internal_names
+            or profile.fee_data_keys
+            or (candidate.table.document_id or "").upper() in scoring.CONVERSION_DOC_IDS
+        )
+        decision = extract_conversion_spread(candidate.table, profile, has_approved_evidence=has_approved)
+        observations.extend(decision.observations)
+        for sig in decision.evidence:
+            evidence.append(sig.detail or sig.code)
+        if decision.value:
+            conversion_values[decision.value] += 1
+    if conversion_values:
+        selected_spread = conversion_values.most_common(1)[0][0]
+        conversion = CurrencyConversion(spread_percentage=selected_spread)
+
+    exposed_categories: set[FeeCategory] = {
+        category for category, category_candidates in by_category.items() if category_candidates
+    }
+
+    if by_category[FeeCategory.STANDARD_COMMERCIAL] and not standard_percentage:
+        warnings.append("standard-commercial section exposed but no reliable percentage extracted")
+    if by_category[FeeCategory.FIXED_FEE] and not all_fixed_fees:
+        warnings.append("fixed-fee section exposed but no reliable values extracted")
+    if by_category[FeeCategory.INTERNATIONAL_SURCHARGE] and not surcharges:
+        warnings.append("international-surcharge section exposed but no reliable values extracted")
+    if by_category[FeeCategory.CURRENCY_CONVERSION] and not conversion:
+        warnings.append("currency-conversion section exposed but no reliable spread extracted")
+
+    warnings = sorted(set(warnings))
+
+    intl_exposed = bool(by_category[FeeCategory.INTERNATIONAL_SURCHARGE])
+    conv_exposed = bool(by_category[FeeCategory.CURRENCY_CONVERSION])
+    if not exposed_categories:
+        status = "unclassified"
+    elif warnings:
+        status = "partial"
+    elif standard_percentage and all_fixed_fees and (not intl_exposed or surcharges) and (not conv_exposed or conversion):
+        status = "complete"
+    else:
+        status = "partial"
+
+    derived = DerivedFees(
+        status=status,
+        standard_commercial=CommercialFee(
+            percentage=standard_percentage,
+            fixed_fee_reference="commercial_fixed_fees" if all_fixed_fees else None,
+        )
+        if standard_percentage
+        else None,
+        commercial_fixed_fees=all_fixed_fees,
+        international_surcharges=surcharges,
+        currency_conversion=conversion,
+        international_surcharge_exposed=intl_exposed,
+        currency_conversion_exposed=conv_exposed,
+        unclassified_sections=sorted(set(other_categories or [])),
+        classification_evidence=evidence + warnings,
+    )
+    return derived, tuple(observations)
 
 
 @dataclass(frozen=True)
@@ -1625,6 +1777,7 @@ def classify_structural(
                 category=decision.selected_category,
                 confidence=score / scoring.MAX_CATEGORY_SCORE,
                 evidence=[s.detail or s.code for s in decision.ranked_scores[0].signals],
+                profile=build_table_profile(table),
             )
             candidates.append(candidate)
 
@@ -1665,10 +1818,10 @@ def classify_structural(
                 )
 
     other_categories: list[str] = []
-    derived = _derive_from_candidates(candidates, market_code, other_categories)
+    derived, extract_observations = _derive_structural_from_candidates(candidates, market_code, other_categories)
     return ClassificationRun(
         derived=derived,
         table_decisions=tuple(decisions),
-        observations=tuple(observations),
+        observations=tuple(observations + list(extract_observations)),
         classifier_version="structural-1",
     )
