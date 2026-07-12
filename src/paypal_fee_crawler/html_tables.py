@@ -150,7 +150,7 @@ def extract_html_tables(
             Table(
                 component_type="FeeTable",
                 component_id=f"html-table-{source_order}",
-                document_id=None,
+                document_id=page_url or None,
                 caption=caption or None,
                 section_path=section_path,
                 parent_path=list(section_path),

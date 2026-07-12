@@ -1,6 +1,6 @@
 # Makefile for paypal-fee-crawler
 
-.PHONY: all format check validate test test-unit test-live help
+.PHONY: all format check validate test test-unit test-live complexity vulture xenon help
 
 all: validate test-unit
 
@@ -25,6 +25,15 @@ pyright:
 bandit:
 	uv run bandit -c pyproject.toml -r src
 
+vulture:
+	uv run vulture . --exclude .venv,migrations,tests --make-whitelist
+
+complexity:
+	uv run radon cc . -a -nc
+
+xenon:
+	uv run xenon -b D -m B -a B .
+
 test:
 	uv run pytest
 
@@ -34,7 +43,7 @@ test-unit:
 test-live:
 	uv run pytest tests/ -m live
 
-validate: format check pyright bandit
+validate: format check pyright bandit complexity vulture xenon
 	@echo "Validation passed."
 
 help:
@@ -47,6 +56,9 @@ help:
 	@echo "  fix           - Run reformat-ruff and fix-ruff"
 	@echo "  pyright       - Run type checking"
 	@echo "  bandit        - Run security analysis"
+	@echo "  complexity    - Run cyclomatic complexity analysis with radon"
+	@echo "  vulture       - Run dead code detection with vulture"
+	@echo "  xenon         - Run maintainability monitoring with xenon"
 	@echo "  test          - Run all tests"
 	@echo "  test-unit     - Run unit tests (no live network)"
 	@echo "  test-live     - Run live integration tests"

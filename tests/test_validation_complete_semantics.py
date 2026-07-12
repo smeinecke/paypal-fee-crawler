@@ -159,7 +159,10 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
             "fee_page_urls": {},
         },
     )
-    _write_json(root / "meta" / "schema-version.json", {"schema_version": 2, "schema_path": "schemas/paypal-fees-v2.schema.json"})
+    _write_json(
+        root / "meta" / "schema-version.json",
+        {"schema_version": 2, "schema_path": "schemas/paypal-fees-v2.schema.json"},
+    )
     for schema_name in [
         "paypal-fees-v2.schema.json",
         "core-fees-v2.schema.json",

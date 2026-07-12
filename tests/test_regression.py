@@ -258,10 +258,7 @@ def test_low_margin_uses_winner_margin() -> None:
     record = NormalizedTableRecord(table=table, contexts=(TableContext(reference_id="ref-1"),))
     run = classify_structural([record])
     assert run.derived.status == "partial"
-    assert any(
-        o.kind == ObservationKind.LOW_MARGIN
-        for o in run.observations
-    )
+    assert any(o.kind == ObservationKind.LOW_MARGIN for o in run.observations)
 
     # A single eligible category with no runner-up should not trigger LOW_MARGIN, even if score < 75.
     fixed = Table(

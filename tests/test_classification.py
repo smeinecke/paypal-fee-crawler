@@ -65,7 +65,9 @@ def test_classify_structural_standard_commercial() -> None:
 
 def test_classify_structural_international_surcharge() -> None:
     tables = [
-        _table("International surcharge", [["EEA", "0%"], ["GB", "+1.29%"], ["Other", "+1.99%"]], document_id="FEETB91"),
+        _table(
+            "International surcharge", [["EEA", "0%"], ["GB", "+1.29%"], ["Other", "+1.99%"]], document_id="FEETB91"
+        ),
     ]
     run = classify_structural(tables)
     assert run.derived.status == "partial"
@@ -91,7 +93,9 @@ def test_classify_legacy_returns_run() -> None:
 
 
 def test_score_standard_commercial_vector() -> None:
-    table = _table("Commercial transaction fees", [["Commercial transactions", "2.99% + 0.39 EUR"]], document_id="FEETB16")
+    table = _table(
+        "Commercial transaction fees", [["Commercial transactions", "2.99% + 0.39 EUR"]], document_id="FEETB16"
+    )
     result = scoring.score_standard_commercial(table)
     assert result.category == scoring.FeeCategory.STANDARD_COMMERCIAL
     assert result.score >= scoring.MINIMUM_SCORE
@@ -111,7 +115,9 @@ def test_score_fixed_fee_vector() -> None:
 
 
 def test_score_international_surcharge_vector() -> None:
-    table = _table("International surcharge", [["EEA", "0%"], ["GB", "+1.29%"], ["Other", "+1.99%"]], document_id="FEETB91")
+    table = _table(
+        "International surcharge", [["EEA", "0%"], ["GB", "+1.29%"], ["Other", "+1.99%"]], document_id="FEETB91"
+    )
     result = scoring.score_international_surcharge(table)
     assert result.category == scoring.FeeCategory.INTERNATIONAL_SURCHARGE
     assert result.score >= scoring.MINIMUM_SCORE

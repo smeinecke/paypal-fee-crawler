@@ -172,9 +172,7 @@ class OutputPublisher:
 
         existing_cache = self._load_existing_cache()
         cache_entries: dict[str, CrawlCacheEntry] = {
-            market_code: entry
-            for market_code, entry in existing_cache.markets.items()
-            if market_code in outputs
+            market_code: entry for market_code, entry in existing_cache.markets.items() if market_code in outputs
         }
 
         for cc in sorted(outputs.keys()):

@@ -10,7 +10,15 @@ from pathlib import Path
 from typing import Any
 
 from .exceptions import RegressionError
-from .models import ChangeReport, ChangeType, CountryManifest, CountryOutput, UnsupportedCountry
+from .models import (
+    AcceptedRegressions,
+    ChangeReport,
+    ChangeType,
+    ClassifierMetadata,
+    CountryManifest,
+    CountryOutput,
+    UnsupportedCountry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +49,8 @@ class PreviousState:
     core_categories: dict[str, set[str]] = field(default_factory=dict)
     derived_status: dict[str, str] = field(default_factory=dict)
     unsupported_records: dict[str, UnsupportedCountry] = field(default_factory=dict)
+    accepted_regressions: AcceptedRegressions = field(default_factory=AcceptedRegressions)
+    classifier_metadata: ClassifierMetadata | None = None
     # Backward-compatible alias for code that expects a single set.
     countries: set[str] = field(default_factory=set)
 
@@ -71,6 +81,20 @@ class PreviousState:
                         state.transient_countries.add(u.paypal_market_code)
             except Exception as exc:  # nosec B112 # noqa: S112
                 logger.warning("Could not load previous unsupported metadata: %s", exc)
+
+        accepted_path = output_dir / "meta" / "accepted-regressions.json"
+        if accepted_path.exists():
+            try:
+                state.accepted_regressions = AcceptedRegressions.model_validate_json(accepted_path.read_text())
+            except Exception as exc:  # nosec B112 # noqa: S112
+                logger.warning("Could not load accepted regressions: %s", exc)
+
+        classifier_path = output_dir / "meta" / "classifier-version.json"
+        if classifier_path.exists():
+            try:
+                state.classifier_metadata = ClassifierMetadata.model_validate_json(classifier_path.read_text())
+            except Exception as exc:  # nosec B112 # noqa: S112
+                logger.warning("Could not load previous classifier metadata: %s", exc)
 
         for path in (output_dir / "json").glob("*.json"):
             if path.name in {"index.json", "core-fees.json"}:
@@ -104,7 +128,9 @@ def _country_output_hash(data: dict[str, Any]) -> str:
     canonical = {
         "market": data.get("market"),
         "source": {
-            k: v for k, v in (data.get("source") or {}).items() if k not in {"etag", "last_modified", "content_sha256", "artifact_sha256"}
+            k: v
+            for k, v in (data.get("source") or {}).items()
+            if k not in {"etag", "last_modified", "content_sha256", "artifact_sha256"}
         },
         "sections": data.get("sections"),
         "tables": data.get("tables"),
@@ -115,6 +141,24 @@ def _country_output_hash(data: dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def _is_accepted(
+    previous: PreviousState,
+    kind: str,
+    country_code: str,
+    identifier: str | None = None,
+) -> bool:
+    """Return whether a specific change has been reviewed and accepted."""
+    for accepted in previous.accepted_regressions.accepted:
+        if accepted.country_code != country_code.upper():
+            continue
+        if accepted.kind != kind:
+            continue
+        if accepted.identifier is not None and accepted.identifier != identifier:
+            continue
+        return True
+    return False
+
+
 def check_regression(
     previous: PreviousState,
     current_discovered: set[str],
@@ -123,6 +167,7 @@ def check_regression(
     current_transient: set[str],
     current_outputs: dict[str, CountryOutput],
     limits: RegressionLimits,
+    current_classifier_metadata: ClassifierMetadata | None = None,
 ) -> ChangeReport:
     """Compare the new market states with the previous state and return a change report.
 
@@ -251,29 +296,29 @@ def check_regression(
         row_count = sum(len(table.rows) for table in output.tables)
 
         if prev_tables > 0 and table_count == 0:
-            changes.append(_change_type(kind="removed_table", country_code=cc, message=f"All tables removed for {cc}"))
+            changes.append(
+                _change_type(
+                    kind="removed_all_tables",
+                    country_code=cc,
+                    before=prev_tables,
+                    after=table_count,
+                    message=f"All tables removed for {cc}",
+                )
+            )
         elif prev_tables > 0 and table_count < prev_tables:
             ratio = (prev_tables - table_count) / prev_tables
-            if ratio > limits.max_table_count_delta_ratio:
-                changes.append(
-                    _change_type(
-                        kind="sharp_table_drop",
-                        country_code=cc,
-                        before=prev_tables,
-                        after=table_count,
-                        message=f"Table count for {cc} dropped by {ratio:.0%}",
-                    )
+            kind = "sharp_table_drop" if ratio > limits.max_table_count_delta_ratio else "table_count_decreased"
+            changes.append(
+                _change_type(
+                    kind=kind,
+                    country_code=cc,
+                    before=prev_tables,
+                    after=table_count,
+                    message=f"Table count for {cc} dropped by {ratio:.0%}"
+                    if kind == "sharp_table_drop"
+                    else f"Table count for {cc} decreased",
                 )
-            else:
-                changes.append(
-                    _change_type(
-                        kind="removed_table",
-                        country_code=cc,
-                        before=prev_tables,
-                        after=table_count,
-                        message=f"Table count for {cc} decreased",
-                    )
-                )
+            )
         elif table_count > prev_tables:
             changes.append(
                 _change_type(
@@ -309,14 +354,18 @@ def check_regression(
             current_categories.add("currency_conversion")
 
         lost_categories = prev_categories - current_categories
-        if lost_categories:
+        for category in sorted(lost_categories):
+            accepted = _is_accepted(previous, "lost_core_category", cc, category)
             changes.append(
                 _change_type(
                     kind="lost_core_category",
                     country_code=cc,
-                    before=sorted(prev_categories),
-                    after=sorted(lost_categories),
-                    message=f"Core categories disappeared for {cc}: {sorted(lost_categories)}",
+                    identifier=category,
+                    before=True,
+                    after=False,
+                    message=f"Core category {category} disappeared for {cc}"
+                    + (" (accepted regression)" if accepted else ""),
+                    accepted=accepted,
                 )
             )
 
@@ -330,6 +379,20 @@ def check_regression(
                     message=f"Derived data for {cc} became unclassified",
                 )
             )
+
+    if (
+        current_classifier_metadata is not None
+        and previous.classifier_metadata is not None
+        and current_classifier_metadata != previous.classifier_metadata
+    ):
+        changes.append(
+            _change_type(
+                kind="classifier_version_changed",
+                before=previous.classifier_metadata.model_dump(),
+                after=current_classifier_metadata.model_dump(),
+                message=f"Classifier metadata changed from {previous.classifier_metadata.classifier_version} to {current_classifier_metadata.classifier_version}",
+            )
+        )
 
     return ChangeReport(
         schema_version=1,
@@ -357,6 +420,7 @@ def enforce_regression(
                     "supported_to_transient",
                     "supported_to_unsupported",
                     "removed_table",
+                    "removed_all_tables",
                     "lost_core_category",
                     "structural_regression",
                     "sharp_table_drop",

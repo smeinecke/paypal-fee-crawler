@@ -1773,7 +1773,9 @@ def _table_decision_from_structural(
     fingerprint = str(FingerprintBuilder.build(profile, table))
     selected_score = decision.selected_score
     # Fall back to the top-ranked score for diagnostics when no category was selected.
-    diagnostic_score = selected_score if selected_score else (decision.ranked_scores[0] if decision.ranked_scores else None)
+    diagnostic_score = (
+        selected_score if selected_score else (decision.ranked_scores[0] if decision.ranked_scores else None)
+    )
     blockers = diagnostic_score.blockers if diagnostic_score else ()
     evidence_codes = tuple(sorted({s.code.value for s in (diagnostic_score.signals if diagnostic_score else ())}))
     evidence_sources = tuple(sorted({s.source.value for s in (diagnostic_score.signals if diagnostic_score else ())}))

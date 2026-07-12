@@ -658,6 +658,36 @@ class ChangeKind(StrEnum):
     REGRESSION = "regression"
 
 
+class AcceptedRegression(PublicModel):
+    """A reviewed regression that the guard may downgrade to a warning."""
+
+    country_code: str
+    kind: str
+    identifier: str | None = None
+    reason: str | None = None
+    reviewed_at: str | None = None
+
+    @field_validator("country_code")
+    @classmethod
+    def _validate_country_code(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class AcceptedRegressions(PublicModel):
+    """Committed registry of reviewed accepted regressions."""
+
+    schema_version: int = 1
+    accepted: list[AcceptedRegression] = Field(default_factory=list)
+
+
+class ClassifierMetadata(PublicModel):
+    """Baseline classifier mode/version sidecar for regression review."""
+
+    schema_version: int = 1
+    classifier_mode: str | None = None
+    classifier_version: str | None = None
+
+
 _CHANGE_SEVERITY_BY_KIND: dict[str, ChangeSeverity] = {
     "structural_regression": ChangeSeverity.REGRESSION,
     "supported_to_transient": ChangeSeverity.REGRESSION,
@@ -666,13 +696,16 @@ _CHANGE_SEVERITY_BY_KIND: dict[str, ChangeSeverity] = {
     "sharp_country_drop": ChangeSeverity.REGRESSION,
     "discovered_to_missing": ChangeSeverity.REGRESSION,
     "removed_table": ChangeSeverity.REGRESSION,
+    "removed_all_tables": ChangeSeverity.REGRESSION,
     "sharp_table_drop": ChangeSeverity.REGRESSION,
     "sharp_row_drop": ChangeSeverity.REGRESSION,
     "lost_core_category": ChangeSeverity.REGRESSION,
     "classified_to_unclassified": ChangeSeverity.REGRESSION,
+    "table_count_decreased": ChangeSeverity.WARNING,
     "unsupported_to_supported": ChangeSeverity.WARNING,
     "transient_to_supported": ChangeSeverity.WARNING,
     "added_country": ChangeSeverity.WARNING,
+    "classifier_version_changed": ChangeSeverity.INFO,
     "newly_discovered": ChangeSeverity.INFO,
     "new_table": ChangeSeverity.INFO,
 }
@@ -689,11 +722,14 @@ class ChangeType(BaseModel):
     before: Any | None = None
     after: Any | None = None
     message: str | None = None
+    accepted: bool = False
 
     @computed_field
     @property
     def severity(self) -> ChangeSeverity:
-        """Severity derived from the change kind."""
+        """Severity derived from the change kind, honouring accepted overrides."""
+        if self.accepted:
+            return ChangeSeverity.WARNING
         return _CHANGE_SEVERITY_BY_KIND.get(self.kind, ChangeSeverity.INFO)
 
 

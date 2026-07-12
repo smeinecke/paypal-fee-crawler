@@ -239,7 +239,15 @@ def test_cache_retained_after_reused_output() -> None:
                 last_modified="Mon, 01 Jan 2024 00:00:00 GMT",
                 content_sha256="raw-hash",
             ),
-            tables=[Table(rows=[Row(cells=[Cell(text="2.99%", tokens=[{"raw": "2.99%", "kind": "percentage", "value": "2.99"}])])])],
+            tables=[
+                Table(
+                    rows=[
+                        Row(
+                            cells=[Cell(text="2.99%", tokens=[{"raw": "2.99%", "kind": "percentage", "value": "2.99"}])]
+                        )
+                    ]
+                )
+            ],
             derived=DerivedFees(status="unclassified"),
         )
         _, staging1 = publisher.publish({"DE": first}, [], [])
@@ -257,7 +265,15 @@ def test_cache_retained_after_reused_output() -> None:
                 canonical_url="https://example.com/de",
                 content_sha256="different-raw-hash",
             ),
-            tables=[Table(rows=[Row(cells=[Cell(text="2.99%", tokens=[{"raw": "2.99%", "kind": "percentage", "value": "2.99"}])])])],
+            tables=[
+                Table(
+                    rows=[
+                        Row(
+                            cells=[Cell(text="2.99%", tokens=[{"raw": "2.99%", "kind": "percentage", "value": "2.99"}])]
+                        )
+                    ]
+                )
+            ],
             derived=DerivedFees(status="unclassified"),
         )
         _, staging2 = publisher.publish({"DE": reused}, [], [])
