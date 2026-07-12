@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .classify import classify_legacy, classify_structural
+from .classify import CLASSIFIER_VERSION, classify_legacy, classify_structural
 from .cms_context import extract_cms_context
 from .comparison import compare_runs
 from .components import ComponentsExtractor, iter_components
@@ -28,6 +28,7 @@ from .exceptions import (
 from .html_tables import extract_html_locale, extract_html_pdf_url, extract_html_tables
 from .http import CachedSource, HttpClient
 from .models import (
+    ClassifierMetadata,
     ClassifierMode,
     CountryOutput,
     CrawlConfiguration,
@@ -492,6 +493,11 @@ class Crawler:
         current_supported = set(outputs.keys())
         current_unsupported = {u.paypal_market_code for u in unsupported}
         current_transient = set(failed)
+        classifier_version = CLASSIFIER_VERSION if self.config.classifier_mode == ClassifierMode.STRUCTURAL else "legacy"
+        classifier_metadata = ClassifierMetadata(
+            classifier_mode=self.config.classifier_mode.value,
+            classifier_version=classifier_version,
+        )
         change_report = check_regression(
             previous,
             current_discovered,
@@ -500,6 +506,7 @@ class Crawler:
             current_transient,
             outputs,
             limits,
+            current_classifier_metadata=classifier_metadata,
         )
         try:
             enforce_regression(change_report, self.config.fail_on_regression)
@@ -523,6 +530,7 @@ class Crawler:
                 change_report,
                 shadow_runs=shadow_runs or None,
                 diagnostics=diagnostics or None,
+                classifier_metadata=classifier_metadata,
             )
             changed, _changed_files = publisher.commit(staging)
         except Exception as exc:

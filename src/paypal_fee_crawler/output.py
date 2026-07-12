@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from .exceptions import ValidationError as CrawlerValidationError
 from .models import (
     ChangeReport,
+    ClassifierMetadata,
     CoreFees,
     CountryIndex,
     CountryIndexEntry,
@@ -157,6 +158,7 @@ class OutputPublisher:
         change_report: ChangeReport | None = None,
         shadow_runs: dict[str, Any] | None = None,
         diagnostics: dict[str, Any] | None = None,
+        classifier_metadata: ClassifierMetadata | None = None,
     ) -> tuple[bool, Path]:
         """Write all output files to a staging directory and return (changed, staging_path)."""
         staging = self._make_staging()
@@ -253,6 +255,16 @@ class OutputPublisher:
             meta_dir / "crawl-cache.json",
             CrawlCache(markets=cache_entries).model_dump(mode="json", exclude_none=True),
         )
+
+        if classifier_metadata is not None:
+            _write_json(
+                meta_dir / "classifier-version.json",
+                classifier_metadata.model_dump(mode="json", exclude_none=True),
+            )
+
+        accepted_path = self.output_dir / "meta" / "accepted-regressions.json"
+        if accepted_path.exists():
+            shutil.copy2(accepted_path, meta_dir / "accepted-regressions.json")
 
         if self.keep_diagnostics and diagnostics:
             diagnostics_dir = meta_dir / "diagnostics"
