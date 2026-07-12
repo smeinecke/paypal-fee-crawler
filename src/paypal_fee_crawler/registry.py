@@ -155,9 +155,7 @@ class FingerprintRegistry:
 
         from . import registries
 
-        text = importlib.resources.files(registries).joinpath("classifier_clusters.json").read_text(
-            encoding="utf-8"
-        )
+        text = importlib.resources.files(registries).joinpath("classifier_clusters.json").read_text(encoding="utf-8")
         return cls.load_json(text)
 
     @classmethod
