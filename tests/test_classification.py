@@ -9,10 +9,13 @@ from paypal_fee_crawler.pricing_tokens import render_rich_text_node
 from paypal_fee_crawler.registry import ClusterRecord, ClusterStatus, FingerprintRegistry
 
 
-def _table(caption: str, rows: list[list[str]], section_path: list[str] | None = None) -> Table:
+def _table(
+    caption: str, rows: list[list[str]], section_path: list[str] | None = None, document_id: str | None = None
+) -> Table:
     return Table(
         caption=caption,
         section_path=section_path or [caption],
+        document_id=document_id,
         rows=[Row(cells=[render_rich_text_node(cell) for cell in row]) for row in rows],
     )
 
@@ -49,8 +52,8 @@ def test_classify_unclassified_when_uncertain() -> None:
 
 def test_classify_structural_standard_commercial() -> None:
     tables = [
-        _table("Commercial transaction fees", [["Commercial transactions", "2.99% + 0.39 EUR"]]),
-        _table("Fixed fee by received currency", [["EUR", "0.39 EUR"], ["USD", "0.49 USD"]]),
+        _table("Commercial transaction fees", [["Commercial transactions", "2.99% + 0.39 EUR"]], document_id="FEETB16"),
+        _table("Fixed fee by received currency", [["EUR", "0.39 EUR"], ["USD", "0.49 USD"]], document_id="FEETB18"),
     ]
     run = classify_structural(tables)
     assert run.derived.status == "complete"
@@ -62,7 +65,7 @@ def test_classify_structural_standard_commercial() -> None:
 
 def test_classify_structural_international_surcharge() -> None:
     tables = [
-        _table("International surcharge", [["EEA", "0%"], ["GB", "+1.29%"], ["Other", "+1.99%"]]),
+        _table("International surcharge", [["EEA", "0%"], ["GB", "+1.29%"], ["Other", "+1.99%"]], document_id="FEETB91"),
     ]
     run = classify_structural(tables)
     assert run.derived.status == "partial"
@@ -88,7 +91,7 @@ def test_classify_legacy_returns_run() -> None:
 
 
 def test_score_standard_commercial_vector() -> None:
-    table = _table("Commercial transaction fees", [["Commercial transactions", "2.99% + 0.39 EUR"]])
+    table = _table("Commercial transaction fees", [["Commercial transactions", "2.99% + 0.39 EUR"]], document_id="FEETB16")
     result = scoring.score_standard_commercial(table)
     assert result.category == scoring.FeeCategory.STANDARD_COMMERCIAL
     assert result.score >= scoring.MINIMUM_SCORE
@@ -98,7 +101,7 @@ def test_score_standard_commercial_vector() -> None:
 
 
 def test_score_fixed_fee_vector() -> None:
-    table = _table("Fixed fee by received currency", [["EUR", "0.39 EUR"], ["USD", "0.49 USD"]])
+    table = _table("Fixed fee by received currency", [["EUR", "0.39 EUR"], ["USD", "0.49 USD"]], document_id="FEETB18")
     result = scoring.score_fixed_fee(table)
     assert result.category == scoring.FeeCategory.FIXED_FEE
     assert result.score >= scoring.MINIMUM_SCORE
@@ -108,7 +111,7 @@ def test_score_fixed_fee_vector() -> None:
 
 
 def test_score_international_surcharge_vector() -> None:
-    table = _table("International surcharge", [["EEA", "0%"], ["GB", "+1.29%"], ["Other", "+1.99%"]])
+    table = _table("International surcharge", [["EEA", "0%"], ["GB", "+1.29%"], ["Other", "+1.99%"]], document_id="FEETB91")
     result = scoring.score_international_surcharge(table)
     assert result.category == scoring.FeeCategory.INTERNATIONAL_SURCHARGE
     assert result.score >= scoring.MINIMUM_SCORE

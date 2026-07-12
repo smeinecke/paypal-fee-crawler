@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
+from .exceptions import RegistryValidationError
 from .models import FeeToken, Table
 from .normalize import clean_text
 from .profiles import TableProfile, build_table_profile
@@ -56,6 +57,7 @@ class BlockerCode(StrEnum):
     NO_USABLE_VALUES = "no_usable_values"
     INCOMPATIBLE_COLUMN_SHAPE = "incompatible_column_shape"
     INCOMPATIBLE_FINGERPRINT = "incompatible_fingerprint"
+    NO_CONTEXTUAL_SUPPORT = "no_contextual_support"
 
 
 @dataclass(frozen=True)
@@ -102,7 +104,10 @@ def _required_features_satisfied(cluster: ClusterRecord, profile: TableProfile, 
         "has_internal_names": bool(profile.internal_names),
         "has_content_types": bool(profile.content_types),
     }
-    return all(checks.get(feature, True) for feature in cluster.required_features)
+    unknown = cluster.required_features - checks.keys()
+    if unknown:
+        raise RegistryValidationError(f"Unknown required features: {sorted(unknown)}")
+    return all(checks[feature] for feature in cluster.required_features)
 
 
 def _registry_signals(
@@ -546,11 +551,23 @@ def _token_contains_term(text: str, term: str) -> bool:
     return f" {term_norm} " in f" {norm} "
 
 
-def _table_text(table: Table, include_rows: bool = True) -> str:
-    """Combined caption, section path, parent path, headers and optionally rows."""
-    parts = list(table.section_path or [])
-    parts.extend(table.parent_path or [])
-    parts.append(table.caption or "")
+def _table_text(table: Table, profile: TableProfile | None = None, include_rows: bool = True) -> str:
+    """Combined caption, section path, parent path, headers and optionally rows.
+
+    When *profile* is provided, all preserved ``TableContext`` captions, section
+    paths, and parent paths are included so referenced contexts influence lexical
+    scoring.
+    """
+    parts: list[str] = []
+    if profile is not None:
+        for context in profile.contexts:
+            parts.extend(context.section_path)
+            parts.extend(context.parent_path)
+            parts.append(context.caption or "")
+    else:
+        parts.extend(table.section_path or [])
+        parts.extend(table.parent_path or [])
+        parts.append(table.caption or "")
     for header in table.headers:
         parts.append(header.text)
     if include_rows:
@@ -611,6 +628,14 @@ def _add_signal(
 
 def _clamp_score(raw: int) -> int:
     return max(0, min(MAX_CATEGORY_SCORE, raw))
+
+
+_CONTEXTUAL_SOURCES = {EvidenceSource.METADATA, EvidenceSource.RELATIONSHIP, EvidenceSource.REGISTRY}
+
+
+def _has_contextual_support(signals: list[EvidenceSignal]) -> bool:
+    """Return True if at least one signal comes from metadata, relationship, or registry."""
+    return any(s.source in _CONTEXTUAL_SOURCES for s in signals)
 
 
 def _keyword_score(text: str, positive: tuple[str, ...], negative: tuple[str, ...]) -> int:
@@ -674,10 +699,11 @@ def score_standard_commercial(
     market_code: str | None = None,
     locale: str | None = None,
     registry: FingerprintRegistry | None = None,
+    profile: TableProfile | None = None,
 ) -> ScoreResult:
     """Score a table for the standard-commercial category."""
     category = FeeCategory.STANDARD_COMMERCIAL
-    profile = build_table_profile(table)
+    profile = profile or build_table_profile(table)
     signals: list[EvidenceSignal] = []
     blockers: list[BlockerCode] = []
 
@@ -688,8 +714,7 @@ def score_standard_commercial(
     if not profile.has_percentage:
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
     else:
-        if profile.percentage_columns:
-            _add_signal(signals, EvidenceCode.HAS_PERCENTAGE_COLUMN, EvidenceSource.STRUCTURAL, 40)
+        _add_signal(signals, EvidenceCode.HAS_PERCENTAGE_COLUMN, EvidenceSource.STRUCTURAL, 40)
         if profile.mixed_percentage_money_rows:
             _add_signal(signals, EvidenceCode.HAS_MIXED_PERCENT_MONEY_ROW, EvidenceSource.STRUCTURAL, 25)
         if profile.has_additive_percentages:
@@ -698,7 +723,7 @@ def score_standard_commercial(
     if not profile.has_percentage and not profile.has_money:
         blockers.append(BlockerCode.NO_USABLE_VALUES)
 
-    if profile.money_columns and not profile.percentage_columns:
+    if profile.money_columns and not profile.has_percentage:
         # A pure money table is not standard commercial.
         blockers.append(BlockerCode.ONLY_MONEY_FOR_PERCENTAGE_CATEGORY)
 
@@ -710,17 +735,19 @@ def score_standard_commercial(
     if meta_match:
         _add_signal(signals, EvidenceCode.METADATA_KEY_MATCH, EvidenceSource.METADATA, 20, detail=meta_detail)
 
-    text = _table_text(table, include_rows=False)
+    text = _table_text(table, profile, include_rows=False)
     lexical = _keyword_score(text, _POS_STANDARD, _NEG_STANDARD)
     if lexical > 0:
         _add_signal(signals, EvidenceCode.POSITIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
     elif lexical < 0:
         _add_signal(signals, EvidenceCode.NEGATIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
 
-    if table.reference_id or table.source_table_ids:
+    if table.reference_id or table.source_table_ids or any(c.reference_id for c in profile.contexts):
         _add_signal(signals, EvidenceCode.REFERENCE_CONTEXT_MATCH, EvidenceSource.RELATIONSHIP, 5)
 
     score = _clamp_score(sum(s.weight for s in signals))
+    if score >= MINIMUM_SCORE and not _has_contextual_support(signals):
+        blockers.append(BlockerCode.NO_CONTEXTUAL_SUPPORT)
     return ScoreResult(
         category=category,
         score=score,
@@ -734,10 +761,11 @@ def score_fixed_fee(
     market_code: str | None = None,
     locale: str | None = None,
     registry: FingerprintRegistry | None = None,
+    profile: TableProfile | None = None,
 ) -> ScoreResult:
     """Score a table for the fixed-fee category."""
     category = FeeCategory.FIXED_FEE
-    profile = build_table_profile(table)
+    profile = profile or build_table_profile(table)
     signals: list[EvidenceSignal] = []
     blockers: list[BlockerCode] = []
 
@@ -769,17 +797,19 @@ def score_fixed_fee(
     if meta_match:
         _add_signal(signals, EvidenceCode.METADATA_KEY_MATCH, EvidenceSource.METADATA, 20, detail=meta_detail)
 
-    text = _table_text(table, include_rows=False)
+    text = _table_text(table, profile, include_rows=False)
     lexical = _keyword_score(text, _POS_FIXED, _NEG_FIXED)
     if lexical > 0:
         _add_signal(signals, EvidenceCode.POSITIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
     elif lexical < 0:
         _add_signal(signals, EvidenceCode.NEGATIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
 
-    if table.reference_id or table.source_table_ids:
+    if table.reference_id or table.source_table_ids or any(c.reference_id for c in profile.contexts):
         _add_signal(signals, EvidenceCode.REFERENCE_CONTEXT_MATCH, EvidenceSource.RELATIONSHIP, 5)
 
     score = _clamp_score(sum(s.weight for s in signals))
+    if score >= MINIMUM_SCORE and not _has_contextual_support(signals):
+        blockers.append(BlockerCode.NO_CONTEXTUAL_SUPPORT)
     return ScoreResult(
         category=category,
         score=score,
@@ -793,10 +823,11 @@ def score_international_surcharge(
     market_code: str | None = None,
     locale: str | None = None,
     registry: FingerprintRegistry | None = None,
+    profile: TableProfile | None = None,
 ) -> ScoreResult:
     """Score a table for the international-surcharge category."""
     category = FeeCategory.INTERNATIONAL_SURCHARGE
-    profile = build_table_profile(table)
+    profile = profile or build_table_profile(table)
     signals: list[EvidenceSignal] = []
     blockers: list[BlockerCode] = []
 
@@ -828,17 +859,19 @@ def score_international_surcharge(
     if meta_match:
         _add_signal(signals, EvidenceCode.METADATA_KEY_MATCH, EvidenceSource.METADATA, 20, detail=meta_detail)
 
-    text = _table_text(table, include_rows=False)
+    text = _table_text(table, profile, include_rows=False)
     lexical = _keyword_score(text, _POS_INTERNATIONAL, _NEG_INTERNATIONAL)
     if lexical > 0:
         _add_signal(signals, EvidenceCode.POSITIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
     elif lexical < 0:
         _add_signal(signals, EvidenceCode.NEGATIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
 
-    if table.reference_id or table.source_table_ids:
+    if table.reference_id or table.source_table_ids or any(c.reference_id for c in profile.contexts):
         _add_signal(signals, EvidenceCode.REFERENCE_CONTEXT_MATCH, EvidenceSource.RELATIONSHIP, 5)
 
     score = _clamp_score(sum(s.weight for s in signals))
+    if score >= MINIMUM_SCORE and not _has_contextual_support(signals):
+        blockers.append(BlockerCode.NO_CONTEXTUAL_SUPPORT)
     return ScoreResult(
         category=category,
         score=score,
@@ -852,10 +885,11 @@ def score_conversion(
     market_code: str | None = None,
     locale: str | None = None,
     registry: FingerprintRegistry | None = None,
+    profile: TableProfile | None = None,
 ) -> ScoreResult:
     """Score a table for the currency-conversion category."""
     category = FeeCategory.CURRENCY_CONVERSION
-    profile = build_table_profile(table)
+    profile = profile or build_table_profile(table)
     signals: list[EvidenceSignal] = []
     blockers: list[BlockerCode] = []
 
@@ -887,20 +921,25 @@ def score_conversion(
     if meta_match:
         _add_signal(signals, EvidenceCode.METADATA_KEY_MATCH, EvidenceSource.METADATA, 20, detail=meta_detail)
 
-    text = _table_text(table, include_rows=False)
+    text = _table_text(table, profile, include_rows=False)
     lexical = _keyword_score(text, _POS_CONVERSION, _NEG_CONVERSION)
     if lexical > 0:
         _add_signal(signals, EvidenceCode.POSITIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
     elif lexical < 0:
         _add_signal(signals, EvidenceCode.NEGATIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, lexical)
 
-    if table.reference_id or table.source_table_ids:
+    if table.reference_id or table.source_table_ids or any(c.reference_id for c in profile.contexts):
         _add_signal(signals, EvidenceCode.REFERENCE_CONTEXT_MATCH, EvidenceSource.RELATIONSHIP, 5)
 
-    # Conversion is fragile; require at least metadata, relationship, or strong
+    # Conversion is fragile; require metadata, relationship, registry, or strong
     # structural evidence beyond a single percentage.
     has_strong_evidence = bool(
-        {EvidenceCode.KNOWN_DOCUMENT_ID, EvidenceCode.METADATA_KEY_MATCH, EvidenceCode.INTERNAL_NAME_MATCH}
+        {
+            EvidenceCode.KNOWN_DOCUMENT_ID,
+            EvidenceCode.KNOWN_FINGERPRINT,
+            EvidenceCode.METADATA_KEY_MATCH,
+            EvidenceCode.INTERNAL_NAME_MATCH,
+        }
         & {s.code for s in signals}
         or len(profile.percentage_columns) >= 1
         and lexical > 0
@@ -910,6 +949,8 @@ def score_conversion(
         _add_signal(signals, EvidenceCode.NEGATIVE_LEXICAL_HINT, EvidenceSource.LEXICAL, -15)
 
     score = _clamp_score(sum(s.weight for s in signals))
+    if score >= MINIMUM_SCORE and not _has_contextual_support(signals):
+        blockers.append(BlockerCode.NO_CONTEXTUAL_SUPPORT)
     return ScoreResult(
         category=category,
         score=score,
@@ -928,13 +969,15 @@ def score_all_categories(
     market_code: str | None = None,
     locale: str | None = None,
     registry: FingerprintRegistry | None = None,
+    profile: TableProfile | None = None,
 ) -> tuple[ScoreResult, ...]:
     """Return comparable scores for all four core categories."""
+    profile = profile or build_table_profile(table)
     return (
-        score_standard_commercial(table, market_code, locale, registry),
-        score_fixed_fee(table, market_code, locale, registry),
-        score_international_surcharge(table, market_code, locale, registry),
-        score_conversion(table, market_code, locale, registry),
+        score_standard_commercial(table, market_code, locale, registry, profile),
+        score_fixed_fee(table, market_code, locale, registry, profile),
+        score_international_surcharge(table, market_code, locale, registry, profile),
+        score_conversion(table, market_code, locale, registry, profile),
     )
 
 

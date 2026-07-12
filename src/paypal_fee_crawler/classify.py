@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import scoring
 from .extraction import (
@@ -43,6 +43,7 @@ class ClassificationCandidate:
     evidence: list[str]
     profile: TableProfile | None = None
     contexts: tuple[TableContext, ...] = ()
+    approval_codes: set[str] = field(default_factory=set)
 
 
 # Strong document-id signals. These are corroborated with table content and are
@@ -1611,7 +1612,9 @@ def _derive_structural_from_candidates(
             evidence.append(sig.detail or sig.code)
         for fee in decision.value or []:
             existing = fixed_by_currency.get(fee.currency)
-            if existing is not None and existing != fee.amount:
+            if existing == fee.amount:
+                continue
+            if existing is not None:
                 observations.append(
                     ClassificationObservation(
                         kind=ObservationKind.EXTRACTION_CONFLICT,
@@ -1655,7 +1658,9 @@ def _derive_structural_from_candidates(
             evidence.append(sig.detail or sig.code)
         for surcharge in decision.value or []:
             existing = surcharge_by_region.get(surcharge.region)
-            if existing is not None and existing != surcharge.percentage_points:
+            if existing == surcharge.percentage_points:
+                continue
+            if existing is not None:
                 observations.append(
                     ClassificationObservation(
                         kind=ObservationKind.EXTRACTION_CONFLICT,
@@ -1675,11 +1680,16 @@ def _derive_structural_from_candidates(
     for candidate in by_category[FeeCategory.CURRENCY_CONVERSION]:
         last_conversion_candidate = candidate
         profile = candidate.profile or build_table_profile(candidate.table, candidate.contexts)
-        # Conversion requires approved registry evidence for the first structural release.
+        # Conversion requires approved evidence derived from the selected score,
+        # not reconstructed from arbitrary metadata.
         has_approved = bool(
-            profile.internal_names
-            or profile.fee_data_keys
-            or (candidate.table.document_id or "").upper() in scoring.CONVERSION_DOC_IDS
+            candidate.approval_codes
+            & {
+                scoring.EvidenceCode.KNOWN_DOCUMENT_ID.value,
+                scoring.EvidenceCode.KNOWN_FINGERPRINT.value,
+                scoring.EvidenceCode.METADATA_KEY_MATCH.value,
+                scoring.EvidenceCode.INTERNAL_NAME_MATCH.value,
+            }
         )
         decision = extract_conversion_spread(candidate.table, profile, has_approved_evidence=has_approved)
         observations.extend(decision.observations)
@@ -1755,14 +1765,17 @@ def _table_decision_from_structural(
     table: Table,
     decision: scoring.ClassificationDecision,
     contexts: tuple[TableContext, ...],
+    profile: TableProfile | None = None,
 ) -> TableDecision:
     """Build a per-table decision record from the structural scorer output."""
-    profile = build_table_profile(table, contexts)
+    profile = profile or build_table_profile(table, contexts)
     fingerprint = str(FingerprintBuilder.build(profile, table))
     selected_score = decision.selected_score
-    blockers = selected_score.blockers if selected_score else ()
-    evidence_codes = tuple(sorted({s.code.value for s in (selected_score.signals if selected_score else ())}))
-    evidence_sources = tuple(sorted({s.source.value for s in (selected_score.signals if selected_score else ())}))
+    # Fall back to the top-ranked score for diagnostics when no category was selected.
+    diagnostic_score = selected_score if selected_score else (decision.ranked_scores[0] if decision.ranked_scores else None)
+    blockers = diagnostic_score.blockers if diagnostic_score else ()
+    evidence_codes = tuple(sorted({s.code.value for s in (diagnostic_score.signals if diagnostic_score else ())}))
+    evidence_sources = tuple(sorted({s.source.value for s in (diagnostic_score.signals if diagnostic_score else ())}))
     return TableDecision(
         table_id=table.table_id,
         document_id=table.document_id,
@@ -1770,6 +1783,10 @@ def _table_decision_from_structural(
         fingerprint=fingerprint,
         selected_category=decision.selected_category,
         selected_score=selected_score.score if selected_score else None,
+        status=decision.status,
+        ambiguity_reason=decision.ambiguity_reason,
+        winner_margin=decision.winner_margin,
+        ranked_scores=decision.ranked_scores,
         blockers=blockers,
         evidence_codes=evidence_codes,
         evidence_sources=evidence_sources,
@@ -1789,6 +1806,10 @@ def _table_decision_from_legacy(candidate: ClassificationCandidate) -> TableDeci
         fingerprint=fingerprint,
         selected_category=candidate.category,
         selected_score=score,
+        status="selected",
+        ambiguity_reason=None,
+        winner_margin=None,
+        ranked_scores=(),
         blockers=(),
         evidence_codes=tuple(sorted(set(candidate.evidence))),
         evidence_sources=(),
@@ -1805,6 +1826,10 @@ class TableDecision:
     fingerprint: str | None
     selected_category: FeeCategory | None
     selected_score: int | None
+    status: str
+    ambiguity_reason: str | None
+    winner_margin: int | None
+    ranked_scores: tuple[scoring.ScoreResult, ...]
     blockers: tuple[scoring.BlockerCode, ...]
     evidence_codes: tuple[str, ...]
     evidence_sources: tuple[str, ...]
@@ -1866,9 +1891,10 @@ def classify_structural(
         if not table.rows and not table.headers:
             continue
 
-        scores = scoring.score_all_categories(table, market_code, locale, registry)
+        profile = build_table_profile(table, contexts)
+        scores = scoring.score_all_categories(table, market_code, locale, registry, profile=profile)
         decision = scoring.select_category(scores)
-        table_decisions.append(_table_decision_from_structural(table, decision, contexts))
+        table_decisions.append(_table_decision_from_structural(table, decision, contexts, profile))
 
         if (
             decision.status == "selected"
@@ -1882,18 +1908,19 @@ def classify_structural(
                 category=decision.selected_category,
                 confidence=score / scoring.MAX_CATEGORY_SCORE,
                 evidence=[s.detail or s.code for s in selected_score.signals],
-                profile=build_table_profile(table, contexts),
+                profile=profile,
                 contexts=contexts,
+                approval_codes={s.code.value for s in selected_score.signals},
             )
             candidates.append(candidate)
 
-            if score < scoring.MINIMUM_SCORE + scoring.MINIMUM_MARGIN:
+            if decision.winner_margin is not None and decision.winner_margin <= scoring.MINIMUM_MARGIN:
                 observations.append(
                     ClassificationObservation(
                         kind=ObservationKind.LOW_MARGIN,
                         category=decision.selected_category,
                         table_id=table.document_id or table.table_id,
-                        message=f"selected with low margin: {score}",
+                        message=f"selected with low margin: {decision.winner_margin}",
                     )
                 )
 

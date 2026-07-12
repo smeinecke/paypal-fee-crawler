@@ -7,9 +7,16 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .classify import CLASSIFIER_VERSION, ClassificationRun, TableDecision, classify_legacy, classify_structural
-from .models import CountryOutput, CurrencyConversion, DerivedFees, FixedFees, InternationalSurcharge, Market
-from .registry import FingerprintRegistry
-from .scoring import FeeCategory
+from .models import CountryOutput, CurrencyConversion, DerivedFees, FixedFees, InternationalSurcharge, Market, Table
+from .profiles import build_table_profile
+from .registry import FingerprintBuilder, FingerprintRegistry
+from .scoring import (
+    CONVERSION_DOC_IDS,
+    FIXED_DOC_IDS,
+    INTERNATIONAL_DOC_IDS,
+    STANDARD_DOC_IDS,
+    FeeCategory,
+)
 
 
 def _fixed_fees_set(fees: list[FixedFees]) -> set[tuple[str, str]]:
@@ -24,17 +31,85 @@ def _conversion_spread(conversion: CurrencyConversion | None) -> str | None:
     return conversion.spread_percentage if conversion else None
 
 
-def _selected_categories(derived: DerivedFees) -> set[str]:
+def _selected_categories_from_derived(derived: DerivedFees) -> set[str]:
+    """Return selected output categories from a derived fees object."""
     categories: set[str] = set()
-    if derived.standard_commercial is not None or derived.commercial_fixed_fees:
+    if derived.standard_commercial is not None:
         categories.add(FeeCategory.STANDARD_COMMERCIAL.value)
     if derived.commercial_fixed_fees:
         categories.add(FeeCategory.FIXED_FEE.value)
-    if derived.international_surcharges or derived.international_surcharge_exposed:
+    if derived.international_surcharges:
         categories.add(FeeCategory.INTERNATIONAL_SURCHARGE.value)
-    if derived.currency_conversion is not None or derived.currency_conversion_exposed:
+    if derived.currency_conversion is not None:
         categories.add(FeeCategory.CURRENCY_CONVERSION.value)
     return categories
+
+
+def _selected_categories_from_decisions(run: ClassificationRun) -> set[str]:
+    """Return selected core categories from a classification run's table decisions."""
+    return {
+        d.selected_category.value
+        for d in run.table_decisions
+        if d.selected_category is not None and d.selected_category.value != FeeCategory.OTHER.value
+    }
+
+
+def _gold_category_for_table(table: Table, derived: DerivedFees, table_count: int) -> FeeCategory | None:
+    """Infer the reviewed category for a table in a gold fixture.
+
+    Document IDs are authoritative when they match a known category.  For single-
+    table fixtures with no known document ID, the derived output is used.
+    """
+    doc_id = (table.document_id or "").upper()
+    if doc_id in STANDARD_DOC_IDS:
+        return FeeCategory.STANDARD_COMMERCIAL
+    if doc_id in FIXED_DOC_IDS:
+        return FeeCategory.FIXED_FEE
+    if doc_id in INTERNATIONAL_DOC_IDS:
+        return FeeCategory.INTERNATIONAL_SURCHARGE
+    if doc_id in CONVERSION_DOC_IDS:
+        return FeeCategory.CURRENCY_CONVERSION
+
+    if table_count == 1:
+        if derived.standard_commercial is not None:
+            return FeeCategory.STANDARD_COMMERCIAL
+        if derived.commercial_fixed_fees:
+            return FeeCategory.FIXED_FEE
+        if derived.international_surcharges:
+            return FeeCategory.INTERNATIONAL_SURCHARGE
+        if derived.currency_conversion is not None:
+            return FeeCategory.CURRENCY_CONVERSION
+
+    return None
+
+
+def _gold_table_decisions(country: CountryOutput) -> tuple[TableDecision, ...]:
+    """Build reviewed table decisions from a gold CountryOutput fixture."""
+    derived = country.derived
+    table_count = len(country.tables)
+    decisions: list[TableDecision] = []
+    for table in country.tables:
+        profile = build_table_profile(table)
+        fingerprint = str(FingerprintBuilder.build(profile, table))
+        selected_category = _gold_category_for_table(table, derived, table_count)
+        decisions.append(
+            TableDecision(
+                table_id=table.table_id,
+                document_id=table.document_id,
+                component_id=table.component_id,
+                fingerprint=fingerprint,
+                selected_category=selected_category,
+                selected_score=None,
+                status="selected" if selected_category is not None else "unclassified",
+                ambiguity_reason=None,
+                winner_margin=None,
+                ranked_scores=(),
+                blockers=(),
+                evidence_codes=(),
+                evidence_sources=(),
+            )
+        )
+    return tuple(decisions)
 
 
 @dataclass(frozen=True)
@@ -82,8 +157,21 @@ class CountryComparison:
 
 
 def _table_decision_key(d: TableDecision) -> str:
-    """Stable identity key for a table decision."""
-    return "::".join(str(part) for part in (d.table_id, d.document_id, d.component_id, d.fingerprint) if part)
+    """Stable priority-based identity for a table decision.
+
+    Prefer explicit table/component identifiers over the content-derived
+    fingerprint, so small structural changes are reported as a changed decision
+    rather than a missing/new pair.
+    """
+    if d.table_id:
+        return f"table:{d.table_id}"
+    if d.component_id:
+        return f"component:{d.component_id}"
+    if d.document_id:
+        return f"document:{d.document_id}"
+    if d.fingerprint:
+        return f"fingerprint:{d.fingerprint}"
+    return "unknown"
 
 
 def _compare_table_decisions(
@@ -104,10 +192,10 @@ def _compare_table_decisions(
         legacy_decision = legacy_by_key.get(key)
         structural_decision = structural_by_key.get(key)
         if legacy_decision is None or structural_decision is None:
-            kind = "new" if legacy_decision is None else "missing"
             present = structural_decision if legacy_decision is None else legacy_decision
-            if present is None:
+            if present is None or present.selected_category is None:
                 continue
+            kind = "new" if legacy_decision is None else "missing"
             changes.append(
                 TableDecisionChange(
                     table_id=present.table_id,
@@ -229,8 +317,8 @@ def compare_runs(
             kind = "changed"
         value_changes.append(ValueChange("currency_conversion.spread_percentage", legacy_conv, structural_conv, kind))
 
-    legacy_cats = _selected_categories(legacy)
-    structural_cats = _selected_categories(structural)
+    legacy_cats = _selected_categories_from_decisions(legacy_run)
+    structural_cats = _selected_categories_from_decisions(structural_run)
 
     observations = tuple(
         {
@@ -356,7 +444,7 @@ def compare_against_gold(gold_dir: Path, output_dir: Path, countries: set[str] |
         market = country.market
         gold_run = ClassificationRun(
             derived=country.derived,
-            table_decisions=(),
+            table_decisions=_gold_table_decisions(country),
             observations=(),
             classifier_version="gold",
         )

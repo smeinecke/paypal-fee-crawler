@@ -85,6 +85,12 @@ class ValidationError(CrawlerError):
     pass
 
 
+class RegistryValidationError(CrawlerError):
+    """Registry configuration is invalid."""
+
+    pass
+
+
 class RegressionError(CrawlerError):
     """Regression guard failure."""
 

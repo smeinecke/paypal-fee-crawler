@@ -681,7 +681,7 @@ def extract_international_surcharges(
             region = market_code.upper()
 
         if region is None:
-            region = _norm(label) or "OTHER"
+            region = "UNKNOWN"
 
         if region in seen_regions:
             observations.append(
