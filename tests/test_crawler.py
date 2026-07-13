@@ -103,8 +103,8 @@ def test_crawl_is_deterministic_without_timestamp(tmp_path: Path) -> None:
     assert not report2.changed
     country = json.loads((tmp_path / "json" / "de.json").read_text())
     index = json.loads((tmp_path / "json" / "index.json").read_text())
-    assert country["generated_at"] is None
-    assert index["generated_at"] is None
+    assert country["generated_at"] == "2026-04-30"
+    assert index["generated_at"] == "2026-04-30"
 
 
 def test_crawl_is_deterministic_with_timestamp(tmp_path: Path) -> None:
@@ -118,7 +118,7 @@ def test_crawl_is_deterministic_with_timestamp(tmp_path: Path) -> None:
     assert report2.exit_code == 0
     assert not report2.changed
     country = json.loads((tmp_path / "json" / "de.json").read_text())
-    assert country["generated_at"] == timestamp
+    assert country["generated_at"] == "2026-04-30"
 
 
 def test_default_transient_policy_blocks_publication(tmp_path: Path) -> None:

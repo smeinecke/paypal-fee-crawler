@@ -230,11 +230,20 @@ class Crawler:
                     return value.strip()
         # Search rendered section text for locale-specific update phrases.
         phrases = (
-            r"Letzte\s+Aktualisierung\s*:\s*([^\n<]+)",
             r"Last\s+updated\s*:\s*([^\n<]+)",
             r"Updated\s*:\s*([^\n<]+)",
-            r"Stand\s*:\s*([^\n<]+)",
+            r"Letzte\s+Aktualisierung\s*:\s*([^\n<]+)",
+            r"(?:Aktualisiert|Stand)\s*:\s*([^\n<]+)",
             r"(?:Aktualisiert|Updated)\s+(?:am\s+)?([^\n<]+)",
+            r"Dernière\s+mise\s+à\s+jour\s*:\s*([^\n<]+)",
+            r"Mise\s+à\s+jour\s*:\s*([^\n<]+)",
+            r"Última\s+actualización\s*:\s*([^\n<]+)",
+            r"Actualizado\s+(?:el\s+)?([^\n<]+)",
+            r"Ultimo\s+aggiornamento\s*:\s*([^\n<]+)",
+            r"Ultima\s+attualizzazione\s*:\s*([^\n<]+)",
+            r"Aggiornato\s+(?:il\s+)?([^\n<]+)",
+            r"Última\s+atualização\s*:\s*([^\n<]+)",
+            r"Atualizado\s+(?:em\s+)?([^\n<]+)",
         )
         for section in sections:
             text = ""

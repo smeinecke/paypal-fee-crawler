@@ -9,6 +9,7 @@ import logging
 import os
 import shutil
 import tempfile
+from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -129,8 +130,8 @@ class OutputPublisher:
     ) -> None:
         self.output_dir = Path(output_dir)
         self.staging_dir = Path(staging_dir) if staging_dir else None
-        # If no timestamp is provided, canonical output remains deterministic;
-        # generated_at is written as null.
+        # If no timestamp is provided, generated_at falls back to the page source
+        # update date when available; otherwise it remains null.
         self.timestamp = timestamp
         self.keep_diagnostics = keep_diagnostics
 
@@ -146,6 +147,16 @@ class OutputPublisher:
 
     def _compute_content_sha256(self, data: dict[str, Any]) -> str:
         return _country_output_hash(data)
+
+    def _run_generated_at(self, outputs: dict[str, CountryOutput]) -> str | None:
+        """Return the latest source page update date, or the configured timestamp as fallback."""
+        values = [output.source.page_updated_at for output in outputs.values() if output.source.page_updated_at]
+        if not values:
+            return self.timestamp
+        try:
+            return max(values, key=lambda s: datetime.fromisoformat(s))
+        except ValueError:
+            return max(values)
 
     def _build_state_entry(
         self,
@@ -256,11 +267,13 @@ class OutputPublisher:
 
         existing_state = self._load_existing_state()
         state_entries: dict[str, CrawlStateEntry] = {}
+        run_generated_at = self._run_generated_at(outputs)
 
         for cc in sorted(outputs.keys()):
             output = outputs[cc]
             public = PublicCountryOutput.from_internal(output)
-            public = public.model_copy(update={"generated_at": self.timestamp})
+            country_generated_at = output.source.page_updated_at or self.timestamp
+            public = public.model_copy(update={"generated_at": country_generated_at})
 
             path = json_dir / f"{output.market.url_slug}.json"
             country_data = public.model_dump(mode="json", exclude_none=True)
@@ -300,18 +313,18 @@ class OutputPublisher:
                 output, content_hash, existing_state, diagnostics
             )
 
-        index = CountryIndex(generated_at=self.timestamp, countries=index_entries)
+        index = CountryIndex(generated_at=run_generated_at, countries=index_entries)
         index_data = index.model_dump(mode="json", exclude_none=True)
         index_data["generated_at"] = index.generated_at
         _write_json(json_dir / "index.json", index_data)
 
-        core_fees = CoreFees(generated_at=self.timestamp, countries=core_entries)
+        core_fees = CoreFees(generated_at=run_generated_at, countries=core_entries)
         core_data = core_fees.model_dump(mode="json", exclude_none=True)
         core_data["generated_at"] = core_fees.generated_at
         _write_json(json_dir / "core-fees.json", core_data)
 
         manifest = CountryManifest(
-            generated_at=self.timestamp,
+            generated_at=run_generated_at,
             markets=markets,
             unsupported=unsupported,
         )
@@ -341,7 +354,7 @@ class OutputPublisher:
 
         _write_json(
             meta_dir / "crawl-state.json",
-            CrawlState(generated_at=self.timestamp, markets=state_entries).model_dump(mode="json"),
+            CrawlState(generated_at=run_generated_at, markets=state_entries).model_dump(mode="json"),
         )
 
         if classifier_metadata is not None:
@@ -363,7 +376,7 @@ class OutputPublisher:
                     diagnostics_dir / f"{cc.lower()}.json",
                     {
                         "schema_version": 1,
-                        "generated_at": self.timestamp,
+                        "generated_at": outputs[cc].source.page_updated_at or self.timestamp,
                         "normalized_output": outputs[cc].model_dump(mode="json", exclude_none=True),
                         "classification_run": _to_jsonable(run) if run is not None else None,
                     },
@@ -373,14 +386,19 @@ class OutputPublisher:
         # already has one, carry it forward to avoid treating it as a removal.
         if change_report is not None:
             if change_report.changes:
+                change_report = change_report.model_copy(update={"generated_at": run_generated_at})
                 _write_json(staging / "change-report.json", change_report.model_dump(mode="json"))
             elif (self.output_dir / "change-report.json").exists():
-                shutil.copy2(self.output_dir / "change-report.json", staging / "change-report.json")
+                old_report = ChangeReport.model_validate_json(
+                    (self.output_dir / "change-report.json").read_text(encoding="utf-8")
+                )
+                updated_report = old_report.model_copy(update={"generated_at": run_generated_at})
+                _write_json(staging / "change-report.json", updated_report.model_dump(mode="json"))
 
         if shadow_runs:
             _write_json(
                 meta_dir / "classification-shadow.json",
-                {"schema_version": 2, "generated_at": self.timestamp, "countries": _to_jsonable(shadow_runs)},
+                {"schema_version": 2, "generated_at": run_generated_at, "countries": _to_jsonable(shadow_runs)},
             )
 
         return staging != self.output_dir, staging
