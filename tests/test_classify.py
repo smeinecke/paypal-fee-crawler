@@ -106,3 +106,25 @@ def test_classify_real_germany_fixture() -> None:
     assert result.fixed_fee_schedules
     assert result.international_surcharge_schedules
     assert result.status in {"complete", "partial"}
+
+
+def test_nacionales_keyword_does_not_match_internacionales() -> None:
+    # "internacionales" (international) contains the substring "nacionales" but
+    # must not be classified as a domestic commercial rate table.
+    from paypal_fee_crawler.classify import _classify_table_category
+
+    table = _table(
+        "Recepción de transacciones internacionales",
+        [],
+    )
+    assert _classify_table_category(table) is None
+
+
+def test_comision_porcentual_adicional_classified_as_surcharge() -> None:
+    from paypal_fee_crawler.classify import _classify_table_category
+
+    table = _table(
+        "Comisión porcentual adicional por transacciones comerciales internacionales",
+        [],
+    )
+    assert _classify_table_category(table) == "international_surcharge_table"
