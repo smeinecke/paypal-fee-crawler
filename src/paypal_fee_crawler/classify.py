@@ -98,6 +98,8 @@ _PRODUCT_ALIASES: dict[str, tuple[str, ...]] = {
         "credit and debit card",
         "credit/debit card",
         "tarjetas de crédito y débito",
+        "cartão de crédito e débito",
+        "cartão de crédito",
     ),
     "other_commercial": (
         "all other commercial transactions",
@@ -1646,6 +1648,86 @@ def _is_apm_special_label(label: str) -> bool:
     return any(m in _APM_SPECIAL_METHOD_IDS for m in methods)
 
 
+def _is_international_label(label: str) -> bool:
+    """Return True if the label describes an international/cross-border fee."""
+    text = _norm(label)
+    return any(
+        kw in text
+        for kw in (
+            "international",
+            "internationaux",
+            "internacionais",
+            "internacional",
+            "internazionali",
+            "international",
+            "foreign",
+            "outside",
+            "ausland",
+            "ausländ",
+            "außerhalb",
+            "non-eea",
+            "non eea",
+            "non-eu",
+            "non eu",
+            "fuera de",
+            "fuera",
+            "hors",
+            "estrangeiro",
+            "estrangeira",
+            "utenlands",
+            "utland",
+            "ulkomaan",
+            "interna",
+            "külföld",
+            "külföldi",
+            "međunarod",
+            "međunarodne",
+            "zahraniční",
+            "zagraniczny",
+            "mednarodne",
+            "mednarodni",
+            "kansainvälinen",
+            "kansainvalinen",
+            "international",
+        )
+    )
+
+
+def _is_domestic_label(label: str) -> bool:
+    """Return True if the label describes a domestic/in-country fee."""
+    text = _norm(label)
+    return any(
+        kw in text
+        for kw in (
+            "domestic",
+            "doméstico",
+            "domésticos",
+            "doméstica",
+            "domésticas",
+            "domesticos",
+            "domesticas",
+            "domestici",
+            "domestic",
+            "inland",
+            "innenland",
+            "innenlands",
+            "national",
+            "nacional",
+            "nacionais",
+            "national",
+            "local",
+            "lokal",
+            "lokal",
+            "nasional",
+            "inland",
+            "innenlands",
+            "inländer",
+            "inlander",
+            "domestic",
+        )
+    )
+
+
 def _variant_id_for_row(product_id: str, label: str, methods: list[str]) -> str | None:
     """Return a stable variant id for a row, if needed."""
     if product_id == "alternative_payment_methods":
@@ -1668,7 +1750,55 @@ def _variant_id_for_row(product_id: str, label: str, methods: list[str]) -> str 
         if any(kw in _norm(label) for kw in ("über", "over", "above", "greater than", ">")):
             return "above_threshold"
         return None
+    if product_id == "micropayments" and any(
+        kw in _norm(label) for kw in ("digital", "digitala", "digitale", "digitale", "dijital")
+    ):
+        return "digital_goods"
+    # Generic domestic/international variants across most product families.
+    if _is_international_label(label):
+        return "international"
+    if _is_domestic_label(label):
+        return "domestic"
     return None
+
+
+def _extract_country_group_condition(label: str) -> dict[str, Any] | None:
+    """Parse a row label like 'AG, BB, BM & SA' into a list of market codes.
+
+    Returns an applies_to_markets condition if the label contains at least one
+    market code and is not a generic default phrase. Common default phrases are
+    excluded because they describe the fallback rule, not a country-specific one.
+    """
+    text = label
+    default_phrases = (
+        "all other markets",
+        "all other",
+        "todos os outros",
+        "tous les autres",
+        "tutti gli altri",
+        "alle anderen",
+        "alla andra",
+        "alle andre",
+        "todos los demás",
+        "overige",
+        "pozostałe",
+        "pozostale",
+        "pozostalých",
+        "egyeb",
+        "altri",
+        "sonstige",
+    )
+    if any(p in _norm(text) for p in default_phrases):
+        return None
+    # Look for 2-3 character uppercase market codes separated by commas,
+    # ampersands, 'and' or whitespace. A 2-char code may be followed by
+    # punctuation, not by another letter.
+    matches = re.findall(r"(?<![A-Za-z0-9])([A-Z0-9]{2,3})(?![A-Za-z0-9])", text)
+    # Filter out a few common false positives.
+    codes = [m for m in matches if m not in {"FEE", "USD", "EUR", "GBP", "PAY", "GST", "VAT"}]
+    if not codes:
+        return None
+    return {"applies_to_markets": sorted(set(codes))}
 
 
 def _conditions_for_row(
@@ -1694,6 +1824,11 @@ def _conditions_for_row(
             conditions["point_of_sale"] = True
         elif variant_id.startswith("interchange_plus"):
             conditions["pricing_plan"] = variant_id
+    if variant_id in ("domestic", "international"):
+        conditions["transaction_region"] = variant_id
+    market_condition = _extract_country_group_condition(label)
+    if market_condition:
+        conditions.update(market_condition)
     if product_id == "qr_code_payments" and variant_id:
         amount_condition = _extract_amount_condition(label)
         if amount_condition:

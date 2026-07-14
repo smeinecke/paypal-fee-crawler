@@ -143,7 +143,11 @@ def _validate_transaction_rules(derived: Any, label: str) -> list[str]:
         )
         if key in seen_rule_keys:
             other = seen_rule_keys[key]
-            if other.percentage != rule.percentage or other.fixed_fee_schedule != rule.fixed_fee_schedule:
+            if (
+                other.percentage != rule.percentage
+                or other.fixed_fee_schedule != rule.fixed_fee_schedule
+                or other.international_surcharge_schedule != rule.international_surcharge_schedule
+            ):
                 errors.append(f"{label} rule {rule.id} has duplicate semantic identity with different fee definition")
         else:
             seen_rule_keys[key] = rule
