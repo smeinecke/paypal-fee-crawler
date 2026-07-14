@@ -10,14 +10,18 @@ the schedule that applies to a given rule.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from typing import Any
 
 from .models import (
     AmbiguousFeeRow,
+    CoverageSummary,
     CurrencyConversion,
     DerivedFeeResult,
+    Diagnostic,
     FixedFeeSchedule,
     InternationalSurchargeSchedule,
     InternationalSurchargeScheduleEntry,
@@ -138,12 +142,6 @@ _PRODUCT_ALIASES: dict[str, tuple[str, ...]] = {
         "online bankoverførsel",
         "bankoverførsel",
         "bank transfer",
-        "skrill",
-        "gopay",
-        "blik",
-        "kredivo",
-        "floa",
-        "scalapay",
     ),
     "guest_checkout": (
         "zahlung eines nutzers unserer bedingungen für zahlungen ohne paypal-konto",
@@ -831,8 +829,8 @@ def _token_text_indicates_percentage(token) -> bool:
     internal name or fee-data key contains the word "Prozentpunkte" or
     "percentage points".
     """
-    for field in (token.raw, token.internal_name, token.fee_data_key):
-        if _text_indicates_percentage(field):
+    for candidate in (token.raw, token.internal_name, token.fee_data_key):
+        if _text_indicates_percentage(candidate):
             return True
     return False
 
@@ -1149,8 +1147,294 @@ def _classify_table_by_row_labels(table: Table) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-_APM_SPECIAL_METHODS = (
+# ---------------------------------------------------------------------------
+# APM method extraction
+# ---------------------------------------------------------------------------
+
+_APM_METHOD_ALIASES: dict[str, tuple[str, ...]] = {
+    "thai_online_bank_transfer": (
+        "thai online bank transfer",
+        "thailändsk online bank transfer",
+        "thailandsk online bankoverførsel",
+        "thailändische online banküberweisung",
+        "thailändische online-banküberweisung",
+        "thailändische online bank überweisung",
+        "thai online bank",
+        "thai online bankoverførsel",
+        "thai online banküberweisung",
+        "thai online bankoverschrijving",
+        "thai online bankovní převod",
+        "thai online bankový prevod",
+        "thai online banki átutalás",
+        "thai virement bancaire en ligne",
+        "thai bonifico bancario online",
+        "thai transferencia bancaria online",
+        "thai transferência bancária online",
+        "thai verkkopankkisiirto",
+        "thailändsk",
+        "thailandsk",
+        "thaimaan",
+        "thaimaa",
+        "thaiföldi",
+        "thaïlandaise",
+        "tailandesa",
+        "tailandese",
+        "tailandés",
+        "tajlandzkiej",
+        "thajsku",
+        "thajska",
+        "thajském",
+        "thajskom",
+        "thai",
+    ),
+    "latvian_online_bank_transfer": (
+        "latvian online bank transfer",
+        "lettisk online bank transfer",
+        "latvijas online bank transfer",
+        "latvian online bankoverførsel",
+        "lettische online banküberweisung",
+        "lettische online-banküberweisung",
+        "lettische online bank überweisung",
+        "latvian online bank",
+        "latvian online banküberweisung",
+        "latvian online bankoverschrijving",
+        "latvian online bankovní převod",
+        "latvian online bankový prevod",
+        "latvian online banki átutalás",
+        "latvian virement bancaire en ligne",
+        "latvian bonifico bancario online",
+        "latvian transferencia bancaria online",
+        "latvian transferência bancária online",
+        "latvian verkkopankkisiirto",
+        "lettisk",
+        "lettische",
+        "latvijas",
+        "latvijska",
+        "läti",
+        "lettországi",
+        "letonska",
+        "letonské",
+        "letonskom",
+        "latvian",
+    ),
+    "lithuanian_online_bank_transfer": (
+        "lithuanian online bank transfer",
+        "litauisk online bank transfer",
+        "lietuvos online bank transfer",
+        "lithuanian online bankoverførsel",
+        "litauische online banküberweisung",
+        "litauische online-banküberweisung",
+        "litauische online bank überweisung",
+        "lithuanian online bank",
+        "lithuanian online banküberweisung",
+        "lithuanian online bankoverschrijving",
+        "lithuanian online bankovní převod",
+        "lithuanian online bankový prevod",
+        "lithuanian online banki átutalás",
+        "lithuanian virement bancaire en ligne",
+        "lithuanian bonifico bancario online",
+        "lithuanian transferencia bancaria online",
+        "lithuanian transferência bancária online",
+        "lithuanian verkkopankkisiirto",
+        "litauisk",
+        "litauische",
+        "lie tuvos",
+        "liettualainen",
+        "lietuvos",
+        "litván",
+        "litewska",
+        "litewskim",
+        "lithuanian",
+    ),
+    "online_bank_transfer": (
+        "online bank transfer",
+        "online bankoverførsel",
+        "online banküberweisung",
+        "online-banküberweisung",
+        "online bank überweisung",
+        "online bankoverschrijving",
+        "online bankovní převod",
+        "online bankový prevod",
+        "online banki átutalás",
+        "virement bancaire en ligne",
+        "bonifico bancario online",
+        "transferencia bancaria online",
+        "transferência bancária online",
+        "verkkopankkisiirto",
+        "bank transfer",
+        "banktransfer",
+        "online bank",
+        "banküberweisung",
+        "bankoverschrijving",
+        "banköverföring",
+        "bankoverførsel",
+    ),
+    "skrill": ("skrill",),
+    "ovo_premium": (
+        "ovo premium",
+        "ovo",
+    ),
+    "gopay": (
+        "gopay",
+        "go pay",
+    ),
+    "blik_pay_later": (
+        "blik pay later",
+        "blik",
+    ),
+    "kredivo": ("kredivo",),
+    "floa_pay": (
+        "floa pay",
+        "floa",
+    ),
+    "scalapay": ("scalapay",),
+}
+
+_APM_SPECIAL_METHOD_IDS: frozenset[str] = frozenset(
+    [
+        "thai_online_bank_transfer",
+        "latvian_online_bank_transfer",
+        "lithuanian_online_bank_transfer",
+        "skrill",
+        "ovo_premium",
+        "gopay",
+        "blik_pay_later",
+        "kredivo",
+        "floa_pay",
+        "scalapay",
+    ]
+)
+
+# Sort aliases by length descending so the longest/most specific phrase wins
+# (e.g. "thai online bank transfer" before "online bank transfer").
+_APM_SORTED_ALIASES: list[tuple[str, str]] = sorted(
+    [
+        (canonical, alias)
+        for canonical, aliases in _APM_METHOD_ALIASES.items()
+        for alias in aliases
+    ],
+    key=lambda item: (-len(item[1]), item[0], item[1]),
+)
+
+
+_APM_SEPARATOR_RE = re.compile(
+    r"[,;/]|"
+    r"(?:\s+(?:and|und|i|y|et|og|ja|oraz|och|e)\s+)",
+    re.IGNORECASE,
+)
+
+# Full phrases that indicate a label part is a generic APM header, not a method.
+_APM_HEADER_PHRASES: set[str] = {
+    "alle anderen alternativen zahlungsmethoden",
+    "alle anderen alternativen zahlungsmethode",
+    "alternative zahlungsmethode",
+    "alternative zahlungsmethoden",
+    "alternative payment method",
+    "alternative payment methods",
+    "all other alternative payment methods",
+    "all other alternative payment method",
+    "all other apm",
+    "autres moyens de paiement alternatifs",
+    "altre modalità di pagamento alternative",
+    "otros métodos de pago alternativos",
+    "andere alternatieve betaalmethoden",
+    "andere alternative betalingsmetoder",
+    "andere alternative zahlungsmethoden",
+    "andere alternative zahlungsmethode",
+    "andre alternative betalingsmetoder",
+    "pozostałe metody płatności",
+    "övriga alternativa betalningsmetoder",
+    "muut vaihtoehtoiset maksutavat",
+    "más alternatív fizetési módok",
+    "outros métodos de pagamento alternativos",
+    "alte metode alternative de plată",
+    "ostatné alternatívne spôsoby platby",
+    " Ostali alternativni načini plačila",
+    "alternatív fizetési módok",
+    "alternative betalingsmåter",
+    "alternative betalingsmetoder",
+    "alternative betalingsmåder",
+    "alternative betalningsmetoder",
+    "alternative maksutavat",
+    "alternativna sredstva plaćanja",
+    "alternativni načini plaćanja",
+    "alternativne metode plaćanja",
+    "alternatívne spôsoby platby",
+    "alternativní způsoby platby",
+    "alternativní platební metody",
+    "alternativne metody płatności",
+    "alternatyvūs mokėjimo būdai",
+    "alternatīvie maksājumi",
+    "alternatīvie maksājumu veidi",
+    "alternatívne platobné metódy",
+    "alternativne metode plačila",
+    "alternativne plačilne metode",
+    "alternativni plačilni sistemi",
+    "alternativni načini plačevanja",
+    "alternativna plačilna sredstva",
+    "alternativni plačilni mehanizmi",
+    "alternativne metode plačevanja",
+    "alternativne finančne storitve",
+    "alternativne plačilne rešitve",
+    "apm-transaktionsgebühren",
+    "apm-transaktion",
+    "apm-transaksjoner",
+    "apm-transakcje",
+    "apm-transakcija",
+    "apm transactions",
+    "apm transaction",
+    "apm-transakciók",
+    "apm-maksut",
+    "apm-maksutapa",
+    "apm-betalinger",
+    "apm-betaling",
+    "apm-betalning",
+    "apm-betalningar",
+    "apm-zahlungen",
+    "apm-zahlung",
+    "apm-maks",
+    "apm",
+    "abm",
+    "vmt",
+}
+
+# Tokens that indicate a label part is a generic APM header, not a method list.
+_APM_HEADER_TOKENS: set[str] = {
+    "alternative",
+    "zahlungsmethode",
+    "zahlungsmethoden",
+    "payment",
+    "payments",
+    "method",
+    "methods",
+    "método",
+    "métodos",
+    "metodo",
+    "metodi",
+    "betaalmethode",
+    "betaalmethoden",
+    "moyen",
+    "paiement",
+    "pagamento",
+    "pagamenti",
+    "płatności",
+    "maksutapa",
+    "maksutavat",
+    "platba",
+    "mód",
+    "módy",
+    "apm",
+    "apms",
+    "abm",
+    "vmt",
+}
+
+# Token sets for the individual payment methods we can extract from APM labels.
+_THAI_TOKENS = {
     "thai",
+    "thailand",
+    "thailändisch",
+    "thailändische",
     "thailändsk",
     "thailandsk",
     "thaimaan",
@@ -1165,8 +1449,10 @@ _APM_SPECIAL_METHODS = (
     "thajska",
     "thajském",
     "thajskom",
+}
+_LATVIAN_TOKENS = {
     "latvian",
-    "lettisk",
+    "lettisch",
     "lettische",
     "latvijas",
     "latvijska",
@@ -1175,35 +1461,152 @@ _APM_SPECIAL_METHODS = (
     "letonska",
     "letonské",
     "letonskom",
+}
+_LITHUANIAN_TOKENS = {
     "lithuanian",
-    "litauisk",
+    "litauisch",
     "litauische",
-    "lie tuvos",
     "liettualainen",
     "lietuvos",
     "litván",
     "litewska",
     "litewskim",
-    "online bank transfer",
-    "online bankoverførsel",
-    "online banküberweisung",
-    "online bankoverschrijving",
-    "online bankovní převod",
-    "online bankový prevod",
-    "online banki átutalás",
-    "virement bancaire en ligne",
-    "bonifico bancario online",
-    "transferencia bancaria online",
-    "transferência bancária online",
+    "lie",
+    "tuvos",
+}
+_BANK_TOKENS = {
+    "bank",
+    "banküberweisung",
+    "bankuberweisung",
+    "banktransfer",
+    "bankoverførsel",
+    "bankoverschrijving",
+    "bankovní",
+    "bankový",
+    "banki",
+    "átutalás",
+    "virement",
+    "bonifico",
+    "transferencia",
+    "transferência",
+    "verkkopankki",
     "verkkopankkisiirto",
-    "skrill",
-    "ovo",
-    "gopay",
-    "blik",
-    "kredivo",
-    "floa",
-    "scalapay",
-)
+    "pankki",
+    "siirto",
+    "überweisung",
+    "uberweisung",
+    "transfer",
+    "transfert",
+    "overschrijving",
+    "overførsel",
+    "prevod",
+    "przelew",
+    "platba",
+    "bankkonto",
+    "bankkonten",
+    "account",
+}
+_ONLINE_TOKENS = {
+    "online",
+    "on-line",
+    "on",
+    "line",
+    "elektronikus",
+    "elektronische",
+    "elektronisch",
+    "eletrônico",
+    "electronico",
+    "elettronico",
+    "internet",
+    "verkkopankki",
+}
+
+_APM_METHOD_MATCHERS: list[tuple[str, list[set[str]], set[str]]] = [
+    ("thai_online_bank_transfer", [_THAI_TOKENS, _ONLINE_TOKENS, _BANK_TOKENS], set()),
+    ("latvian_online_bank_transfer", [_LATVIAN_TOKENS, _ONLINE_TOKENS, _BANK_TOKENS], set()),
+    ("lithuanian_online_bank_transfer", [_LITHUANIAN_TOKENS, _ONLINE_TOKENS, _BANK_TOKENS], set()),
+    ("online_bank_transfer", [_ONLINE_TOKENS, _BANK_TOKENS], _THAI_TOKENS | _LATVIAN_TOKENS | _LITHUANIAN_TOKENS),
+    ("skrill", [{"skrill"}], set()),
+    ("ovo_premium", [{"ovopremium", "ovo"}], set()),
+    ("gopay", [{"gopay", "go"}], set()),
+    ("blik_pay_later", [{"blikpaylater", "blik"}], set()),
+    ("kredivo", [{"kredivo"}], set()),
+    ("floa_pay", [{"floapay", "floa"}], set()),
+    ("scalapay", [{"scalapay"}], set()),
+]
+
+
+def _tokenize_apm_label(part_norm: str) -> set[str]:
+    """Tokenize an APM label part for robust method matching.
+
+    Collapses multi-word method names (e.g. "go pay", "ovo premium") into a
+    single token so they can be matched with word boundaries.
+    """
+    # Pre-join the small number of multi-word brand names before tokenizing.
+    joined = (
+        part_norm.replace("go pay", "gopay")
+        .replace("ovo premium", "ovopremium")
+        .replace("floa pay", "floapay")
+        .replace("blik pay later", "blikpaylater")
+    )
+    # Split on punctuation and whitespace.
+    joined = re.sub(r"[^\w\s]", " ", joined)
+    return set(joined.split())
+
+
+def _extract_apm_methods(label: str) -> tuple[list[str], list[str]]:
+    """Extract canonical payment-method IDs from an APM row label.
+
+    Returns (canonical_ids, unknown_segments). The canonical IDs are sorted and
+    deduplicated. Unknown segments are raw label parts that did not match any
+    known method. Token-based matching avoids false positives like "Republik"
+    containing "blik" or "Thailändische Baht" containing "thai".
+    """
+    norm = _norm(label)
+    if not norm:
+        return [], []
+
+    parts = [p.strip() for p in _APM_SEPARATOR_RE.split(label) if p.strip()]
+    if not parts:
+        parts = [label]
+
+    methods: set[str] = set()
+    unknowns: list[str] = []
+
+    for part in parts:
+        part_norm = _norm(part)
+        if not part_norm or len(part_norm) < 3:
+            continue
+
+        # Drop introductory phrases like "e.g." or "z.b.".
+        part_norm = re.sub(r"\b(z\s*\.\s*b\s*\.?|e\s*\.\s*g\s*\.?|np\.|ex\.?)\b", "", part_norm).strip()
+        if not part_norm:
+            continue
+
+        # Skip generic header phrases ("Alternative payment method", "Alle anderen...").
+        if any(phrase in part_norm for phrase in _APM_HEADER_PHRASES):
+            continue
+
+        tokens = _tokenize_apm_label(part_norm)
+
+        # Skip parts that are only header tokens.
+        if tokens & _APM_HEADER_TOKENS and not (tokens - _APM_HEADER_TOKENS):
+            continue
+
+        matched: str | None = None
+        for method_id, required_groups, forbidden in _APM_METHOD_MATCHERS:
+            if tokens & forbidden:
+                continue
+            if all(tokens & group for group in required_groups):
+                matched = method_id
+                break
+
+        if matched:
+            methods.add(matched)
+        else:
+            unknowns.append(part)
+
+    return sorted(methods), sorted(set(unknowns))
 
 
 def _is_apm_special_label(label: str) -> bool:
@@ -1214,46 +1617,36 @@ def _is_apm_special_label(label: str) -> bool:
     misclassified because they contain substrings like "pay later" (from
     "BLIK Pay Later") that collide with invoice_pay_later / pay_later_consumer.
     """
-    norm = _norm(label)
-    # Must contain at least two APM special method keywords to qualify,
-    # or one of the unambiguous single-method keywords (skrill, gopay, etc.).
-    matches = sum(1 for m in _APM_SPECIAL_METHODS if _norm(m) in norm)
-    if matches >= 2:
-        return True
-    unambiguous = ("skrill", "gopay", "kredivo", "floa", "scalapay", "blik pay later")
-    return any(_norm(m) in norm for m in unambiguous)
+    methods, _ = _extract_apm_methods(label)
+    return any(m in _APM_SPECIAL_METHOD_IDS for m in methods)
 
 
-def _rule_id_for_row(product_id: str, label: str) -> str:
-    """Return a stable rule id for a row, creating variants where needed."""
-    norm = _norm(label)
-    if product_id == "alternative_payment_methods":
-        if any(_norm(m) in norm for m in _APM_SPECIAL_METHODS):
-            return "alternative_payment_methods_special"
-        return "alternative_payment_methods"
-    return product_id
+def _variant_id_for_row(product_id: str, label: str, methods: list[str]) -> str | None:
+    """Return a stable variant id for a row, if needed."""
+    if product_id != "alternative_payment_methods":
+        return None
+    if any(m in _APM_SPECIAL_METHOD_IDS for m in methods):
+        return "special"
+    if methods or "online" in _norm(label) and "bank" in _norm(label):
+        return "default"
+    return "default"
 
 
-def _conditions_for_row(product_id: str, label: str, table_category: str) -> dict[str, Any]:
+def _conditions_for_row(
+    product_id: str,
+    variant_id: str | None,
+    label: str,
+    methods: list[str] | None = None,
+) -> dict[str, Any]:
     """Return calculable conditions for a product rule based on the source row."""
     conditions: dict[str, Any] = {}
     if product_id == "nonprofit":
         conditions["merchant_approval_required"] = True
-    if product_id == "alternative_payment_methods_special":
-        conditions["payment_methods"] = [
-            "thai_online_bank_transfer",
-            "latvian_online_bank_transfer",
-            "lithuanian_online_bank_transfer",
-            "skrill",
-            "ovo_premium",
-            "gopay",
-            "blik_pay_later",
-            "kredivo",
-            "floa_pay",
-            "scalapay",
-        ]
-    if product_id == "alternative_payment_methods" and "online bank transfer" in _norm(label):
-        conditions["payment_methods"] = ["online_bank_transfer"]
+    if product_id == "alternative_payment_methods":
+        if methods is None:
+            methods, _ = _extract_apm_methods(label)
+        if methods:
+            conditions["payment_methods"] = sorted(methods)
     return conditions
 
 
@@ -1778,11 +2171,27 @@ def _resolve_reference(
     # References may be qualified with a product suffix, e.g. "online_card_payments.advanced".
     target_id: str
     if "." in reference:
-        _, suffix = reference.split(".", 1)
-        target_id = _REFERENCE_SUFFIX_TO_PRODUCT.get(suffix, suffix)
+        base, suffix = reference.split(".", 1)
+        suffix_product = _REFERENCE_SUFFIX_TO_PRODUCT.get(suffix)
+        # A qualified reference like "online_card_payments.advanced" points to the
+        # advanced card product variant, not to a generic online_card_payments rule.
+        target_id = suffix_product or _REFERENCE_SUFFIX_TO_PRODUCT.get(base, base)
     else:
         target_id = reference
 
+    # Find a concrete target rule. Prefer a generic/default variant (variant_id
+    # is None or the literal "default" string) because a bare reference like
+    # "alternative_payment_methods" should resolve to the default variant, not
+    # to a special variant.
+    for rule in rules:
+        if rule.id == target_id and rule.percentage is not None and rule.variant_id in (None, "default"):
+            return ResolvedRate(
+                percentage=rule.percentage,
+                fixed_fee_schedule=rule.fixed_fee_schedule,
+                international_surcharge_schedule=rule.international_surcharge_schedule,
+                source=rule.source,
+                rule_id=rule.id,
+            )
     for rule in rules:
         if rule.id == target_id and rule.percentage is not None:
             return ResolvedRate(
@@ -1790,6 +2199,7 @@ def _resolve_reference(
                 fixed_fee_schedule=rule.fixed_fee_schedule,
                 international_surcharge_schedule=rule.international_surcharge_schedule,
                 source=rule.source,
+                rule_id=rule.id,
             )
     # Fallback: find a rule whose label matches the reference product aliases.
     aliases = _PRODUCT_ALIASES.get(target_id, ())
@@ -1800,6 +2210,7 @@ def _resolve_reference(
                 fixed_fee_schedule=rule.fixed_fee_schedule,
                 international_surcharge_schedule=rule.international_surcharge_schedule,
                 source=rule.source,
+                rule_id=rule.id,
             )
     return None
 
@@ -1861,7 +2272,7 @@ def _parse_rate_expression(fee_text: str) -> tuple[str | None, str | None]:
 @dataclass(frozen=True)
 class _ExtractedRule:
     product_id: str
-    rule_id: str
+    variant_id: str | None
     label: str
     percentage: str | None
     fixed_fee_schedule: str | None
@@ -1871,23 +2282,32 @@ class _ExtractedRule:
     row: Row
     row_index: int
     reference: str | None = None
+    unknown_apm_methods: list[str] = field(default_factory=list)
 
 
 def _extract_rules_from_rate_table(
     table: Table,
     table_category: str,
     source: Source | None,
-) -> tuple[list[_ExtractedRule], list[UnclassifiedFeeRow], list[AmbiguousFeeRow]]:
+) -> tuple[list[_ExtractedRule], list[UnclassifiedFeeRow], list[AmbiguousFeeRow], list[UnclassifiedFeeRow]]:
     rules: list[_ExtractedRule] = []
     unclassified: list[UnclassifiedFeeRow] = []
     ambiguous: list[AmbiguousFeeRow] = []
-    default_schedule = _TABLE_CATEGORY_SCHEDULE.get(table_category, "commercial")
+    ignored: list[UnclassifiedFeeRow] = []
 
     default_product = _TABLE_CATEGORY_PRODUCT.get(table_category)
 
     for idx, row in enumerate(table.rows):
         label = _row_label(row)
         if not label:
+            ignored.append(
+                UnclassifiedFeeRow(
+                    normalized_cells=_row_cells_text(row),
+                    original_label=label,
+                    source=_provenance(table, row, idx, source, original_label=label),
+                    reason="empty label",
+                )
+            )
             continue
         # Pre-check: APM special method labels (Thai/Latvian/Lithuanian bank
         # transfer, Skrill, BLIK, Kredivo, etc.) are unambiguously APM even
@@ -1923,18 +2343,27 @@ def _extract_rules_from_rate_table(
                 )
                 continue
             else:
+                ignored.append(
+                    UnclassifiedFeeRow(
+                        normalized_cells=_row_cells_text(row),
+                        original_label=label,
+                        source=_provenance(table, row, idx, source, original_label=label),
+                        reason="no product alias and no rate",
+                    )
+                )
                 continue
         fee_text = _row_fee_cell(row)
         pct, _fixed = _parse_rate_expression(fee_text)
         reference = _detect_reference(row, product_id)
-        rule_id = _rule_id_for_row(product_id, label)
-        fixed_schedule = _fixed_fee_schedule_for(product_id, default_schedule)
-        intl_schedule = _international_surcharge_schedule_for(product_id, default_schedule)
-        conditions = _conditions_for_row(rule_id, label, table_category)
+        methods, unknown_methods = _extract_apm_methods(label)
+        variant_id = _variant_id_for_row(product_id, label, methods)
+        fixed_schedule = _fixed_fee_schedule_for(product_id)
+        intl_schedule = _international_surcharge_schedule_for(product_id)
+        conditions = _conditions_for_row(product_id, variant_id, label, methods=methods)
         rules.append(
             _ExtractedRule(
                 product_id=product_id,
-                rule_id=rule_id,
+                variant_id=variant_id,
                 label=label,
                 percentage=pct,
                 fixed_fee_schedule=fixed_schedule,
@@ -1944,53 +2373,92 @@ def _extract_rules_from_rate_table(
                 row=row,
                 row_index=idx,
                 reference=reference,
+                unknown_apm_methods=unknown_methods,
             )
         )
-    return rules, unclassified, ambiguous
+    return rules, unclassified, ambiguous, ignored
 
 
-def _fixed_fee_schedule_for(product_id: str, default: str) -> str | None:
+# Maps a product to the fixed-fee schedule it uses. The target schedule may be
+# the product's own schedule (e.g. goods_and_services) or an inherited schedule
+# (e.g. paypal_checkout -> commercial). None means the product has no fixed fee.
+_FIXED_FEE_SCHEDULE_FOR: dict[str, str | None] = {
+    "paypal_checkout": "commercial",
+    "goods_and_services": "goods_and_services",
+    "online_card_payments": "online_card_payments",
+    "advanced_card_payments": "online_card_payments",
+    "other_commercial": "commercial",
+    "guest_checkout": "commercial",
+    "invoice_pay_later": "commercial",
+    "pay_later_consumer": "commercial",
+    "qr_code_payments": None,
+    "donations": "donations",
+    "nonprofit": "nonprofit",
+    "micropayments": "micropayments",
+    "alternative_payment_methods": "alternative_payment_methods",
+    "pos_transactions": None,
+    "chargebacks": None,
+    "refunds": None,
+    "disputes": None,
+    "card_verification": None,
+    "currency_conversion": None,
+    "withdrawals": None,
+}
+
+# Subset of _FIXED_FEE_SCHEDULE_FOR that represents explicit inheritance.
+_FIXED_FEE_INHERITANCE: dict[str, str] = {
+    "paypal_checkout": "commercial",
+    "other_commercial": "commercial",
+    "guest_checkout": "commercial",
+    "invoice_pay_later": "commercial",
+    "pay_later_consumer": "commercial",
+    "advanced_card_payments": "online_card_payments",
+}
+
+
+def _fixed_fee_schedule_for(product_id: str) -> str | None:
     """Return the fixed-fee schedule name for a product, or None if no fixed fee applies."""
-    overrides = {
-        "goods_and_services": "goods_and_services",
-        "donations": "donations",
-        "nonprofit": "nonprofit",
-        "micropayments": "micropayments",
-        "alternative_payment_methods": "alternative_payment_methods",
-        "advanced_card_payments": "online_card_payments",
-        "pay_later_consumer": "commercial",
-        "pos_transactions": None,
-        "qr_code_payments": None,
-        "guest_checkout": "commercial",
-        "invoice_pay_later": "commercial",
-        "other_commercial": "commercial",
-        "paypal_checkout": "commercial",
-    }
-    return overrides.get(product_id, default)
+    return _FIXED_FEE_SCHEDULE_FOR.get(product_id)
 
 
-def _international_surcharge_schedule_for(product_id: str, default: str) -> str | None:
-    """Return the international surcharge schedule name for a product, or None.
+# Same as above for international surcharge schedules.
+_INTERNATIONAL_SURCHARGE_SCHEDULE_FOR: dict[str, str | None] = {
+    "paypal_checkout": "commercial",
+    "goods_and_services": "goods_and_services",
+    "online_card_payments": "online_card_payments",
+    "advanced_card_payments": "commercial",
+    "other_commercial": "commercial",
+    "guest_checkout": "commercial",
+    "invoice_pay_later": "commercial",
+    "pay_later_consumer": "commercial",
+    "qr_code_payments": "commercial",
+    "donations": "donations",
+    "nonprofit": "nonprofit",
+    "micropayments": None,
+    "alternative_payment_methods": None,
+    "pos_transactions": None,
+    "chargebacks": None,
+    "refunds": None,
+    "disputes": None,
+    "card_verification": None,
+    "currency_conversion": None,
+    "withdrawals": None,
+}
 
-    Many products inherit the general commercial schedule; some have their own;
-    a few (e.g. QR-code, APM) do not define a separate international surcharge.
-    """
-    overrides = {
-        "goods_and_services": "goods_and_services",
-        "donations": "donations",
-        "nonprofit": "nonprofit",
-        "advanced_card_payments": "commercial",
-        "pay_later_consumer": "commercial",
-        "alternative_payment_methods": None,
-        "micropayments": None,
-        "pos_transactions": None,
-        "qr_code_payments": "commercial",
-        "guest_checkout": "commercial",
-        "invoice_pay_later": "commercial",
-        "other_commercial": "commercial",
-        "paypal_checkout": "commercial",
-    }
-    return overrides.get(product_id, default)
+_INTERNATIONAL_SURCHARGE_INHERITANCE: dict[str, str] = {
+    "paypal_checkout": "commercial",
+    "other_commercial": "commercial",
+    "advanced_card_payments": "commercial",
+    "guest_checkout": "commercial",
+    "invoice_pay_later": "commercial",
+    "pay_later_consumer": "commercial",
+    "qr_code_payments": "commercial",
+}
+
+
+def _international_surcharge_schedule_for(product_id: str) -> str | None:
+    """Return the international surcharge schedule name for a product, or None."""
+    return _INTERNATIONAL_SURCHARGE_SCHEDULE_FOR.get(product_id)
 
 
 # ---------------------------------------------------------------------------
@@ -2001,16 +2469,18 @@ def _international_surcharge_schedule_for(product_id: str, default: str) -> str 
 def _collect_schedules(
     tables: list[Table],
     source: Source | None = None,
-) -> tuple[dict[str, FixedFeeSchedule], dict[str, InternationalSurchargeSchedule]]:
+) -> tuple[dict[str, FixedFeeSchedule], dict[str, InternationalSurchargeSchedule], list[Diagnostic]]:
     """Extract fixed-fee and international-surcharge schedules.
 
     Schedules are keyed by product name.  If two tables map to the same product
     (e.g. "Fixed fee by received currency" and "Currency fixed fees" both for
     commercial), their entries are merged and sources are combined.  Conflicting
-    duplicate keys are resolved by keeping the first encountered value.
+    duplicate keys are reported as diagnostics and the first encountered value
+    is kept.
     """
     fixed: dict[str, FixedFeeSchedule] = {}
     international: dict[str, InternationalSurchargeSchedule] = {}
+    diagnostics: list[Diagnostic] = []
 
     for table in tables:
         category = _classify_table_category(table)
@@ -2021,11 +2491,26 @@ def _collect_schedules(
                 existing = fixed.get(name)
                 if existing:
                     merged_entries = dict(existing.entries)
-                    merged_entries.update(schedule.entries)
                     merged_sources = list(existing.sources)
                     for s in schedule.sources:
                         if s not in merged_sources:
                             merged_sources.append(s)
+                    for currency, amount in schedule.entries.items():
+                        if currency in merged_entries:
+                            if merged_entries[currency] != amount:
+                                diagnostics.append(
+                                    Diagnostic(
+                                        type="conflicting_schedule_entry",
+                                        schedule_type="fixed_fee",
+                                        schedule_id=name,
+                                        normalized_key=currency,
+                                        values=[merged_entries[currency], amount],
+                                        sources=_merge_provenance_sources(existing.sources, schedule.sources),
+                                    )
+                                )
+                            # Keep first value; do not overwrite.
+                        else:
+                            merged_entries[currency] = amount
                     fixed[name] = FixedFeeSchedule(entries=merged_entries, sources=merged_sources)
                 else:
                     fixed[name] = schedule
@@ -2036,19 +2521,45 @@ def _collect_schedules(
                 existing = international.get(name)
                 if existing:
                     merged_entries = list(existing.entries)
-                    seen = {e.payer_region for e in merged_entries}
-                    for e in schedule.entries:
-                        if e.payer_region not in seen:
-                            merged_entries.append(e)
-                            seen.add(e.payer_region)
+                    seen = {e.payer_region: e for e in merged_entries}
                     merged_sources = list(existing.sources)
                     for s in schedule.sources:
                         if s not in merged_sources:
                             merged_sources.append(s)
+                    for entry in schedule.entries:
+                        if entry.payer_region in seen:
+                            if seen[entry.payer_region].percentage_points != entry.percentage_points:
+                                diagnostics.append(
+                                    Diagnostic(
+                                        type="conflicting_schedule_entry",
+                                        schedule_type="international_surcharge",
+                                        schedule_id=name,
+                                        normalized_key=entry.payer_region,
+                                        values=[
+                                            seen[entry.payer_region].percentage_points or "",
+                                            entry.percentage_points or "",
+                                        ],
+                                        sources=_merge_provenance_sources(existing.sources, schedule.sources),
+                                    )
+                                )
+                            # Keep first value; do not overwrite.
+                        else:
+                            merged_entries.append(entry)
+                            seen[entry.payer_region] = entry
                     international[name] = InternationalSurchargeSchedule(entries=merged_entries, sources=merged_sources)
                 else:
                     international[name] = schedule
-    return fixed, international
+    return fixed, international, diagnostics
+
+
+def _merge_provenance_sources(*source_lists: list[Provenance]) -> list[Provenance]:
+    """Combine multiple provenance lists without duplicates."""
+    merged: list[Provenance] = []
+    for sources in source_lists:
+        for s in sources:
+            if s not in merged:
+                merged.append(s)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -2060,18 +2571,164 @@ def _derive_status(
     rules: list[TransactionFeeRule],
     unclassified: list[UnclassifiedFeeRow],
     ambiguous: list[AmbiguousFeeRow],
+    ignored: list[UnclassifiedFeeRow],
+    diagnostics: list[Diagnostic],
     fixed_schedules: dict[str, FixedFeeSchedule],
     international_schedules: dict[str, InternationalSurchargeSchedule],
 ) -> str:
-    if not rules:
+    if not rules and not fixed_schedules and not international_schedules:
         return "unclassified"
-    if ambiguous or unclassified:
+    if ambiguous or unclassified or ignored:
+        return "partial"
+    # Any diagnostic indicates the classification is not fully trustworthy.
+    if diagnostics:
         return "partial"
     # A complete result should expose the core commercial rules for a market.
     has_commercial = any(r.id in {"paypal_checkout", "goods_and_services", "other_commercial"} for r in rules)
     if has_commercial and bool(fixed_schedules):
         return "complete"
     return "partial"
+
+
+def _rule_identity(rule: TransactionFeeRule) -> str:
+    """Return a stable identity key for deduplicating equivalent rules.
+
+    The identity covers product family, variant, percentage, applicable
+    conditions and the schedule references that determine which fee table is
+    used. The source provenance and the concrete rate reference object are
+    intentionally excluded so that a source row that references a target and
+    the target row itself can be merged into one rule.
+    """
+    return json.dumps(
+        {
+            "id": rule.id,
+            "variant_id": rule.variant_id,
+            "percentage": str(rule.percentage) if rule.percentage is not None else None,
+            "conditions": {k: rule.conditions[k] for k in sorted(rule.conditions)} if rule.conditions else {},
+            "fixed_fee_schedule": rule.fixed_fee_schedule,
+            "international_surcharge_schedule": rule.international_surcharge_schedule,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+
+
+def _rule_has_rate(rule: TransactionFeeRule) -> bool:
+    """Return True if the rule carries a directly usable percentage."""
+    return bool(rule.percentage is not None or (rule.rate_reference is not None and rule.rate_reference.resolved_rate is not None))
+
+
+def _is_reference_source(rule: TransactionFeeRule) -> bool:
+    """Return True if the rule is a reference that resolves to another rule."""
+    return bool(rule.rate_reference is not None and rule.rate_reference.resolved_rate is not None)
+
+
+def _deduplicate_rules(
+    rules: list[TransactionFeeRule],
+    diagnostics: list[Diagnostic] | None = None,
+) -> list[TransactionFeeRule]:
+    """Merge equivalent rules, preserving variants and preferring resolved references.
+
+    Rules are equivalent when their product family, variant, conditions and
+    schedule references are identical. Within an equivalence group we prefer:
+    1. a rule with a usable rate (or a resolved reference), and
+    2. a rule that carries a reference (because it ties the source and target
+       together), then
+    3. the first rule in source order.
+    """
+    groups: dict[str, list[tuple[int, TransactionFeeRule]]] = {}
+    for idx, rule in enumerate(rules):
+        groups.setdefault(_rule_identity(rule), []).append((idx, rule))
+
+    selected: list[TransactionFeeRule] = []
+    for group in groups.values():
+        group.sort(
+            key=lambda item: (
+                0 if _rule_has_rate(item[1]) else 1,
+                # Prefer a source row that carries a resolved reference so the
+                # reference is preserved in the final output.
+                0 if _is_reference_source(item[1]) else 1,
+                item[0],
+            )
+        )
+        selected.append(group[0][1])
+    # Preserve original source order when possible.
+    selected.sort(key=lambda r: next((i for i, rule in enumerate(rules) if rule is r), 0))
+    return selected
+
+
+def _rule_sort_key(rule: TransactionFeeRule) -> tuple[int, str | None, str, str | None]:
+    order = {pid: idx for idx, pid in enumerate(_PRODUCT_ORDER)}
+    return (
+        order.get(rule.id, 999),
+        rule.variant_id or "",
+        _canonical_json(rule.conditions),
+        rule.label or "",
+    )
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False)
+
+
+def _build_coverage_summary(
+    rules: list[TransactionFeeRule],
+    unresolved_rules: list[TransactionFeeRule],
+    fixed_schedules: dict[str, FixedFeeSchedule],
+    international_schedules: dict[str, InternationalSurchargeSchedule],
+    ignored_rows: list[UnclassifiedFeeRow],
+    unclassified_rows: list[UnclassifiedFeeRow],
+    ambiguous_rows: list[AmbiguousFeeRow],
+    diagnostics: list[Diagnostic],
+    extracted_rules: list[_ExtractedRule],
+) -> CoverageSummary:
+    """Compute the classification coverage summary."""
+    fixed_fee_entries = sum(len(s.entries) for s in fixed_schedules.values())
+    intl_entries = sum(len(s.entries) for s in international_schedules.values())
+    reference_sources = sum(1 for e in extracted_rules if e.reference)
+    # Count targets from all resolved references, including the ones that are
+    # deduplicated away in the final transaction rule list.
+    reference_target_ids = {
+        r.rate_reference.resolved_rate.rule_id
+        for r in unresolved_rules
+        if r.rate_reference and r.rate_reference.resolved_rate and r.rate_reference.resolved_rate.rule_id
+    }
+    conflicts = sum(1 for d in diagnostics if d.type == "conflicting_schedule_entry")
+    missing_schedules = sum(1 for d in diagnostics if d.type == "missing_required_schedule")
+    unresolved_references = sum(1 for d in diagnostics if d.type == "unresolved_reference")
+    unknown_apm = sum(1 for d in diagnostics if d.type == "unknown_apm_method")
+    extracted_apm = sum(
+        len(e.conditions.get("payment_methods", []))
+        for e in extracted_rules
+        if e.product_id == "alternative_payment_methods"
+    )
+
+    inherited = 0
+    for rule in rules:
+        if rule.fixed_fee_schedule and rule.fixed_fee_schedule in _FIXED_FEE_INHERITANCE:
+            inherited += 1
+        if (
+            rule.international_surcharge_schedule
+            and rule.international_surcharge_schedule in _INTERNATIONAL_SURCHARGE_INHERITANCE
+        ):
+            inherited += 1
+
+    return CoverageSummary(
+        transaction_rules=len(rules),
+        fixed_fee_entries=fixed_fee_entries,
+        international_surcharge_entries=intl_entries,
+        reference_sources=reference_sources,
+        reference_targets=len(reference_target_ids),
+        ignored=len(ignored_rows),
+        unclassified=len(unclassified_rows),
+        ambiguous=len(ambiguous_rows),
+        conflicts=conflicts,
+        missing_required_schedules=missing_schedules,
+        inherited_schedules=inherited,
+        unresolved_references=unresolved_references,
+        extracted_apm_methods=extracted_apm,
+        unknown_apm_methods=unknown_apm,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2081,11 +2738,15 @@ def _derive_status(
 
 def classify_tables(tables: list[Table], source: Source | None = None) -> DerivedFeeResult:
     """Derive product-specific transaction fee rules from normalized tables."""
-    fixed_schedules, international_schedules = _collect_schedules(tables, source=source)
+    fixed_schedules, international_schedules, schedule_diagnostics = _collect_schedules(
+        tables, source=source
+    )
+    diagnostics: list[Diagnostic] = list(schedule_diagnostics)
 
     extracted_rules: list[_ExtractedRule] = []
     unclassified_rows: list[UnclassifiedFeeRow] = []
     ambiguous_rows: list[AmbiguousFeeRow] = []
+    ignored_rows: list[UnclassifiedFeeRow] = []
 
     for table in tables:
         category = _classify_table_category(table)
@@ -2099,106 +2760,139 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
             "pos_rate_table",
             "micropayment_rate_table",
         }:
-            rules, uncls, ambig = _extract_rules_from_rate_table(table, category, source)
+            rules, uncls, ambig, ignored = _extract_rules_from_rate_table(table, category, source)
             extracted_rules.extend(rules)
             unclassified_rows.extend(uncls)
             ambiguous_rows.extend(ambig)
+            ignored_rows.extend(ignored)
 
     # First pass: build TransactionFeeRule objects without resolving references so
     # that all candidate target rules exist for the second pass.
     unresolved_rules: list[TransactionFeeRule] = []
     for extracted in extracted_rules:
+        prov = _provenance(
+            extracted.table,
+            extracted.row,
+            extracted.row_index,
+            source,
+            original_label=extracted.label,
+        )
         unresolved_rules.append(
             TransactionFeeRule(
-                id=extracted.rule_id,
+                id=extracted.product_id,
+                variant_id=extracted.variant_id,
                 label=extracted.label,
                 percentage=extracted.percentage,
                 fixed_fee_schedule=extracted.fixed_fee_schedule,
                 international_surcharge_schedule=extracted.international_surcharge_schedule,
                 conditions=extracted.conditions,
                 rate_reference=None,
-                source=_provenance(
-                    extracted.table,
-                    extracted.row,
-                    extracted.row_index,
-                    source,
-                    original_label=extracted.label,
-                ),
+                source=prov,
             )
         )
+        for unknown in extracted.unknown_apm_methods or []:
+            # Only emit APM diagnostics for rows that are actually classified as
+            # alternative payment methods; other product rows may split into
+            # unrecognised tokens but are not APM source rows.
+            if extracted.product_id != "alternative_payment_methods":
+                continue
+            diagnostics.append(
+                Diagnostic(
+                    type="unknown_apm_method",
+                    rule_id=extracted.product_id,
+                    payment_method=unknown,
+                    label=extracted.label,
+                    sources=[prov],
+                )
+            )
 
     # Second pass: resolve textual references against all collected rules.
-    for extracted in extracted_rules:
+    for i, extracted in enumerate(extracted_rules):
         if not extracted.reference:
             continue
-        # Update the matching rule with the resolved reference.
-        for rule in unresolved_rules:
-            if rule.source == _provenance(
-                extracted.table,
-                extracted.row,
-                extracted.row_index,
-                source,
-                original_label=extracted.label,
-            ):
-                resolved = _resolve_reference(extracted.reference, unresolved_rules)
-                percentage = rule.percentage
-                if resolved and resolved.percentage and percentage is None:
-                    percentage = resolved.percentage
-                new_rule = rule.model_copy(
-                    update={
-                        "rate_reference": RateReference(
-                            reference=extracted.reference,
-                            resolved_rate=resolved,
-                            source=_provenance(
-                                extracted.table,
-                                extracted.row,
-                                extracted.row_index,
-                                source,
-                                original_label=extracted.label,
-                            ),
-                        ),
-                        "percentage": percentage,
-                    }
+        rule = unresolved_rules[i]
+        resolved = _resolve_reference(extracted.reference, unresolved_rules)
+        if resolved:
+            percentage = rule.percentage
+            if resolved.percentage and percentage is None:
+                percentage = resolved.percentage
+            unresolved_rules[i] = rule.model_copy(
+                update={
+                    "rate_reference": RateReference(
+                        reference=extracted.reference,
+                        resolved_rate=resolved,
+                        source=rule.source,
+                    ),
+                    "percentage": percentage,
+                }
+            )
+        else:
+            diagnostics.append(
+                Diagnostic(
+                    type="unresolved_reference",
+                    rule_id=rule.id,
+                    label=extracted.label,
+                    sources=[rule.source] if rule.source else [],
                 )
-                idx = unresolved_rules.index(rule)
-                unresolved_rules[idx] = new_rule
-                break
+            )
 
-    # Resolve any dangling schedule references by falling back to the general
-    # commercial schedule when a product-specific schedule is missing, or clear
-    # the reference when no commercial schedule exists.  This keeps models with
-    # incomplete source tables (e.g. test fixtures) valid and avoids emitting
-    # dangling references for markets that do not publish a separate surcharge
-    # schedule.
+    # Validate schedule references. Missing schedules are reported as diagnostics
+    # and the dangling reference is cleared; there is no implicit fallback to a
+    # different schedule family.
     for idx, rule in enumerate(unresolved_rules):
-        if rule.fixed_fee_schedule and rule.fixed_fee_schedule not in fixed_schedules:
-            if "commercial" in fixed_schedules:
-                rule = rule.model_copy(update={"fixed_fee_schedule": "commercial"})
+        if rule.fixed_fee_schedule:
+            if rule.fixed_fee_schedule in fixed_schedules:
+                if rule.fixed_fee_schedule in _FIXED_FEE_INHERITANCE:
+                    diagnostics.append(
+                        Diagnostic(
+                            type="inherited_schedule",
+                            rule_id=rule.id,
+                            schedule_type="fixed_fee",
+                            expected_schedule=rule.fixed_fee_schedule,
+                            inherited_from=_FIXED_FEE_INHERITANCE[rule.fixed_fee_schedule],
+                            sources=[rule.source] if rule.source else [],
+                        )
+                    )
             else:
+                diagnostics.append(
+                    Diagnostic(
+                        type="missing_required_schedule",
+                        rule_id=rule.id,
+                        schedule_type="fixed_fee",
+                        expected_schedule=rule.fixed_fee_schedule,
+                        sources=[rule.source] if rule.source else [],
+                    )
+                )
                 rule = rule.model_copy(update={"fixed_fee_schedule": None})
-        if (
-            rule.international_surcharge_schedule
-            and rule.international_surcharge_schedule not in international_schedules
-        ):
-            if "commercial" in international_schedules:
-                rule = rule.model_copy(update={"international_surcharge_schedule": "commercial"})
+        if rule.international_surcharge_schedule:
+            if rule.international_surcharge_schedule in international_schedules:
+                if rule.international_surcharge_schedule in _INTERNATIONAL_SURCHARGE_INHERITANCE:
+                    diagnostics.append(
+                        Diagnostic(
+                            type="inherited_schedule",
+                            rule_id=rule.id,
+                            schedule_type="international_surcharge",
+                            expected_schedule=rule.international_surcharge_schedule,
+                            inherited_from=_INTERNATIONAL_SURCHARGE_INHERITANCE[rule.international_surcharge_schedule],
+                            sources=[rule.source] if rule.source else [],
+                        )
+                    )
             else:
+                diagnostics.append(
+                    Diagnostic(
+                        type="missing_required_schedule",
+                        rule_id=rule.id,
+                        schedule_type="international_surcharge",
+                        expected_schedule=rule.international_surcharge_schedule,
+                        sources=[rule.source] if rule.source else [],
+                    )
+                )
                 rule = rule.model_copy(update={"international_surcharge_schedule": None})
         unresolved_rules[idx] = rule
 
-    # Deduplicate by product id: prefer the first rule with a rate (or reference),
-    # which for Germany is typically the commercial rate-table row.
-    seen_ids: set[str] = set()
-    transaction_rules: list[TransactionFeeRule] = []
-    for rule in unresolved_rules:
-        if rule.id in seen_ids:
-            continue
-        seen_ids.add(rule.id)
-        transaction_rules.append(rule)
-
-    # Stable ordering: by product ID order, then by label.
-    order = {pid: idx for idx, pid in enumerate(_PRODUCT_ORDER)}
-    transaction_rules.sort(key=lambda r: (order.get(r.id, 999), r.label or ""))
+    # Merge equivalent rules and preserve legitimate variants.
+    transaction_rules = _deduplicate_rules(unresolved_rules)
+    transaction_rules.sort(key=_rule_sort_key)
 
     # Currency conversion.
     currency_conversion = None
@@ -2212,10 +2906,24 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
             if currency_conversion:
                 break
 
+    coverage = _build_coverage_summary(
+        transaction_rules,
+        unresolved_rules,
+        fixed_schedules,
+        international_schedules,
+        ignored_rows,
+        unclassified_rows,
+        ambiguous_rows,
+        diagnostics,
+        extracted_rules,
+    )
+
     status = _derive_status(
         transaction_rules,
         unclassified_rows,
         ambiguous_rows,
+        ignored_rows,
+        diagnostics,
         fixed_schedules,
         international_schedules,
     )
@@ -2228,4 +2936,7 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
         currency_conversion=currency_conversion,
         unclassified_fee_rows=unclassified_rows,
         ambiguous_rows=ambiguous_rows,
+        ignored_rows=ignored_rows,
+        diagnostics=diagnostics,
+        coverage_summary=coverage,
     )

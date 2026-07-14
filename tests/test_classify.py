@@ -107,6 +107,31 @@ def test_classify_real_germany_fixture() -> None:
     assert result.international_surcharge_schedules
     assert result.status in {"complete", "partial"}
 
+    # Advanced card payments should reference the online card schedule and use
+    # the commercial international surcharge schedule.
+    advanced = next(r for r in result.transaction_fee_rules if r.id == "advanced_card_payments")
+    assert advanced.percentage == "2.99"
+    assert advanced.fixed_fee_schedule == "online_card_payments"
+    assert advanced.international_surcharge_schedule == "commercial"
+    assert advanced.rate_reference is not None
+    assert advanced.rate_reference.resolved_rate is not None
+    assert advanced.rate_reference.resolved_rate.percentage == "2.99"
+
+    # APM default/special variants should both be present.
+    apm_rules = {r.variant_id: r for r in result.transaction_fee_rules if r.id == "alternative_payment_methods"}
+    assert "default" in apm_rules
+    assert "special" in apm_rules
+    assert apm_rules["default"].percentage == "2.99"
+    assert apm_rules["special"].percentage == "5.49"
+    assert apm_rules["special"].conditions.get("payment_methods") == [
+        "gopay",
+        "latvian_online_bank_transfer",
+        "lithuanian_online_bank_transfer",
+        "ovo_premium",
+        "skrill",
+        "thai_online_bank_transfer",
+    ]
+
 
 def test_nacionales_keyword_does_not_match_internacionales() -> None:
     # "internacionales" (international) contains the substring "nacionales" but

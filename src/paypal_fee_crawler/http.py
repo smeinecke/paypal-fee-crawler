@@ -98,47 +98,52 @@ class HttpClient:
         self.config = config or CrawlConfiguration()
         self._semaphore = asyncio.Semaphore(self.config.max_workers)
         self._client: httpx.AsyncClient | None = None
-        self._lock = asyncio.Lock()
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        async with self._lock:
-            if self._client is None or self._client.is_closed:
-                timeout = httpx.Timeout(
-                    connect=self.config.connect_timeout,
-                    read=self.config.read_timeout,
-                    write=10.0,
-                    pool=10.0,
-                )
-                self._client = httpx.AsyncClient(
-                    timeout=timeout,
-                    follow_redirects=True,
-                    cookies=None,
-                    headers={
-                        "User-Agent": self.config.user_agent or DEFAULT_USER_AGENT,
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Accept-Language": "en-US,en;q=0.5",
-                        # PayPal's edge cache returns a pre-rendered, CMS-free page when the
-                        # client advertises compression support. Requesting identity encoding
-                        # ensures the dynamic origin page with the CMS context is served.
-                        "Accept-Encoding": "identity",
-                        "DNT": "1",
-                        "Connection": "keep-alive",
-                        "Upgrade-Insecure-Requests": "1",
-                    },
-                )
-            return self._client
+    def _client_headers(self) -> dict[str, str]:
+        return {
+            "User-Agent": self.config.user_agent or DEFAULT_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            # PayPal's edge cache returns a pre-rendered, CMS-free page when the
+            # client advertises compression support. Requesting identity encoding
+            # ensures the dynamic origin page with the CMS context is served.
+            "Accept-Encoding": "identity",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+        }
+
+    def _create_client(self) -> httpx.AsyncClient:
+        """Return a fresh, cookie-free client for a single request.
+
+        ``httpx.AsyncClient(cookies=None)`` still stores cookies received during
+        a request. By creating a new client for every request and closing it,
+        cookies can never leak between markets or between discovery and page
+        fetch steps.
+        """
+        timeout = httpx.Timeout(
+            connect=self.config.connect_timeout,
+            read=self.config.read_timeout,
+            write=10.0,
+            pool=10.0,
+        )
+        return httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            cookies=None,
+            headers=self._client_headers(),
+        )
 
     async def close(self) -> None:
-        async with self._lock:
-            if self._client is not None and not self._client.is_closed:
-                await self._client.aclose()
-                self._client = None
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     async def __aenter__(self) -> HttpClient:
         return self
 
     async def __aexit__(self, *_exc: Any) -> None:
-        await self.close()
+        return
 
     def _is_allowed_host(self, url: str) -> bool:
         host = urlparse(url).hostname or ""
@@ -309,18 +314,26 @@ class HttpClient:
             if cached.last_modified:
                 headers["If-Modified-Since"] = cached.last_modified
 
-        client = await self._get_client()
         last_error: Exception | None = None
         for attempt in range(self.config.max_retries + 1):
             try:
                 async with self._semaphore:
                     logger.debug("%s %s (attempt %d)", method, _sanitize_url(url), attempt + 1)
-                    response = await client.request(
-                        method,
-                        url,
-                        headers=headers,
-                        **kwargs,
-                    )
+                    if self._client is not None:
+                        response = await self._client.request(
+                            method,
+                            url,
+                            headers=headers,
+                            **kwargs,
+                        )
+                    else:
+                        async with self._create_client() as client:
+                            response = await client.request(
+                                method,
+                                url,
+                                headers=headers,
+                                **kwargs,
+                            )
                     # Check final URL after redirects
                     final_url = str(response.url)
                     if final_url != url:

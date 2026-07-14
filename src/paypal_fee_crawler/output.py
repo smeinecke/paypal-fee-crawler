@@ -10,7 +10,6 @@ import os
 import shutil
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -148,14 +147,8 @@ class OutputPublisher:
         return _country_output_hash(data)
 
     def _run_generated_at(self, outputs: dict[str, CountryOutput]) -> str | None:
-        """Return the latest source page update date, or the configured timestamp as fallback."""
-        values = [output.source.page_updated_at for output in outputs.values() if output.source.page_updated_at]
-        if not values:
-            return self.timestamp
-        try:
-            return max(values, key=lambda s: datetime.fromisoformat(s))
-        except ValueError:
-            return max(values)
+        """Return the configured run timestamp."""
+        return self.timestamp
 
     def _build_state_entry(
         self,
@@ -271,12 +264,19 @@ class OutputPublisher:
         for cc in sorted(outputs.keys()):
             output = outputs[cc]
             public = PublicCountryOutput.from_internal(output)
-            country_generated_at = output.source.page_updated_at or self.timestamp
-            public = public.model_copy(update={"generated_at": country_generated_at})
+            # generated_at and crawled_at are the run timestamp; source_updated_at
+            # and cms_updated_at are preserved from the source page.
+            run_timestamp = self.timestamp or output.generated_at
+            if run_timestamp:
+                public = public.model_copy(
+                    update={
+                        "generated_at": run_timestamp,
+                        "crawled_at": run_timestamp,
+                    }
+                )
 
             path = json_dir / f"{output.market.url_slug}.json"
             country_data = public.model_dump(mode="json", exclude_none=True)
-            country_data["generated_at"] = public.generated_at
             content_hash = self._compute_content_sha256(country_data)
             _write_json(path, country_data)
 
@@ -295,6 +295,7 @@ class OutputPublisher:
                     data_url=f"json/{output.market.url_slug}.json",
                     source_url=output.source.canonical_url or output.source.requested_url,
                     source_updated_at=output.source.page_updated_at,
+                    crawled_at=run_timestamp,
                     derived_status=output.derived.status,
                     content_sha256=content_hash,
                 )
@@ -314,12 +315,10 @@ class OutputPublisher:
 
         index = CountryIndex(generated_at=run_generated_at, countries=index_entries)
         index_data = index.model_dump(mode="json", exclude_none=True)
-        index_data["generated_at"] = index.generated_at
         _write_json(json_dir / "index.json", index_data)
 
         core_fees = CoreFees(generated_at=run_generated_at, countries=core_entries)
         core_data = core_fees.model_dump(mode="json", exclude_none=True)
-        core_data["generated_at"] = core_fees.generated_at
         _write_json(json_dir / "core-fees.json", core_data)
 
         manifest = CountryManifest(

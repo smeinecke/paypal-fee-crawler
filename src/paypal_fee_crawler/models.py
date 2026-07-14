@@ -260,6 +260,7 @@ class ResolvedRate(PublicModel):
     fixed_fee_schedule: str | None = None
     international_surcharge_schedule: str | None = None
     source: Provenance | None = None
+    rule_id: str | None = None
 
 
 class RateReference(PublicModel):
@@ -271,9 +272,16 @@ class RateReference(PublicModel):
 
 
 class TransactionFeeRule(PublicModel):
-    """A single product-specific transaction fee rule."""
+    """A single product-specific transaction fee rule.
+
+    ``id`` identifies the payment product family. ``variant_id`` distinguishes
+    multiple legitimate pricing variants for the same product (e.g. special
+    versus default alternative payment methods). Both fields participate in
+    the stable rule identity key.
+    """
 
     id: str
+    variant_id: str | None = None
     label: str | None = None
     percentage: str | None = None
     fixed_fee_schedule: str | None = None
@@ -301,6 +309,47 @@ class AmbiguousFeeRow(PublicModel):
     candidates: list[str] = Field(default_factory=list)
 
 
+class Diagnostic(PublicModel):
+    """A structured classifier diagnostic.
+
+    Diagnostics capture data-quality events such as missing schedules, schedule
+    conflicts, or unrecognized payment-method aliases. The meaning of a
+    diagnostic is determined by ``type``; only the relevant fields are populated.
+    """
+
+    type: str
+    rule_id: str | None = None
+    schedule_type: str | None = None
+    expected_schedule: str | None = None
+    schedule_id: str | None = None
+    normalized_key: str | None = None
+    values: list[str] | None = None
+    sources: list[Provenance] = Field(default_factory=list)
+    payment_method: str | None = None
+    label: str | None = None
+    message: str | None = None
+    inherited_from: str | None = None
+
+
+class CoverageSummary(PublicModel):
+    """Summary of how every source row was classified."""
+
+    transaction_rules: int = 0
+    fixed_fee_entries: int = 0
+    international_surcharge_entries: int = 0
+    reference_sources: int = 0
+    reference_targets: int = 0
+    ignored: int = 0
+    unclassified: int = 0
+    ambiguous: int = 0
+    conflicts: int = 0
+    missing_required_schedules: int = 0
+    inherited_schedules: int = 0
+    unresolved_references: int = 0
+    extracted_apm_methods: int = 0
+    unknown_apm_methods: int = 0
+
+
 class DerivedFeeResult(PublicModel):
     """Derived product-specific fee rules, schedules, and diagnostics."""
 
@@ -311,6 +360,9 @@ class DerivedFeeResult(PublicModel):
     currency_conversion: CurrencyConversion | None = None
     unclassified_fee_rows: list[UnclassifiedFeeRow] = Field(default_factory=list)
     ambiguous_rows: list[AmbiguousFeeRow] = Field(default_factory=list)
+    ignored_rows: list[UnclassifiedFeeRow] = Field(default_factory=list)
+    diagnostics: list[Diagnostic] = Field(default_factory=list)
+    coverage_summary: CoverageSummary | None = None
 
     @field_validator("status")
     @classmethod
@@ -383,6 +435,9 @@ class PublicCountryOutput(PublicModel):
 
     schema_version: int = 4
     generated_at: str | None = None
+    crawled_at: str | None = None
+    source_updated_at: str | None = None
+    cms_updated_at: str | None = None
     market: PublicMarket
     derived: DerivedFeeResult
 
@@ -391,6 +446,9 @@ class PublicCountryOutput(PublicModel):
         return cls(
             schema_version=4,
             generated_at=output.generated_at,
+            crawled_at=output.generated_at,
+            source_updated_at=output.source.page_updated_at,
+            cms_updated_at=output.source.cms_updated_at,
             market=PublicMarket.from_internal(output.market),
             derived=output.derived,
         )
@@ -443,6 +501,7 @@ class CountryIndexEntry(PublicModel):
     data_url: str
     source_url: str
     source_updated_at: str | None = None
+    crawled_at: str | None = None
     derived_status: str | None = None
     content_sha256: str | None = None
 
