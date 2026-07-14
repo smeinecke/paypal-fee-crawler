@@ -22,9 +22,9 @@ from paypal_fee_crawler.output import OutputPublisher
 from paypal_fee_crawler.validation import validate_all_output
 
 FIXTURES = Path(__file__).parent.parent / "tests" / "fixtures"
-OUTPUT_DIR = Path(__file__).parent.parent.parent / "paypal-fee-data"
+OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent
 
-BOOTSTRAP = {m.country_code: m for m in get_bootstrap_markets()}
+BOOTSTRAP = {m.paypal_market_code: m for m in get_bootstrap_markets()}
 
 
 def _build_output(code: str, html: str) -> CountryOutput:
@@ -35,7 +35,7 @@ def _build_output(code: str, html: str) -> CountryOutput:
 
     market = BOOTSTRAP.get(code.upper())
     if market is None:
-        market = Market(country_code=code.upper(), country_name=code.upper())
+        market = Market(paypal_market_code=code.upper(), iso_country_code=code.upper(), country_name=code.upper())
 
     source = Source(
         requested_url=f"https://www.paypal.com/{code.lower()}/business/paypal-business-fees",
