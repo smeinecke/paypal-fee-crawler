@@ -15,9 +15,7 @@ from .models import (
     CountryIndex,
     CountryManifest,
     CountryOutput,
-    DerivedFees,
     PublicCountryOutput,
-    PublicDerivedFees,
 )
 from .normalize import CURRENCY_CODES, normalize_decimal_string
 from .regression import _country_output_hash
@@ -40,10 +38,31 @@ def _validate_currency_codes(data: Any, errors: list[str]) -> None:
         for key, value in data.items():
             if key == "currency" and isinstance(value, str) and value.upper() not in CURRENCY_CODES:
                 errors.append(f"Invalid currency code: {value}")
+            # Fixed-fee schedules use currency codes as extra object keys.
+            if (
+                isinstance(value, str)
+                and len(key) == 3
+                and key.upper() not in CURRENCY_CODES
+                and key.lower() not in {"id", "eur", "usd"}
+            ):
+                # Heuristic: a 3-letter uppercase key inside a schedule dict.
+                pass
             _validate_currency_codes(value, errors)
     elif isinstance(data, list):
         for item in data:
             _validate_currency_codes(item, errors)
+
+
+def _validate_fixed_fee_schedules(derived: Any, label: str, errors: list[str]) -> None:
+    for schedule_name, schedule in derived.fixed_fee_schedules.items():
+        extras = schedule.model_extra or {}
+        for currency, amount in extras.items():
+            if currency.upper() not in CURRENCY_CODES:
+                errors.append(f"{label} fixed fee schedule {schedule_name} has invalid currency {currency}")
+            try:
+                normalize_decimal_string(amount)
+            except ValueError:
+                errors.append(f"{label} fixed fee schedule {schedule_name} has invalid amount {amount}")
 
 
 def _validate_table_plausibility(output: CountryOutput, errors: list[str]) -> None:
@@ -77,40 +96,46 @@ def _validate_table_plausibility(output: CountryOutput, errors: list[str]) -> No
                             errors.append(f"Implausible percentage: {token.raw}")
 
 
-def _complete_derived_errors(derived: DerivedFees | PublicDerivedFees, label: str) -> list[str]:
+def _complete_derived_errors(derived: Any, label: str) -> list[str]:
     """Return consistency errors for a ``complete`` derived-fee result.
 
-    This is the publication-time backstop for the classifier.  The classifier is
-    responsible for deciding whether a category is exposed by a page.  Once it
-    marks the result as complete, all standard core categories must be present
-    and internally consistent.
+    A complete result must expose at least the core commercial transaction rules
+    and have corresponding fixed-fee schedules.  Schedules referenced by rules
+    must exist and schedules must not contain duplicate regions.
     """
     if derived.status != "complete":
         return []
 
     errors: list[str] = []
-    if not derived.standard_commercial or not derived.standard_commercial.percentage:
-        errors.append(f"{label} marked complete without standard commercial percentage")
+    core_ids = {"paypal_checkout", "goods_and_services", "other_commercial"}
+    found_ids = {rule.id for rule in derived.transaction_fee_rules}
+    if not core_ids & found_ids:
+        errors.append(f"{label} marked complete without any core commercial transaction rule")
 
-    if not derived.commercial_fixed_fees:
-        errors.append(f"{label} marked complete without fixed fees")
-    fixed_currencies = [fee.currency for fee in derived.commercial_fixed_fees]
-    if len(fixed_currencies) != len(set(fixed_currencies)):
-        errors.append(f"{label} has duplicate fixed-fee currencies")
+    if not derived.fixed_fee_schedules:
+        errors.append(f"{label} marked complete without fixed-fee schedules")
 
-    if derived.international_surcharge_exposed and not derived.international_surcharges:
-        errors.append(f"{label} marked complete without international surcharges")
-    intl_regions = [surcharge.region for surcharge in derived.international_surcharges]
-    if len(intl_regions) != len(set(intl_regions)):
-        errors.append(f"{label} has duplicate international surcharge regions")
-    for surcharge in derived.international_surcharges:
-        if not surcharge.region or surcharge.percentage_points is None:
-            errors.append(f"{label} has incomplete international surcharge entry")
+    for rule in derived.transaction_fee_rules:
+        if rule.fixed_fee_schedule and rule.fixed_fee_schedule not in derived.fixed_fee_schedules:
+            errors.append(
+                f"{label} rule {rule.id} references missing fixed-fee schedule {rule.fixed_fee_schedule}"
+            )
+        if (
+            rule.international_surcharge_schedule
+            and rule.international_surcharge_schedule not in derived.international_surcharge_schedules
+        ):
+            errors.append(
+                f"{label} rule {rule.id} references missing international surcharge schedule "
+                f"{rule.international_surcharge_schedule}"
+            )
 
-    if derived.currency_conversion_exposed and (
-        not derived.currency_conversion or not derived.currency_conversion.spread_percentage
-    ):
-        errors.append(f"{label} marked complete without currency conversion spread")
+    for schedule_name, schedule in derived.international_surcharge_schedules.items():
+        regions = [entry.payer_region for entry in schedule.entries]
+        if len(regions) != len(set(regions)):
+            errors.append(f"{label} international surcharge schedule {schedule_name} has duplicate regions")
+        for entry in schedule.entries:
+            if not entry.payer_region:
+                errors.append(f"{label} international surcharge schedule {schedule_name} has entry without region")
 
     return errors
 
@@ -204,7 +229,7 @@ def generate_country_schema() -> dict[str, Any]:
     """Generate the JSON schema for per-country output."""
     schema = PublicCountryOutput.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/paypal-fees-v3.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/paypal-fees-v4.schema.json"
     return schema
 
 
@@ -212,7 +237,7 @@ def generate_core_fees_schema() -> dict[str, Any]:
     """Generate the JSON schema for the consolidated core fees file."""
     schema = CoreFees.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/core-fees-v3.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/core-fees-v4.schema.json"
     return schema
 
 
@@ -220,7 +245,7 @@ def generate_index_schema() -> dict[str, Any]:
     """Generate the JSON schema for the country index file."""
     schema = CountryIndex.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/index-v3.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/index-v4.schema.json"
     return schema
 
 
@@ -228,7 +253,7 @@ def generate_manifest_schema() -> dict[str, Any]:
     """Generate the JSON schema for the country manifest file."""
     schema = CountryManifest.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/manifest-v3.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/manifest-v4.schema.json"
     return schema
 
 
@@ -311,10 +336,10 @@ def _validate_required_files(root: Path) -> list[str]:
 
 def _validate_schema_files(root: Path) -> list[str]:
     schema_files = [
-        "paypal-fees-v3.schema.json",
-        "core-fees-v3.schema.json",
-        "index-v3.schema.json",
-        "manifest-v3.schema.json",
+        "paypal-fees-v4.schema.json",
+        "core-fees-v4.schema.json",
+        "index-v4.schema.json",
+        "manifest-v4.schema.json",
     ]
     errors: list[str] = []
     for name in schema_files:
@@ -415,9 +440,7 @@ def _validate_country_file(
     if country_errors:
         errors.append(f"{path}: " + "; ".join(country_errors))
 
-    currencies = [fee.currency for fee in country.derived.commercial_fixed_fees]
-    if len(currencies) != len(set(currencies)):
-        errors.append(f"Duplicate fixed-fee currency entries for {cc}")
+    _validate_fixed_fee_schedules(country.derived, str(cc), errors)
 
 
 def _validate_index_country_consistency(

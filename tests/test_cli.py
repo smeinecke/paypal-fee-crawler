@@ -11,8 +11,6 @@ from click.testing import CliRunner
 
 from paypal_fee_crawler.cli import main
 from paypal_fee_crawler.http import HttpClient, HttpResponse
-from paypal_fee_crawler.models import Cell, CountryOutput, Market, Row, Source, Table
-from paypal_fee_crawler.pricing_tokens import tokenize_text
 
 
 def test_cli_help() -> None:
@@ -141,46 +139,6 @@ def test_cli_crawl_command(tmp_path: Path) -> None:
     assert (tmp_path / "json" / "us.json").exists()
 
 
-def test_cli_crawl_command_shadow_mode(tmp_path: Path) -> None:
-    runner = CliRunner()
-    with patch.object(HttpClient, "get", _fake_http_get):
-        result = runner.invoke(
-            main,
-            [
-                "crawl",
-                "--output",
-                str(tmp_path),
-                "--country",
-                "DE",
-                "--request-delay",
-                "0",
-                "--max-workers",
-                "1",
-                "--classifier-mode",
-                "shadow",
-            ],
-        )
-    assert result.exit_code in (0, 1), result.output
-    assert (tmp_path / "json" / "de.json").exists()
-    assert (tmp_path / "meta" / "classification-shadow.json").exists()
-
-
-def test_cli_promote_classifiers_gold_passes(tmp_path: Path) -> None:
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        [
-            "promote-classifiers",
-            str(Path(__file__).parent / "fixtures" / "corpus" / "gold"),
-            "--output",
-            str(tmp_path),
-            "--no-tests",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert (tmp_path / "promotion-report.json").exists()
-
-
 def test_cli_crawl_command_fail_on_warning(tmp_path: Path) -> None:
     runner = CliRunner()
     with patch.object(HttpClient, "get", _fake_http_get):
@@ -202,67 +160,3 @@ def test_cli_crawl_command_fail_on_warning(tmp_path: Path) -> None:
     # The exit code depends on whether the fixture produces parser warnings.
     assert result.exit_code in (0, 1, 2), result.output
 
-
-def test_cli_compare_classifiers(tmp_path: Path) -> None:
-    table = Table(
-        table_id="table-1",
-        component_type="FeeTable",
-        document_id="FEETB001",
-        component_id="c-1",
-        caption="Commercial fees",
-        section_path=["Fees"],
-        parent_path=["Fees"],
-        source_order=0,
-        column_count=2,
-        headers=[],
-        rows=[
-            Row(
-                row_id="r1",
-                cells=[
-                    Cell(text="Commercial", tokens=tokenize_text("Commercial")),
-                    Cell(text="2.99% + 0.39 EUR", tokens=tokenize_text("2.99% + 0.39 EUR")),
-                ],
-            )
-        ],
-    )
-    country = CountryOutput(
-        schema_version=1,
-        market=Market(
-            paypal_market_code="DE",
-            country_name="Germany",
-            iso_country_code="DE",
-            locale="de_DE",
-        ),
-        source=Source(requested_url="https://example.com/de"),
-        tables=[table],
-    )
-    diagnostics_dir = tmp_path / "diagnostics"
-    diagnostics_dir.mkdir()
-    (diagnostics_dir / "de.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "normalized_output": country.model_dump(mode="json"),
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    output_dir = tmp_path / "compare"
-
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        [
-            "compare-classifiers",
-            "--diagnostics-dir",
-            str(diagnostics_dir),
-            "--output",
-            str(output_dir),
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert (output_dir / "classification-comparison.json").exists()
-    assert (output_dir / "classification-comparison.md").exists()
-    data = json.loads((output_dir / "classification-comparison.json").read_text(encoding="utf-8"))
-    assert data["summary"]["total_countries"] == 1

@@ -201,63 +201,107 @@ class Section(BaseModel):
     section_path: list[str] = Field(default_factory=list)
 
 
-class FixedFees(PublicModel):
-    """Fixed fees by received currency."""
-
-    currency: str
-    amount: str
-
-
-class CommercialFee(PublicModel):
-    """Standard commercial transaction fee (internal; may reference a fixed-fee table)."""
-
-    percentage: str | None = None
-    fixed_fee_reference: str | None = None
-
-
-class PublicCommercialFee(PublicModel):
-    """Consumer-facing commercial fee without internal table references."""
-
-    percentage: str | None = None
-
-    @classmethod
-    def from_internal(cls, fee: CommercialFee | None) -> PublicCommercialFee | None:
-        if fee is None:
-            return None
-        return cls(percentage=fee.percentage)
-
-
-class InternationalSurcharge(PublicModel):
-    """International payer-region surcharge."""
-
-    region: str
-    percentage_points: str | None = None
-
-
 class CurrencyConversion(PublicModel):
     """Currency conversion spread."""
 
     spread_percentage: str | None = None
 
 
-class DerivedFees(BaseModel):
-    """Derived core fees with confidence status (internal; allows legacy diagnostic fields)."""
+class Provenance(PublicModel):
+    """Source metadata for a derived rule or schedule."""
 
-    model_config = ConfigDict(frozen=True, extra="ignore")
+    requested_url: str | None = None
+    canonical_url: str | None = None
+    page_id: str | None = None
+    page_title: str | None = None
+    document_id: str | None = None
+    component_id: str | None = None
+    table_id: str | None = None
+    row_id: str | None = None
+    row_index: int | None = None
+    section_heading: str | None = None
+    original_label: str | None = None
+    classifier_version: str | None = None
+
+
+class FixedFeeSchedule(PublicModel):
+    """Fixed fees by received currency for a single product schedule.
+
+    Keys are ISO 4217 currency codes and values are decimal strings.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+
+class InternationalSurchargeScheduleEntry(PublicModel):
+    """One region entry in an international surcharge schedule."""
+
+    payer_region: str
+    percentage_points: str | None = None
+
+
+class InternationalSurchargeSchedule(PublicModel):
+    """International surcharge schedule for a single product or product family."""
+
+    entries: list[InternationalSurchargeScheduleEntry] = Field(default_factory=list)
+
+
+class ResolvedRate(PublicModel):
+    """A fee rate resolved from a reference to another table or product."""
+
+    percentage: str | None = None
+    fixed_fee_schedule: str | None = None
+    international_surcharge_schedule: str | None = None
+
+
+class RateReference(PublicModel):
+    """Explicit reference from one fee row to another fee section or product."""
+
+    reference: str
+    resolved_rate: ResolvedRate | None = None
+
+
+class TransactionFeeRule(PublicModel):
+    """A single product-specific transaction fee rule."""
+
+    id: str
+    label: str | None = None
+    percentage: str | None = None
+    fixed_fee_schedule: str | None = None
+    international_surcharge_schedule: str | None = None
+    rate_reference: RateReference | None = None
+    conditions: dict[str, Any] = Field(default_factory=dict)
+    source: Provenance | None = None
+
+
+class UnclassifiedFeeRow(PublicModel):
+    """A fee row that could not be confidently classified."""
+
+    normalized_cells: list[str] = Field(default_factory=list)
+    original_label: str | None = None
+    source: Provenance | None = None
+    reason: str | None = None
+
+
+class AmbiguousFeeRow(PublicModel):
+    """A fee row with multiple equally confident product classifications."""
+
+    normalized_cells: list[str] = Field(default_factory=list)
+    original_label: str | None = None
+    source: Provenance | None = None
+    candidates: list[str] = Field(default_factory=list)
+
+
+class DerivedFeeResult(PublicModel):
+    """Derived product-specific fee rules, schedules, and diagnostics."""
 
     status: str = Field(default="unclassified")
-    standard_commercial: CommercialFee | None = None
-    commercial_fixed_fees: list[FixedFees] = Field(default_factory=list)
-    international_surcharges: list[InternationalSurcharge] = Field(default_factory=list)
+    transaction_fee_rules: list[TransactionFeeRule] = Field(default_factory=list)
+    fixed_fee_schedules: dict[str, FixedFeeSchedule] = Field(default_factory=dict)
+    international_surcharge_schedules: dict[str, InternationalSurchargeSchedule] = Field(default_factory=dict)
     currency_conversion: CurrencyConversion | None = None
-    international_surcharge_exposed: bool = False
-    currency_conversion_exposed: bool = False
-    goods_and_services: CommercialFee | None = None
-    micropayments: CommercialFee | None = None
-    donations: CommercialFee | None = None
-    nonprofit: CommercialFee | None = None
-    chargeback: str | None = None
-    dispute: str | None = None
+    unclassified_fee_rows: list[UnclassifiedFeeRow] = Field(default_factory=list)
+    ambiguous_rows: list[AmbiguousFeeRow] = Field(default_factory=list)
 
     @field_validator("status")
     @classmethod
@@ -289,61 +333,8 @@ class CountryOutput(BaseModel):
     source: Source
     sections: list[Section] = Field(default_factory=list)
     tables: list[Table] = Field(default_factory=list)
-    derived: DerivedFees = Field(default_factory=DerivedFees)
+    derived: DerivedFeeResult = Field(default_factory=DerivedFeeResult)
     warnings: list[ParserWarning] = Field(default_factory=list)
-
-
-class PublicDerivedFees(PublicModel):
-    """Public derived core fees without classifier diagnostics."""
-
-    status: str = Field(default="unclassified")
-    standard_commercial: PublicCommercialFee | None = None
-    commercial_fixed_fees: list[FixedFees] = Field(default_factory=list)
-    international_surcharges: list[InternationalSurcharge] = Field(default_factory=list)
-    currency_conversion: CurrencyConversion | None = None
-    international_surcharge_exposed: bool = False
-    currency_conversion_exposed: bool = False
-    goods_and_services: PublicCommercialFee | None = None
-    micropayments: PublicCommercialFee | None = None
-    donations: PublicCommercialFee | None = None
-    nonprofit: PublicCommercialFee | None = None
-    chargeback: str | None = None
-    dispute: str | None = None
-
-    @field_validator("status")
-    @classmethod
-    def _status_allowed(cls, value: str) -> str:
-        allowed = {"complete", "partial", "unclassified", "failed"}
-        if value not in allowed:
-            raise ValueError(f"status must be one of {allowed}")
-        return value
-
-    @classmethod
-    def from_internal(cls, derived: DerivedFees) -> PublicDerivedFees:
-        return cls(
-            status=derived.status,
-            standard_commercial=PublicCommercialFee.from_internal(derived.standard_commercial),
-            commercial_fixed_fees=[
-                FixedFees(currency=f.currency, amount=f.amount) for f in derived.commercial_fixed_fees
-            ],
-            international_surcharges=[
-                InternationalSurcharge(region=s.region, percentage_points=s.percentage_points)
-                for s in derived.international_surcharges
-            ],
-            currency_conversion=(
-                CurrencyConversion(spread_percentage=derived.currency_conversion.spread_percentage)
-                if derived.currency_conversion
-                else None
-            ),
-            international_surcharge_exposed=derived.international_surcharge_exposed,
-            currency_conversion_exposed=derived.currency_conversion_exposed,
-            goods_and_services=PublicCommercialFee.from_internal(derived.goods_and_services),
-            micropayments=PublicCommercialFee.from_internal(derived.micropayments),
-            donations=PublicCommercialFee.from_internal(derived.donations),
-            nonprofit=PublicCommercialFee.from_internal(derived.nonprofit),
-            chargeback=derived.chargeback,
-            dispute=derived.dispute,
-        )
 
 
 class PublicMarket(PublicModel):
@@ -381,18 +372,18 @@ class PublicMarket(PublicModel):
 class PublicCountryOutput(PublicModel):
     """Compact public consumer-facing country fee result."""
 
-    schema_version: int = 3
+    schema_version: int = 4
     generated_at: str | None = None
     market: PublicMarket
-    derived: PublicDerivedFees
+    derived: DerivedFeeResult
 
     @classmethod
     def from_internal(cls, output: CountryOutput) -> PublicCountryOutput:
         return cls(
-            schema_version=3,
+            schema_version=4,
             generated_at=output.generated_at,
             market=PublicMarket.from_internal(output.market),
-            derived=PublicDerivedFees.from_internal(output.derived),
+            derived=output.derived,
         )
 
 
@@ -474,7 +465,7 @@ class CountryIndexEntry(PublicModel):
 class CountryIndex(PublicModel):
     """Index of successfully processed countries."""
 
-    schema_version: int = 3
+    schema_version: int = 4
     generated_at: str | None = None
     countries: list[CountryIndexEntry] = Field(default_factory=list)
 
@@ -520,7 +511,7 @@ class UnsupportedCountry(PublicModel):
 class CountryManifest(PublicModel):
     """Discovered country manifest."""
 
-    schema_version: int = 3
+    schema_version: int = 4
     generated_at: str | None = None
     markets: list[Market] = Field(default_factory=list)
     unsupported: list[UnsupportedCountry] = Field(default_factory=list)
@@ -533,7 +524,7 @@ class PublicCoreFeeEntry(PublicModel):
     paypal_market_code: str
     iso_country_code: str | None = None
     derived_status: str
-    derived: PublicDerivedFees
+    derived: DerivedFeeResult
 
     @field_validator("paypal_market_code")
     @classmethod
@@ -563,7 +554,7 @@ class PublicCoreFeeEntry(PublicModel):
 class CoreFees(PublicModel):
     """Consolidated core fees across all countries."""
 
-    schema_version: int = 3
+    schema_version: int = 4
     generated_at: str | None = None
     countries: list[PublicCoreFeeEntry] = Field(default_factory=list)
 
@@ -571,14 +562,14 @@ class CoreFees(PublicModel):
 class SchemaVersionInfo(PublicModel):
     """Schema version metadata."""
 
-    schema_version: int = 3
-    schema_path: str = "schemas/paypal-fees-v3.schema.json"
+    schema_version: int = 4
+    schema_path: str = "schemas/paypal-fees-v4.schema.json"
     schemas: list[str] = Field(
         default_factory=lambda: [
-            "schemas/paypal-fees-v3.schema.json",
-            "schemas/core-fees-v3.schema.json",
-            "schemas/index-v3.schema.json",
-            "schemas/manifest-v3.schema.json",
+            "schemas/paypal-fees-v4.schema.json",
+            "schemas/core-fees-v4.schema.json",
+            "schemas/index-v4.schema.json",
+            "schemas/manifest-v4.schema.json",
         ]
     )
     description: str | None = None
@@ -630,6 +621,15 @@ class ClassifierMetadata(PublicModel):
     schema_version: int = 1
     classifier_mode: str | None = None
     classifier_version: str | None = None
+
+
+class ClassifierMode(StrEnum):
+    """Deprecated classifier mode enum kept for config parsing compatibility."""
+
+    LEGACY = "legacy"
+    SHADOW = "shadow"
+    STRUCTURAL = "structural"
+    RULES = "rules"
 
 
 _CHANGE_SEVERITY_BY_KIND: dict[str, ChangeSeverity] = {
@@ -723,20 +723,12 @@ class CrawlReport(BaseModel):
         return data
 
 
-class ClassifierMode(StrEnum):
-    """Active classifier mode for a crawl."""
-
-    LEGACY = "legacy"
-    SHADOW = "shadow"
-    STRUCTURAL = "structural"
-
-
 class CrawlConfiguration(BaseModel):
     """Runtime crawl configuration."""
 
     model_config = ConfigDict(frozen=True)
 
-    classifier_mode: ClassifierMode = ClassifierMode.LEGACY
+    classifier_mode: ClassifierMode = ClassifierMode.RULES
     output_dir: str | None = None
     staging_dir: str | None = None
     timestamp: str | None = None

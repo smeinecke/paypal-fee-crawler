@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .comparison import _selected_categories_from_derived
+from .derived_categories import _selected_categories_from_derived
 from .exceptions import RegressionError
 from .models import (
     AcceptedRegressions,

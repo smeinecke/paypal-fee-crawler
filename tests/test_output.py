@@ -13,12 +13,11 @@ from paypal_fee_crawler import output as output_module
 from paypal_fee_crawler.exceptions import ValidationError as CrawlerValidationError
 from paypal_fee_crawler.models import (
     Cell,
-    CommercialFee,
     CountryOutput,
-    CurrencyConversion,
-    DerivedFees,
-    FixedFees,
-    InternationalSurcharge,
+    DerivedFeeResult,
+    FixedFeeSchedule,
+    InternationalSurchargeSchedule,
+    InternationalSurchargeScheduleEntry,
     Market,
     ParserWarning,
     Row,
@@ -26,6 +25,7 @@ from paypal_fee_crawler.models import (
     Source,
     Table,
     TableHeader,
+    TransactionFeeRule,
 )
 from paypal_fee_crawler.output import OutputPublisher
 from paypal_fee_crawler.validation import validate_output_tree
@@ -52,7 +52,7 @@ def _make_output(cc: str) -> CountryOutput:
                 ]
             )
         ],
-        derived=DerivedFees(status="unclassified"),
+        derived=DerivedFeeResult(status="unclassified"),
     )
 
 
@@ -68,10 +68,10 @@ def test_publish_generates_expected_files() -> None:
         assert (staging / "meta" / "countries.json").exists()
         assert (staging / "meta" / "unsupported-countries.json").exists()
         assert (staging / "meta" / "crawl-state.json").exists()
-        assert (staging / "schemas" / "paypal-fees-v3.schema.json").exists()
-        assert (staging / "schemas" / "core-fees-v3.schema.json").exists()
-        assert (staging / "schemas" / "index-v3.schema.json").exists()
-        assert (staging / "schemas" / "manifest-v3.schema.json").exists()
+        assert (staging / "schemas" / "paypal-fees-v4.schema.json").exists()
+        assert (staging / "schemas" / "core-fees-v4.schema.json").exists()
+        assert (staging / "schemas" / "index-v4.schema.json").exists()
+        assert (staging / "schemas" / "manifest-v4.schema.json").exists()
 
 
 def test_commit_detects_no_change_on_second_run() -> None:
@@ -242,14 +242,22 @@ def test_public_output_excludes_internal_fields() -> None:
                 ],
             )
         ],
-        derived=DerivedFees(
+        derived=DerivedFeeResult(
             status="complete",
-            standard_commercial=CommercialFee(percentage="2.99", fixed_fee_reference="fixed"),
-            commercial_fixed_fees=[FixedFees(currency="EUR", amount="0.39")],
-            international_surcharges=[InternationalSurcharge(region="EEA", percentage_points="0")],
-            currency_conversion=CurrencyConversion(spread_percentage="4.00"),
-            international_surcharge_exposed=False,
-            currency_conversion_exposed=True,
+            transaction_fee_rules=[
+                TransactionFeeRule(
+                    id="paypal_checkout",
+                    label="PayPal Checkout",
+                    percentage="2.99",
+                    fixed_fee_schedule="commercial",
+                ),
+            ],
+            fixed_fee_schedules={"commercial": FixedFeeSchedule(EUR="0.39")},
+            international_surcharge_schedules={
+                "commercial": InternationalSurchargeSchedule(
+                    entries=[InternationalSurchargeScheduleEntry(payer_region="EEA", percentage_points="0")]
+                )
+            },
         ),
         warnings=[ParserWarning(code="W1", message="warning")],
     )
@@ -264,7 +272,7 @@ def test_public_output_excludes_internal_fields() -> None:
         assert FORBIDDEN_PUBLIC_KEYS.isdisjoint(collect_keys(data))
 
         diagnostic = json.loads((output_dir / "meta" / "diagnostics" / "de.json").read_text())
-        assert FORBIDDEN_PUBLIC_KEYS.issubset(collect_keys(diagnostic))
+        assert "normalized_output" in collect_keys(diagnostic)
 
 
 def test_core_fees_json_uses_public_models() -> None:
@@ -307,7 +315,7 @@ def test_cache_retained_after_reused_output() -> None:
                     ]
                 )
             ],
-            derived=DerivedFees(status="unclassified"),
+            derived=DerivedFeeResult(status="unclassified"),
         )
         _, staging1 = publisher.publish({"DE": first}, [], [])
         publisher.commit(staging1)
@@ -333,7 +341,7 @@ def test_cache_retained_after_reused_output() -> None:
                     ]
                 )
             ],
-            derived=DerivedFees(status="unclassified"),
+            derived=DerivedFeeResult(status="unclassified"),
         )
         _, staging2 = publisher.publish({"DE": reused}, [], [])
         second_cache = json.loads((staging2 / "meta" / "crawl-cache.json").read_text())

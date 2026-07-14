@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from paypal_fee_crawler.exceptions import ValidationError as CrawlerValidationError
-from paypal_fee_crawler.models import Cell, CountryOutput, DerivedFees, Market, Row, Source, Table
+from paypal_fee_crawler.models import Cell, CountryOutput, DerivedFeeResult, Market, Row, Source, Table
 from paypal_fee_crawler.output import OutputPublisher
 from paypal_fee_crawler.validation import (
     generate_core_fees_schema,
@@ -36,7 +36,7 @@ def _make_output(cc: str) -> CountryOutput:
                 rows=[Row(cells=[Cell(text="2.99%", tokens=[{"raw": "2.99%", "kind": "percentage", "value": "2.99"}])])]
             )
         ],
-        derived=DerivedFees(status="unclassified"),
+        derived=DerivedFeeResult(status="unclassified"),
     )
 
 
@@ -96,7 +96,7 @@ def test_validate_file_bad_schema_type(tmp_path: Path) -> None:
 def test_generate_country_schema_has_id() -> None:
     schema = generate_country_schema()
     assert "$id" in schema
-    assert "paypal-fees-v3.schema.json" in schema["$id"]
+    assert "paypal-fees-v4.schema.json" in schema["$id"]
 
 
 def test_validate_output_tree_valid() -> None:

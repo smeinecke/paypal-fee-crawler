@@ -10,7 +10,7 @@ from paypal_fee_crawler.validation import validate_output_tree, validate_public_
 
 def _country(derived: dict[str, Any]) -> dict[str, Any]:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "generated_at": None,
         "market": {
             "paypal_market_code": "DE",
@@ -25,44 +25,52 @@ def _country(derived: dict[str, Any]) -> dict[str, Any]:
 def _complete_derived() -> dict[str, Any]:
     return {
         "status": "complete",
-        "standard_commercial": {"percentage": "2.99"},
-        "commercial_fixed_fees": [
-            {"currency": "EUR", "amount": "0.39"},
-            {"currency": "USD", "amount": "0.49"},
+        "transaction_fee_rules": [
+            {
+                "id": "paypal_checkout",
+                "label": "PayPal Checkout",
+                "percentage": "2.99",
+                "fixed_fee_schedule": "commercial",
+            },
+            {
+                "id": "goods_and_services",
+                "label": "Goods and Services",
+                "percentage": "2.49",
+                "fixed_fee_schedule": "goods_and_services",
+            },
         ],
-        "international_surcharges": [
-            {"region": "EEA", "percentage_points": "0"},
-            {"region": "GB", "percentage_points": "1.29"},
-            {"region": "OTHER", "percentage_points": "1.99"},
-        ],
+        "fixed_fee_schedules": {
+            "commercial": {"EUR": "0.39", "USD": "0.49"},
+            "goods_and_services": {"EUR": "0.35"},
+        },
+        "international_surcharge_schedules": {
+            "commercial": {
+                "entries": [
+                    {"payer_region": "EEA", "percentage_points": "0"},
+                    {"payer_region": "GB", "percentage_points": "1.29"},
+                    {"payer_region": "OTHER", "percentage_points": "1.99"},
+                ]
+            }
+        },
         "currency_conversion": {"spread_percentage": "3"},
-        "international_surcharge_exposed": True,
-        "currency_conversion_exposed": True,
     }
 
 
-def test_complete_country_requires_international_and_fx_categories_when_exposed() -> None:
+def test_complete_country_requires_core_rules_and_fixed_schedules() -> None:
     derived = _complete_derived()
-    derived["international_surcharges"] = []
-    derived["currency_conversion"] = None
-    derived["international_surcharge_exposed"] = True
-    derived["currency_conversion_exposed"] = True
+    derived["transaction_fee_rules"] = []
+    derived["fixed_fee_schedules"] = {}
 
     errors = validate_public_country_output(_country(derived), schema_only=False)
+    assert any("core commercial" in error.lower() for error in errors)
+    assert any("fixed-fee" in error.lower() for error in errors)
 
-    assert any("international surcharges" in error for error in errors)
-    assert any("currency conversion" in error for error in errors)
 
-
-def test_complete_country_accepts_missing_unexposed_categories() -> None:
+def test_complete_country_accepts_missing_currency_conversion() -> None:
     derived = _complete_derived()
-    derived["international_surcharges"] = []
     derived["currency_conversion"] = None
-    derived["international_surcharge_exposed"] = False
-    derived["currency_conversion_exposed"] = False
 
     errors = validate_public_country_output(_country(derived), schema_only=False)
-
     assert not errors
 
 
@@ -83,7 +91,7 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     _write_json(
         root / "json" / "index.json",
         {
-            "schema_version": 3,
+            "schema_version": 4,
             "generated_at": None,
             "countries": [
                 {
@@ -102,7 +110,7 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     _write_json(
         root / "json" / "core-fees.json",
         {
-            "schema_version": 3,
+            "schema_version": 4,
             "generated_at": None,
             "countries": [
                 {
@@ -117,7 +125,7 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     _write_json(
         root / "meta" / "countries.json",
         {
-            "schema_version": 3,
+            "schema_version": 4,
             "generated_at": None,
             "markets": [
                 {
@@ -136,13 +144,13 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     _write_json(
         root / "meta" / "schema-version.json",
         {
-            "schema_version": 3,
-            "schema_path": "schemas/paypal-fees-v3.schema.json",
+            "schema_version": 4,
+            "schema_path": "schemas/paypal-fees-v4.schema.json",
             "schemas": [
-                "schemas/paypal-fees-v3.schema.json",
-                "schemas/core-fees-v3.schema.json",
-                "schemas/index-v3.schema.json",
-                "schemas/manifest-v3.schema.json",
+                "schemas/paypal-fees-v4.schema.json",
+                "schemas/core-fees-v4.schema.json",
+                "schemas/index-v4.schema.json",
+                "schemas/manifest-v4.schema.json",
             ],
         },
     )
@@ -151,10 +159,10 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
         {"schema_version": 1, "generated_at": None, "markets": {}},
     )
     for schema_name in [
-        "paypal-fees-v3.schema.json",
-        "core-fees-v3.schema.json",
-        "index-v3.schema.json",
-        "manifest-v3.schema.json",
+        "paypal-fees-v4.schema.json",
+        "core-fees-v4.schema.json",
+        "index-v4.schema.json",
+        "manifest-v4.schema.json",
     ]:
         _write_json(root / "schemas" / schema_name, {"type": "object"})
 
@@ -177,10 +185,9 @@ def test_output_tree_ignores_existing_repo_root_files(tmp_path: Path) -> None:
 
 def test_output_tree_rejects_complete_without_required_categories(tmp_path: Path) -> None:
     country = _country(_complete_derived())
-    country["derived"]["currency_conversion"] = None
-    country["derived"]["currency_conversion_exposed"] = True
+    country["derived"]["transaction_fee_rules"] = []
+    country["derived"]["fixed_fee_schedules"] = {}
     _write_minimal_tree(tmp_path, country)
 
     errors = validate_output_tree(tmp_path)
-
-    assert any("currency conversion" in error for error in errors)
+    assert any("core commercial" in error.lower() for error in errors)
