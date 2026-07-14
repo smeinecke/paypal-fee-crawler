@@ -392,9 +392,7 @@ _TOKENIZE_RE = re.compile(
 def _is_percentage_points_context(window: str) -> bool:
     """Return True when the surrounding text spells out percentage points."""
     lowered = window.lower()
-    return bool(
-        re.search(r"prozentpunkt(?:en?)?|percentage\s+points?", lowered)
-    )
+    return bool(re.search(r"prozentpunkt(?:en?)?|percentage\s+points?", lowered))
 
 
 def tokenize_text(text: str) -> list[FeeToken]:
@@ -416,7 +414,11 @@ def tokenize_text(text: str) -> list[FeeToken]:
             # Still accept if the surrounding text contains a % or currency nearby.
             start, end = match.start(), match.end()
             window = text[max(0, start - 5) : min(len(text), end + 30)]
-            if "%" not in window and not any(part.upper() in CURRENCY_CODES for part in window.split()) and not _is_percentage_points_context(window):
+            if (
+                "%" not in window
+                and not any(part.upper() in CURRENCY_CODES for part in window.split())
+                and not _is_percentage_points_context(window)
+            ):
                 continue
         # Build a clean token string so operators sit next to values for normalize_pricing_token.
         operator = match.group("operator")

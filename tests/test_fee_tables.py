@@ -40,7 +40,12 @@ def test_split_tables_preserved(de_real_html: str) -> None:
         )
         == 1
     )
-    merged = [t for t in tables if t.caption == "Gebührentabelle: Festgebühr bei geschäftlichen Transaktionen (auf Basis der empfangenen Währung)"]
+    merged = [
+        t
+        for t in tables
+        if t.caption
+        == "Gebührentabelle: Festgebühr bei geschäftlichen Transaktionen (auf Basis der empfangenen Währung)"
+    ]
     assert merged
     # The merged table should contain all rows from both fragments.
     assert len(merged[0].rows) >= 24

@@ -841,8 +841,10 @@ def _first_percentage(row: Row) -> str | None:
         for token in cell.tokens:
             if token.kind == "percentage" and token.value:
                 return token.value
-            if token.kind == "number" and token.value and (
-                cell_indicates_pct or _token_text_indicates_percentage(token)
+            if (
+                token.kind == "number"
+                and token.value
+                and (cell_indicates_pct or _token_text_indicates_percentage(token))
             ):
                 return token.value
     return None
@@ -1308,11 +1310,7 @@ _APM_SPECIAL_METHOD_IDS: frozenset[str] = frozenset(
 # Sort aliases by length descending so the longest/most specific phrase wins
 # (e.g. "thai online bank transfer" before "online bank transfer").
 _APM_SORTED_ALIASES: list[tuple[str, str]] = sorted(
-    [
-        (canonical, alias)
-        for canonical, aliases in _APM_METHOD_ALIASES.items()
-        for alias in aliases
-    ],
+    [(canonical, alias) for canonical, aliases in _APM_METHOD_ALIASES.items() for alias in aliases],
     key=lambda item: (-len(item[1]), item[0], item[1]),
 )
 
@@ -1907,7 +1905,9 @@ def _extract_fixed_fee_schedule(table: Table, source: Source | None = None) -> F
     return FixedFeeSchedule(entries=amounts, sources=sources)
 
 
-def _extract_international_surcharge_schedule(table: Table, source: Source | None = None) -> InternationalSurchargeSchedule | None:
+def _extract_international_surcharge_schedule(
+    table: Table, source: Source | None = None
+) -> InternationalSurchargeSchedule | None:
     entries: list[InternationalSurchargeScheduleEntry] = []
     seen: set[str] = set()
     fallback_rows: list[tuple[str, str]] = []
@@ -1978,126 +1978,160 @@ def _extract_international_surcharge_schedule(table: Table, source: Source | Non
     return InternationalSurchargeSchedule(entries=entries, sources=sources)
 
 
+_REGION_EXACT: dict[str, str] = {
+    "eu": "EEA",
+    "gb": "GB",
+    "uk": "GB",
+    "us": "US_CA",
+    "eøs": "EEA",
+    "ees": "EEA",
+    "eea": "EEA",
+    "eee": "EEA",
+    "ehp": "EEA",
+    "egt": "EEA",
+    "eta": "EEA",
+    "see": "EEA",
+    "eer": "EEA",
+    "εοχ": "EEA",
+}
+
+# Substring patterns for each region, ordered by priority.
+RegionPattern = str | tuple[str, ...]
+
+
+_REGION_PATTERNS: tuple[tuple[str, tuple[RegionPattern, ...]], ...] = (
+    ("EUROPE_II", ("europa ii",)),
+    ("EUROPE_I", ("europa i",)),
+    (
+        "NORTHERN_EUROPE",
+        ("nordeuropa", "northern europe", "nordic", "pohjois-eurooppa"),
+    ),
+    (
+        "EEA",
+        (
+            "europäischer wirtschaftsraum",
+            "ewr",
+            "eea",
+            "e.u",
+            "eøs",
+            "ees",
+            "see",
+            "eee",
+            "ehp",
+            "egt",
+            "eta",
+            "eer",
+            "εοχ",
+            "espace économique européen",
+            "spazio economico europeo",
+            "espacio económico europeo",
+            "europæiske økonomiske samarbejdsområde",
+            "europeisk økonomisk samarbeidsområde",
+            "europeiska ekonomiska samarbetsområdet",
+            "europese economische ruimte",
+            "euroopan talousalue",
+            "europski gospodarski prostor",
+            "európai gazdasági térség",
+        ),
+    ),
+    (
+        "GB",
+        (
+            "vereinigtes königreich",
+            "großbritannien",
+            "storbritannien",
+            "storbritannia",
+            "united kingdom",
+            "britain",
+            "regno unito",
+            "royaume-uni",
+            "royaume uni",
+            "verenigd koninkrijk",
+            "iso-britannia",
+            "Ηνωμένο Βασίλειο",
+            "ηνωμενο βασιλειο",
+            "britannien",
+            "spojuené kráľovstvo",
+            "spojené království",
+            "egyesült királyság",
+            "britannia",
+        ),
+    ),
+    (
+        "US_CA",
+        (
+            "usa",
+            "united states",
+            "u.s",
+            "canada",
+            "nordamerika",
+            "états-unis",
+            "etats-unis",
+            "stati uniti",
+            "estados unidos",
+            "verenigde staten",
+            "yhdysvallat",
+            "ΗΠΑ",
+            "ηπα",
+        ),
+    ),
+    (
+        "OTHER",
+        (
+            ("all", "other"),
+            ("all", "andere"),
+            ("tutti", "altri"),
+            ("tous", "autres"),
+            ("kaikki", "muut"),
+            ("alle", "andere"),
+            ("alle", "ander"),
+            ("všechny", "ostatní"),
+            ("všetky", "ostatné"),
+            ("minden", "egyéb"),
+            ("λοιπες",),
+            ("rest",),
+            ("restante",),
+            ("andere",),
+            ("sonstige",),
+            ("welt",),
+            ("andre", "markeder"),
+            ("andre", "lande"),
+            ("andere", "länder"),
+            ("altri", "paesi"),
+            ("altri", "mercati"),
+            ("otros", "países"),
+            ("otros", "mercados"),
+            ("inni", "kraje"),
+            ("pozostale",),
+            ("pozostałe",),
+            ("andre", "marknader"),
+            ("alla", "andra", "marknader"),
+            ("alle", "andere", "markten"),
+            ("kaikki", "muut", "markkinat"),
+            ("všechny", "ostatní", "trhy"),
+            ("všetky", "ostatné", "trhy"),
+            ("minden", "egyéb", "piac"),
+            ("λοιπες", "αγορες"),
+        ),
+    ),
+)
+
+
+def _matches_region_pattern(text: str, pattern: RegionPattern) -> bool:
+    if isinstance(pattern, str):
+        return pattern in text
+    return all(part in text for part in pattern)
+
+
 def _normalize_region(text: str) -> str | None:
     t = _norm(text)
     if not t:
         return None
-    exact = {
-        "eu": "EEA",
-        "gb": "GB",
-        "uk": "GB",
-        "us": "US_CA",
-        "eøs": "EEA",
-        "ees": "EEA",
-        "eea": "EEA",
-        "eee": "EEA",
-        "ehp": "EEA",
-        "egt": "EEA",
-        "eta": "EEA",
-        "see": "EEA",
-        "eer": "EEA",
-        "εοχ": "EEA",
-    }
-    if t in exact:
-        return exact[t]
-    if "europa ii" in t:
-        return "EUROPE_II"
-    if "europa i" in t:
-        return "EUROPE_I"
-    if "nordeuropa" in t or "northern europe" in t or "nordic" in t or "pohjois-eurooppa" in t:
-        return "NORTHERN_EUROPE"
-    # EEA in many languages
-    if (
-        "europäischer wirtschaftsraum" in t
-        or "ewr" in t
-        or "eea" in t
-        or "e.u" in t
-        or "eøs" in t
-        or "ees" in t
-        or "see" in t
-        or "eee" in t
-        or "ehp" in t
-        or "egt" in t
-        or "eta" in t
-        or "eer" in t
-        or "εοχ" in t
-        or "espace économique européen" in t
-        or "spazio economico europeo" in t
-        or "espacio económico europeo" in t
-        or "europæiske økonomiske samarbejdsområde" in t
-        or "europeisk økonomisk samarbeidsområde" in t
-        or "europeiska ekonomiska samarbetsområdet" in t
-        or "europese economische ruimte" in t
-        or "euroopan talousalue" in t
-        or "europski gospodarski prostor" in t
-        or "európai gazdasági térség" in t
-    ):
-        return "EEA"
-    # UK / GB in many languages
-    if (
-        "vereinigtes königreich" in t
-        or "großbritannien" in t
-        or "storbritannien" in t
-        or "storbritannia" in t
-        or "united kingdom" in t
-        or "britain" in t
-        or "regno unito" in t
-        or "royaume-uni" in t
-        or "royaume uni" in t
-        or "verenigd koninkrijk" in t
-        or "iso-britannia" in t
-        or "Ηνωμένο Βασίλειο" in t
-        or "ηνωμενο βασιλειο" in t
-        or "storbritannien" in t
-        or "britannien" in t
-        or "spojuené kráľovstvo" in t
-        or "spojené království" in t
-        or "egyesült királyság" in t
-        or "britannia" in t
-    ):
-        return "GB"
-    if "usa" in t or "united states" in t or "u.s" in t or "canada" in t or "nordamerika" in t or "états-unis" in t or "etats-unis" in t or "stati uniti" in t or "estados unidos" in t or "verenigde staten" in t or "yhdysvallat" in t or "ΗΠΑ" in t or "ηπα" in t:
-        return "US_CA"
-    # "All other markets" in many languages
-    if (
-        ("all" in t and "other" in t)
-        or ("all" in t and "andere" in t)
-        or ("tutti" in t and "altri" in t)
-        or ("tous" in t and "autres" in t)
-        or ("kaikki" in t and "muut" in t)
-        or ("alle" in t and "andere" in t)
-        or ("alle" in t and "ander" in t)
-        or ("všechny" in t and "ostatní" in t)
-        or ("všetky" in t and "ostatné" in t)
-        or ("minden" in t and "egyéb" in t)
-        or ("λοιπές" in t)
-        or ("λοιπες" in t)
-        or "rest" in t
-        or "restante" in t
-        or "andere" in t
-        or "sonstige" in t
-        or "welt" in t
-        or "andre markeder" in t
-        or "andre lande" in t
-        or "andere länder" in t
-        or "altri paesi" in t
-        or "altri mercati" in t
-        or "otros países" in t
-        or "otros mercados" in t
-        or "inni kraje" in t
-        or "pozostale" in t
-        or "pozostałe" in t
-        or "andre marknader" in t
-        or "alla andra marknader" in t
-        or "alle andere markten" in t
-        or "kaikki muut markkinat" in t
-        or "všechny ostatní trhy" in t
-        or "všetky ostatné trhy" in t
-        or "minden egyéb piac" in t
-        or "λοιπές αγορές" in t
-        or "λοιπες αγορες" in t
-    ):
-        return "OTHER"
+    if t in _REGION_EXACT:
+        return _REGION_EXACT[t]
+    for region, patterns in _REGION_PATTERNS:
+        if any(_matches_region_pattern(t, p) for p in patterns):
+            return region
     return None
 
 
@@ -2615,7 +2649,10 @@ def _rule_identity(rule: TransactionFeeRule) -> str:
 
 def _rule_has_rate(rule: TransactionFeeRule) -> bool:
     """Return True if the rule carries a directly usable percentage."""
-    return bool(rule.percentage is not None or (rule.rate_reference is not None and rule.rate_reference.resolved_rate is not None))
+    return bool(
+        rule.percentage is not None
+        or (rule.rate_reference is not None and rule.rate_reference.resolved_rate is not None)
+    )
 
 
 def _is_reference_source(rule: TransactionFeeRule) -> bool:
@@ -2738,9 +2775,7 @@ def _build_coverage_summary(
 
 def classify_tables(tables: list[Table], source: Source | None = None) -> DerivedFeeResult:
     """Derive product-specific transaction fee rules from normalized tables."""
-    fixed_schedules, international_schedules, schedule_diagnostics = _collect_schedules(
-        tables, source=source
-    )
+    fixed_schedules, international_schedules, schedule_diagnostics = _collect_schedules(tables, source=source)
     diagnostics: list[Diagnostic] = list(schedule_diagnostics)
 
     extracted_rules: list[_ExtractedRule] = []
