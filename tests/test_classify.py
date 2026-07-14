@@ -60,7 +60,10 @@ def test_classify_resolves_reference_to_online_card_schedule() -> None:
     commercial = _table(
         "Standardgebühr beim Empfang von Inlandstransaktionen",
         [
-            ["Zahlungen mit Kredit- und Debitkarten mit erweiterten Funktionen", "Es gelten die Gebühren für Online-Kartenzahlungen"],
+            [
+                "Zahlungen mit Kredit- und Debitkarten mit erweiterten Funktionen",
+                "Es gelten die Gebühren für Online-Kartenzahlungen",
+            ],
             ["PayPal Checkout", "2.99% + 0.39 EUR"],
         ],
     )

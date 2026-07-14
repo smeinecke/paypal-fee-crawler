@@ -948,9 +948,7 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
                     percentage = resolved.percentage
                 new_rule = rule.model_copy(
                     update={
-                        "rate_reference": RateReference(
-                            reference=extracted.reference, resolved_rate=resolved
-                        ),
+                        "rate_reference": RateReference(reference=extracted.reference, resolved_rate=resolved),
                         "percentage": percentage,
                     }
                 )

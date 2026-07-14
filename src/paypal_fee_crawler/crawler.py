@@ -438,9 +438,7 @@ class Crawler:
     ) -> DerivedFeeResult:
         return classify_tables(tables, source=source)
 
-    async def _crawl_country(
-        self, market: Market
-    ) -> tuple[CountryOutput | None, UnsupportedCountry | None, bool]:
+    async def _crawl_country(self, market: Market) -> tuple[CountryOutput | None, UnsupportedCountry | None, bool]:
         """Crawl a single country and return its output, unsupported record, and transient flag."""
         code = market.paypal_market_code
         previous = self._load_previous_country_output(market)

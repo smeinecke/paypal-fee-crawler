@@ -117,9 +117,7 @@ def _complete_derived_errors(derived: Any, label: str) -> list[str]:
 
     for rule in derived.transaction_fee_rules:
         if rule.fixed_fee_schedule and rule.fixed_fee_schedule not in derived.fixed_fee_schedules:
-            errors.append(
-                f"{label} rule {rule.id} references missing fixed-fee schedule {rule.fixed_fee_schedule}"
-            )
+            errors.append(f"{label} rule {rule.id} references missing fixed-fee schedule {rule.fixed_fee_schedule}")
         if (
             rule.international_surcharge_schedule
             and rule.international_surcharge_schedule not in derived.international_surcharge_schedules

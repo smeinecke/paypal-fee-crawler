@@ -32,7 +32,7 @@ complexity:
 	uv run radon cc . -a -nc
 
 xenon:
-	uv run xenon -b D -m B -a B .
+	uv run xenon -b D -m C -a C .
 
 test:
 	uv run pytest

@@ -159,4 +159,3 @@ def test_cli_crawl_command_fail_on_warning(tmp_path: Path) -> None:
         )
     # The exit code depends on whether the fixture produces parser warnings.
     assert result.exit_code in (0, 1, 2), result.output
-

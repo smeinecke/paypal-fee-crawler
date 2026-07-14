@@ -327,6 +327,5 @@ def inspect(html_file: str) -> None:
         sys.exit(ExitCode.PARSER_FAILURE)
 
 
-
 if __name__ == "__main__":
     main()
