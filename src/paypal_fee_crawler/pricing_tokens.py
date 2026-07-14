@@ -184,6 +184,9 @@ _RANGE_RE = re.compile(r"^(?P<from>[0-9]+(?:[.,][0-9]+)?)\s*[-\u2013\u2014]\s*(?
 def _normalize_decimal(value: str) -> Decimal:
     """Parse a decimal string that may use comma or point as decimal separator."""
     cleaned = value.replace("\u00a0", "").replace(" ", "").replace("\u202f", "")
+    # Strip currency symbols, percent signs and other decoration while keeping
+    # digits, separators and a leading sign.
+    cleaned = re.sub(r"[^\d+.,\-]", "", cleaned)
     has_dot = "." in cleaned
     has_comma = "," in cleaned
     if not has_dot and not has_comma:

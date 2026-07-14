@@ -36,3 +36,16 @@ def test_normalize_decimal_string() -> None:
 
 def test_clean_text() -> None:
     assert clean_text("  Hello\u00a0World  ") == "Hello World"
+
+
+def test_normalize_decimal_string_regression() -> None:
+    """Decimal normalization must be locale-agnostic and reject garbage."""
+    # EU grouping style with leading zeros and plus sign.
+    assert normalize_decimal_string("+0,39") == "0.39"
+    # US grouping style with currency symbols stripped.
+    assert normalize_decimal_string("$1,234.56") == "1234.56"
+    # Trailing percentage signs are stripped by the normalizer.
+    assert normalize_decimal_string("2,49%") == "2.49"
+    # Invalid values raise.
+    with pytest.raises(ValueError):
+        normalize_decimal_string("--")
