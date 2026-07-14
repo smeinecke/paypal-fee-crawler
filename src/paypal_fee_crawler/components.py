@@ -113,6 +113,7 @@ class ComponentsExtractor:
 
         self._traverse(cms)
         self._resolve_references()
+        self._merge_fragment_tables()
         self._assign_table_ids()
         self.tables = [record.table for record in self.table_records]
         return self.sections, self.tables, self.warnings
@@ -330,6 +331,18 @@ class ComponentsExtractor:
 
         column_count = header_count or row_count or declared_column_count
 
+        # Tag every row with the document/component it came from so merged
+        # fragments can still produce per-row provenance.
+        rows = [
+            row.model_copy(
+                update={
+                    "source_document_id": str(document_id) if document_id else row.source_document_id,
+                    "source_component_id": str(component_id) if component_id else row.source_component_id,
+                }
+            )
+            for row in rows
+        ]
+
         return Table(
             component_type="FeeTable",
             document_id=str(document_id) if document_id else None,
@@ -469,12 +482,22 @@ class ComponentsExtractor:
         column_count = first.column_count or second.column_count
         if all_rows and column_count is None:
             column_count = max(len(row.cells) for row in all_rows)
+
+        source_table_ids = list(first.source_table_ids)
+        for sid in second.source_table_ids:
+            if sid not in source_table_ids:
+                source_table_ids.append(sid)
+        if first.document_id and first.document_id not in source_table_ids:
+            source_table_ids.insert(0, first.document_id)
+        if second.document_id and second.document_id not in source_table_ids:
+            source_table_ids.append(second.document_id)
+
         return first.model_copy(
             update={
                 "column_count": column_count,
                 "headers": all_headers,
                 "rows": all_rows,
-                "source_table_ids": list(first.source_table_ids) + list(second.source_table_ids),
+                "source_table_ids": source_table_ids,
             }
         )
 
@@ -490,6 +513,44 @@ class ComponentsExtractor:
             if context not in combined:
                 combined.append(context)
         return NormalizedTableRecord(table=merged_table, contexts=tuple(combined))
+
+    def _merge_fragment_tables(self) -> None:
+        """Merge physical FeeTable fragments that describe the same logical table.
+
+        PayPal splits many large tables (fixed-fee currency lists, regional
+        surcharge tables, etc.) across multiple CMS components.  We merge them by
+        matching caption, section path, and column layout.  Rows are appended in
+        source order, and all original document/component identifiers are kept in
+        the merged table's `source_table_ids`.
+        """
+        merged: dict[tuple, NormalizedTableRecord] = {}
+        others: list[NormalizedTableRecord] = []
+
+        for record in self.table_records:
+            table = record.table
+            if table.component_type != "FeeTable":
+                others.append(record)
+                continue
+
+            # Use caption and section path as the primary merge key; headers and
+            # column count add structural guard rails so two tables with similar
+            # captions but different layouts are not merged.
+            key = (
+                table.caption,
+                tuple(table.section_path),
+                table.column_count,
+                table.declared_column_count,
+            )
+            if key in merged:
+                existing = merged[key]
+                merged_table = self._merge_tables(existing.table, table)
+                merged_record = self._merge_table_records(existing, record, merged_table)
+                merged[key] = merged_record
+            else:
+                merged[key] = record
+
+        self.table_records = list(merged.values()) + others
+        self.tables = [record.table for record in self.table_records]
 
     def _build_target_records(self) -> dict[str, NormalizedTableRecord]:
         """Index physical FeeTable records by document ID, merging duplicates."""

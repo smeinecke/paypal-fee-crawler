@@ -40,8 +40,8 @@ def _complete_derived() -> dict[str, Any]:
             },
         ],
         "fixed_fee_schedules": {
-            "commercial": {"EUR": "0.39", "USD": "0.49"},
-            "goods_and_services": {"EUR": "0.35"},
+            "commercial": {"entries": {"EUR": "0.39", "USD": "0.49"}},
+            "goods_and_services": {"entries": {"EUR": "0.35"}},
         },
         "international_surcharge_schedules": {
             "commercial": {

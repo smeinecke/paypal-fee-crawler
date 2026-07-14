@@ -156,6 +156,8 @@ class Row(BaseModel):
 
     row_id: str | None = None
     cells: list[Cell] = Field(default_factory=list)
+    source_document_id: str | None = None
+    source_component_id: str | None = None
 
 
 class TableHeader(BaseModel):
@@ -227,10 +229,14 @@ class Provenance(PublicModel):
 class FixedFeeSchedule(PublicModel):
     """Fixed fees by received currency for a single product schedule.
 
-    Keys are ISO 4217 currency codes and values are decimal strings.
+    ``entries`` maps ISO 4217 currency codes to decimal strings.  ``sources``
+    records the provenance of each contributing table fragment.
     """
 
-    model_config = ConfigDict(frozen=True, extra="allow")
+    model_config = ConfigDict(frozen=True)
+
+    entries: dict[str, str] = Field(default_factory=dict)
+    sources: list[Provenance] = Field(default_factory=list)
 
 
 class InternationalSurchargeScheduleEntry(PublicModel):
@@ -244,6 +250,7 @@ class InternationalSurchargeSchedule(PublicModel):
     """International surcharge schedule for a single product or product family."""
 
     entries: list[InternationalSurchargeScheduleEntry] = Field(default_factory=list)
+    sources: list[Provenance] = Field(default_factory=list)
 
 
 class ResolvedRate(PublicModel):
@@ -252,6 +259,7 @@ class ResolvedRate(PublicModel):
     percentage: str | None = None
     fixed_fee_schedule: str | None = None
     international_surcharge_schedule: str | None = None
+    source: Provenance | None = None
 
 
 class RateReference(PublicModel):
@@ -259,6 +267,7 @@ class RateReference(PublicModel):
 
     reference: str
     resolved_rate: ResolvedRate | None = None
+    source: Provenance | None = None
 
 
 class TransactionFeeRule(PublicModel):

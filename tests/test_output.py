@@ -252,7 +252,7 @@ def test_public_output_excludes_internal_fields() -> None:
                     fixed_fee_schedule="commercial",
                 ),
             ],
-            fixed_fee_schedules={"commercial": FixedFeeSchedule(EUR="0.39")},
+            fixed_fee_schedules={"commercial": FixedFeeSchedule(entries={"EUR": "0.39"})},
             international_surcharge_schedules={
                 "commercial": InternationalSurchargeSchedule(
                     entries=[InternationalSurchargeScheduleEntry(payer_region="EEA", percentage_points="0")]

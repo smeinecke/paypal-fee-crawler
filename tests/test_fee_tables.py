@@ -33,13 +33,17 @@ def test_split_tables_preserved(de_real_html: str) -> None:
     _, tables, _ = extractor.extract(cms)
     captions = [t.caption for t in tables]
     # Real DE fixture splits the commercial fixed-fee table across two components
-    # with the same caption. They must be preserved as separate tables.
+    # with the same caption. They are now merged into a single logical table.
     assert (
         captions.count(
             "Gebührentabelle: Festgebühr bei geschäftlichen Transaktionen (auf Basis der empfangenen Währung)"
         )
-        == 2
+        == 1
     )
+    merged = [t for t in tables if t.caption == "Gebührentabelle: Festgebühr bei geschäftlichen Transaktionen (auf Basis der empfangenen Währung)"]
+    assert merged
+    # The merged table should contain all rows from both fragments.
+    assert len(merged[0].rows) >= 24
 
 
 def test_missing_fee_table_raises() -> None:

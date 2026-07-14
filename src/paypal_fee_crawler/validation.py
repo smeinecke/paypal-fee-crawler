@@ -55,8 +55,7 @@ def _validate_currency_codes(data: Any, errors: list[str]) -> None:
 
 def _validate_fixed_fee_schedules(derived: Any, label: str, errors: list[str]) -> None:
     for schedule_name, schedule in derived.fixed_fee_schedules.items():
-        extras = schedule.model_extra or {}
-        for currency, amount in extras.items():
+        for currency, amount in schedule.entries.items():
             if currency.upper() not in CURRENCY_CODES:
                 errors.append(f"{label} fixed fee schedule {schedule_name} has invalid currency {currency}")
             try:
@@ -97,23 +96,22 @@ def _validate_table_plausibility(output: CountryOutput, errors: list[str]) -> No
 
 
 def _complete_derived_errors(derived: Any, label: str) -> list[str]:
-    """Return consistency errors for a ``complete`` derived-fee result.
+    """Return consistency errors for a derived-fee result.
 
     A complete result must expose at least the core commercial transaction rules
     and have corresponding fixed-fee schedules.  Schedules referenced by rules
-    must exist and schedules must not contain duplicate regions.
+    must exist and schedules must not contain duplicate regions or dangling
+    references.
     """
-    if derived.status != "complete":
-        return []
-
     errors: list[str] = []
-    core_ids = {"paypal_checkout", "goods_and_services", "other_commercial"}
-    found_ids = {rule.id for rule in derived.transaction_fee_rules}
-    if not core_ids & found_ids:
-        errors.append(f"{label} marked complete without any core commercial transaction rule")
 
-    if not derived.fixed_fee_schedules:
-        errors.append(f"{label} marked complete without fixed-fee schedules")
+    if derived.status == "complete":
+        core_ids = {"paypal_checkout", "goods_and_services", "other_commercial"}
+        found_ids = {rule.id for rule in derived.transaction_fee_rules}
+        if not core_ids & found_ids:
+            errors.append(f"{label} marked complete without any core commercial transaction rule")
+        if not derived.fixed_fee_schedules:
+            errors.append(f"{label} marked complete without fixed-fee schedules")
 
     for rule in derived.transaction_fee_rules:
         if rule.fixed_fee_schedule and rule.fixed_fee_schedule not in derived.fixed_fee_schedules:
@@ -134,6 +132,12 @@ def _complete_derived_errors(derived: Any, label: str) -> list[str]:
         for entry in schedule.entries:
             if not entry.payer_region:
                 errors.append(f"{label} international surcharge schedule {schedule_name} has entry without region")
+
+    # Fixed-fee schedules must not contain duplicate currency keys (fragments may
+    # overlap, but a conflict would be a data-quality error).
+    for schedule_name, schedule in derived.fixed_fee_schedules.items():
+        if len(schedule.entries) != len(set(schedule.entries.keys())):
+            errors.append(f"{label} fixed fee schedule {schedule_name} has duplicate currency keys")
 
     return errors
 

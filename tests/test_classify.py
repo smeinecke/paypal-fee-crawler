@@ -52,8 +52,8 @@ def test_classify_fixed_fee_table_extracts_schedule() -> None:
     result = classify_tables([table])
     schedule = result.fixed_fee_schedules.get("commercial")
     assert schedule is not None
-    assert schedule.model_extra.get("EUR") == "0.39"
-    assert schedule.model_extra.get("USD") == "0.49"
+    assert schedule.entries.get("EUR") == "0.39"
+    assert schedule.entries.get("USD") == "0.49"
 
 
 def test_classify_resolves_reference_to_online_card_schedule() -> None:
