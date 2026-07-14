@@ -9,7 +9,7 @@ from paypal_fee_crawler.classify import (
 )
 from paypal_fee_crawler.cms_context import extract_cms_context
 from paypal_fee_crawler.components import ComponentsExtractor
-from paypal_fee_crawler.models import Cell, Row, Table, TableHeader
+from paypal_fee_crawler.models import Cell, DerivedFeeResult, Row, Table, TableHeader
 from paypal_fee_crawler.pricing_tokens import tokenize_text
 
 
@@ -94,11 +94,15 @@ def test_classify_detects_ambiguous_product() -> None:
     assert "refunds" in result.ambiguous_rows[0].candidates
 
 
-def test_classify_real_germany_fixture() -> None:
+def _germany_result() -> DerivedFeeResult:
     text = Path("tests/fixtures/paypal-de-real.html").read_text(encoding="utf-8")
     cms = extract_cms_context(text)
     sections, tables, warnings = ComponentsExtractor().extract(cms)
-    result = classify_tables(tables)
+    return classify_tables(tables)
+
+
+def test_germany_core_rules() -> None:
+    result = _germany_result()
     ids = {r.id for r in result.transaction_fee_rules}
     assert "paypal_checkout" in ids
     assert "goods_and_services" in ids
@@ -107,17 +111,30 @@ def test_classify_real_germany_fixture() -> None:
     assert result.international_surcharge_schedules
     assert result.status in {"complete", "partial"}
 
-    # Advanced card payments should reference the online card schedule and use
-    # the commercial international surcharge schedule.
-    advanced = next(r for r in result.transaction_fee_rules if r.id == "advanced_card_payments")
-    assert advanced.percentage == "2.99"
-    assert advanced.fixed_fee_schedule == "online_card_payments"
-    assert advanced.international_surcharge_schedule == "commercial"
-    assert advanced.rate_reference is not None
-    assert advanced.rate_reference.resolved_rate is not None
-    assert advanced.rate_reference.resolved_rate.percentage == "2.99"
 
-    # APM default/special variants should both be present.
+def test_germany_advanced_card_variants() -> None:
+    result = _germany_result()
+    advanced_rules = [r for r in result.transaction_fee_rules if r.id == "advanced_card_payments"]
+    assert advanced_rules
+    standard = next(r for r in advanced_rules if r.variant_id == "standard")
+    assert standard.percentage == "2.99"
+    assert standard.fixed_fee_schedule == "online_card_payments"
+    assert standard.international_surcharge_schedule == "commercial"
+    assert standard.rate_reference is not None
+    assert standard.rate_reference.resolved_rate is not None
+    assert standard.rate_reference.resolved_rate.percentage == "2.99"
+
+    assert {r.variant_id for r in advanced_rules} >= {"standard", "donations", "eterminal"}
+    donations = next(r for r in advanced_rules if r.variant_id == "donations")
+    assert donations.percentage == "2.49"
+    assert donations.conditions.get("transaction_purpose") == "donation"
+    eterminal = next(r for r in advanced_rules if r.variant_id == "eterminal")
+    assert eterminal.percentage == "3.39"
+    assert eterminal.conditions.get("authorization_channel") == "terminal"
+
+
+def test_germany_apm_variants() -> None:
+    result = _germany_result()
     apm_rules = {r.variant_id: r for r in result.transaction_fee_rules if r.id == "alternative_payment_methods"}
     assert "default" in apm_rules
     assert "special" in apm_rules
@@ -131,6 +148,55 @@ def test_classify_real_germany_fixture() -> None:
         "skrill",
         "thai_online_bank_transfer",
     ]
+
+
+def test_inheritance_diagnostic_uses_product_id_not_schedule_id() -> None:
+    """Coverage and diagnostics must count inherited schedules by product, not schedule name."""
+    commercial = _table(
+        "Standardgebühr beim Empfang von Inlandstransaktionen",
+        [
+            ["PayPal Checkout", "2.99% + 0.39 EUR"],
+            ["Alle anderen geschäftlichen Transaktionen", "2.99% + 0.39 EUR"],
+        ],
+    )
+    fixed_fee = _table(
+        "Festgebühr bei geschäftlichen Transaktionen",
+        [
+            ["EUR", "0.39 EUR"],
+        ],
+    )
+    result = classify_tables([commercial, fixed_fee])
+    assert result.coverage_summary.inherited_schedules >= 1
+    inherited = [d for d in result.diagnostics if d.type == "inherited_schedule"]
+    assert any(d.rule_id == "paypal_checkout" for d in inherited)
+
+
+def test_nested_reference_schedule_validated() -> None:
+    """Resolved references must not carry dangling schedule references."""
+    commercial = _table(
+        "Standardgebühr beim Empfang von Inlandstransaktionen",
+        [
+            [
+                "Zahlungen mit Kredit- und Debitkarten mit erweiterten Funktionen",
+                "Es gelten die Gebühren für Online-Kartenzahlungen",
+            ],
+            ["PayPal Checkout", "2.99% + 0.39 EUR"],
+        ],
+    )
+    online_card = _table(
+        "Empfang von Inlandstransaktionen über die PayPal-Dienste für Online-Zahlungen",
+        [
+            ["Zahlungen mit Kredit- und Debitkarten mit erweiterten Funktionen", "2.99% + 0.39 EUR"],
+        ],
+    )
+    result = classify_tables([commercial, online_card])
+    rule = next(r for r in result.transaction_fee_rules if r.id == "advanced_card_payments")
+    assert rule.rate_reference is not None
+    assert rule.rate_reference.resolved_rate is not None
+    # The referenced online-card rule uses a fixed-fee schedule; the commercial
+    # advanced-card row should not retain a nested schedule that is not present.
+    if rule.rate_reference.resolved_rate.fixed_fee_schedule:
+        assert rule.rate_reference.resolved_rate.fixed_fee_schedule in result.fixed_fee_schedules
 
 
 def test_nacionales_keyword_does_not_match_internacionales() -> None:

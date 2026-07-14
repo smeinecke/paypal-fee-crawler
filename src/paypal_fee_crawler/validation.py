@@ -16,6 +16,7 @@ from .models import (
     CountryManifest,
     CountryOutput,
     PublicCountryOutput,
+    TransactionFeeRule,
 )
 from .normalize import CURRENCY_CODES, normalize_decimal_string
 from .regression import _country_output_hash
@@ -95,6 +96,61 @@ def _validate_table_plausibility(output: CountryOutput, errors: list[str]) -> No
                             errors.append(f"Implausible percentage: {token.raw}")
 
 
+def _validate_transaction_rules(derived: Any, label: str) -> list[str]:
+    """Validate transaction rules for schedule references, calculability and uniqueness."""
+    errors: list[str] = []
+    seen_rule_keys: dict[str, TransactionFeeRule] = {}
+
+    for rule in derived.transaction_fee_rules:
+        if rule.fixed_fee_schedule and rule.fixed_fee_schedule not in derived.fixed_fee_schedules:
+            errors.append(f"{label} rule {rule.id} references missing fixed-fee schedule {rule.fixed_fee_schedule}")
+        if (
+            rule.international_surcharge_schedule
+            and rule.international_surcharge_schedule not in derived.international_surcharge_schedules
+        ):
+            errors.append(
+                f"{label} rule {rule.id} references missing international surcharge schedule "
+                f"{rule.international_surcharge_schedule}"
+            )
+
+        resolved = rule.rate_reference.resolved_rate if rule.rate_reference else None
+        if resolved:
+            if resolved.fixed_fee_schedule and resolved.fixed_fee_schedule not in derived.fixed_fee_schedules:
+                errors.append(
+                    f"{label} rule {rule.id} has unresolved nested fixed-fee reference {resolved.fixed_fee_schedule}"
+                )
+            if (
+                resolved.international_surcharge_schedule
+                and resolved.international_surcharge_schedule not in derived.international_surcharge_schedules
+            ):
+                errors.append(
+                    f"{label} rule {rule.id} has unresolved nested international-surcharge reference "
+                    f"{resolved.international_surcharge_schedule}"
+                )
+
+        has_legacy_component = bool(
+            rule.percentage is not None
+            or rule.fixed_fee_schedule is not None
+            or rule.international_surcharge_schedule is not None
+            or (rule.rate_reference and rule.rate_reference.resolved_rate is not None)
+        )
+        if rule.calculation_status == "calculable" and not rule.fee_components and not has_legacy_component:
+            errors.append(f"{label} rule {rule.id} is marked calculable but has no fee components")
+
+        conditions = rule.conditions or {}
+        key = json.dumps(
+            [rule.id, rule.variant_id, sorted(conditions.keys()), [conditions[k] for k in sorted(conditions)]]
+        )
+        if key in seen_rule_keys:
+            other = seen_rule_keys[key]
+            if other.percentage != rule.percentage or other.fixed_fee_schedule != rule.fixed_fee_schedule:
+                errors.append(f"{label} rule {rule.id} has duplicate semantic identity with different fee definition")
+        else:
+            seen_rule_keys[key] = rule
+
+    return errors
+
+
 def _complete_derived_errors(derived: Any, label: str) -> list[str]:
     """Return consistency errors for a derived-fee result.
 
@@ -113,17 +169,7 @@ def _complete_derived_errors(derived: Any, label: str) -> list[str]:
         if not derived.fixed_fee_schedules:
             errors.append(f"{label} marked complete without fixed-fee schedules")
 
-    for rule in derived.transaction_fee_rules:
-        if rule.fixed_fee_schedule and rule.fixed_fee_schedule not in derived.fixed_fee_schedules:
-            errors.append(f"{label} rule {rule.id} references missing fixed-fee schedule {rule.fixed_fee_schedule}")
-        if (
-            rule.international_surcharge_schedule
-            and rule.international_surcharge_schedule not in derived.international_surcharge_schedules
-        ):
-            errors.append(
-                f"{label} rule {rule.id} references missing international surcharge schedule "
-                f"{rule.international_surcharge_schedule}"
-            )
+    errors.extend(_validate_transaction_rules(derived, label))
 
     for schedule_name, schedule in derived.international_surcharge_schedules.items():
         regions = [entry.payer_region for entry in schedule.entries]

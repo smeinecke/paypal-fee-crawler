@@ -271,6 +271,22 @@ class RateReference(PublicModel):
     source: Provenance | None = None
 
 
+class FeeComponent(PublicModel):
+    """One calculable fee component for a transaction rule.
+
+    Components can represent a percentage, a direct fixed monetary amount, or a
+    reference to a schedule.  The ``type`` field determines which other fields
+    are meaningful.
+    """
+
+    type: str
+    value: str | None = None
+    amount: str | None = None
+    currency: str | None = None
+    schedule_id: str | None = None
+    operator: str | None = None
+
+
 class TransactionFeeRule(PublicModel):
     """A single product-specific transaction fee rule.
 
@@ -278,6 +294,11 @@ class TransactionFeeRule(PublicModel):
     multiple legitimate pricing variants for the same product (e.g. special
     versus default alternative payment methods). Both fields participate in
     the stable rule identity key.
+
+    ``calculation_status`` describes whether and how the rule can be used by a
+    fee calculator. ``calculable`` rules carry at least one usable fee
+    component; other states preserve source rows for review without exposing
+    them as ready-to-use rates.
     """
 
     id: str
@@ -289,6 +310,8 @@ class TransactionFeeRule(PublicModel):
     rate_reference: RateReference | None = None
     conditions: dict[str, Any] = Field(default_factory=dict)
     source: Provenance | None = None
+    calculation_status: str = "calculable"
+    fee_components: list[FeeComponent] = Field(default_factory=list)
 
 
 class UnclassifiedFeeRow(PublicModel):
@@ -335,6 +358,9 @@ class CoverageSummary(PublicModel):
     """Summary of how every source row was classified."""
 
     transaction_rules: int = 0
+    calculable_rules: int = 0
+    non_calculable_rules: int = 0
+    direct_fixed_fees: int = 0
     fixed_fee_entries: int = 0
     international_surcharge_entries: int = 0
     reference_sources: int = 0
@@ -346,8 +372,11 @@ class CoverageSummary(PublicModel):
     missing_required_schedules: int = 0
     inherited_schedules: int = 0
     unresolved_references: int = 0
+    unresolved_nested_references: int = 0
     extracted_apm_methods: int = 0
     unknown_apm_methods: int = 0
+    unsupported_fee_shapes: int = 0
+    ambiguous_identities: int = 0
 
 
 class DerivedFeeResult(PublicModel):

@@ -22,6 +22,7 @@ from .models import (
     CurrencyConversion,
     DerivedFeeResult,
     Diagnostic,
+    FeeComponent,
     FixedFeeSchedule,
     InternationalSurchargeSchedule,
     InternationalSurchargeScheduleEntry,
@@ -1023,6 +1024,32 @@ def _classify_table_category(table: Table) -> str | None:
     )
     if any(kw in text for kw in fixed_fee_keywords):
         return "fixed_fee_table"
+    # Direct monetary fee tables (chargebacks, disputes, withdrawals, refunds,
+    # card verification, authorisation) are not generic fixed-fee schedules and
+    # must be identified separately.
+    direct_fixed_fee_keywords = (
+        "chargeback",
+        "rückbuchung",
+        "rückbuchungs",
+        "dispute",
+        "streit",
+        "claim",
+        "withdrawal",
+        "auszahlung",
+        "auszahlungen",
+        "payout",
+        "verification",
+        "verifizierung",
+        "authorization",
+        "autorisierung",
+        "refund",
+        "rückerstattung",
+        "rückerstattungen",
+        "erstattung",
+        "terugbetaling",
+    )
+    if any(kw in text for kw in direct_fixed_fee_keywords):
+        return "fixed_fee_table"
     international_surcharge_keywords = (
         "prozentuale zusatzgebühr",
         "zusätzliche prozentuale gebühr",
@@ -1621,13 +1648,27 @@ def _is_apm_special_label(label: str) -> bool:
 
 def _variant_id_for_row(product_id: str, label: str, methods: list[str]) -> str | None:
     """Return a stable variant id for a row, if needed."""
-    if product_id != "alternative_payment_methods":
-        return None
-    if any(m in _APM_SPECIAL_METHOD_IDS for m in methods):
-        return "special"
-    if methods or "online" in _norm(label) and "bank" in _norm(label):
+    if product_id == "alternative_payment_methods":
+        if any(m in _APM_SPECIAL_METHOD_IDS for m in methods):
+            return "special"
         return "default"
-    return "default"
+    if product_id == "advanced_card_payments":
+        if "interchange" in _norm(label):
+            if "++" in label or "plus plus" in _norm(label):
+                return "interchange_plus_plus"
+            return "interchange_plus"
+        if any(kw in _norm(label) for kw in ("spende", "spenden", "donation", "donations", "donativ")):
+            return "donations"
+        if any(kw in _norm(label) for kw in ("eterminal", "terminal", "point of sale", "card present")):
+            return "eterminal"
+        return None
+    if product_id == "qr_code_payments":
+        if any(kw in _norm(label) for kw in ("unter", "under", "below", "less than", "<")):
+            return "below_threshold"
+        if any(kw in _norm(label) for kw in ("über", "over", "above", "greater than", ">")):
+            return "above_threshold"
+        return None
+    return None
 
 
 def _conditions_for_row(
@@ -1645,7 +1686,50 @@ def _conditions_for_row(
             methods, _ = _extract_apm_methods(label)
         if methods:
             conditions["payment_methods"] = sorted(methods)
+    if product_id == "advanced_card_payments" and variant_id:
+        if variant_id == "donations":
+            conditions["transaction_purpose"] = "donation"
+        elif variant_id == "eterminal":
+            conditions["authorization_channel"] = "terminal"
+            conditions["point_of_sale"] = True
+        elif variant_id.startswith("interchange_plus"):
+            conditions["pricing_plan"] = variant_id
+    if product_id == "qr_code_payments" and variant_id:
+        amount_condition = _extract_amount_condition(label)
+        if amount_condition:
+            conditions["amount"] = amount_condition
     return conditions
+
+
+def _extract_amount_condition(label: str) -> dict[str, Any] | None:
+    """Parse a threshold expression like 'below 10.00 EUR' into a condition."""
+    text = _norm(label)
+    operators = {
+        "<": "lt",
+        "<=": "lte",
+        ">": "gt",
+        ">=": "gte",
+        "under": "lt",
+        "below": "lt",
+        "less than": "lt",
+        "unter": "lt",
+        "über": "gt",
+        "over": "gt",
+        "above": "gt",
+        "greater than": "gt",
+    }
+    for op_token, op in operators.items():
+        # Match the operator token followed by a number and optional currency.
+        pattern = re.escape(op_token) + r"\s+([0-9]+(?:[.,][0-9]+)?)\s*([A-Z]{3})?"
+        match = re.search(pattern, text)
+        if match:
+            value = normalize_decimal_string(match.group(1))
+            currency = match.group(2) or None
+            result: dict[str, Any] = {"operator": op, "value": value}
+            if currency:
+                result["currency"] = currency
+            return result
+    return None
 
 
 def _schedule_name_from_table(table: Table, default: str | None) -> str:
@@ -1805,6 +1889,96 @@ def _schedule_name_from_table(table: Table, default: str | None) -> str:
             "punto de venta",
             "punto vendita",
             "punkty sprzedaży",
+        ),
+        "qr_code_payments": (
+            "qr-code",
+            "qr code",
+            "qr code payments",
+            "qr-code-transaktionen",
+            "qr-code-transaktion",
+            "qr-code-zahlungen",
+            "qr-code-zahlung",
+            "qr-code-betalinger",
+            "qr kode",
+            "qr-kode",
+            "qr kode-betalinger",
+            "qr-kode-betalinger",
+        ),
+        "recipient_service": (
+            "recipient service",
+            "empfänger",
+            "empfängerinnen",
+            "ontvanger",
+            "destinatario",
+            "destinataire",
+            "grand-bretagne",
+            "großbritannien",
+            "united kingdom",
+            "in großbritannien ansässig",
+            "british recipient",
+            "uk recipient",
+        ),
+        "withdrawals": (
+            "withdrawal",
+            "withdrawals",
+            "auszahlung",
+            "auszahlungen",
+            "payout",
+            "uttag",
+            "uitoog",
+            "wypłata",
+            "retrait",
+            "retiro",
+            "ritiro",
+            "bank transfer",
+            "bank transfer withdrawal",
+        ),
+        "chargebacks": (
+            "chargeback",
+            "chargebacks",
+            "rückbuchung",
+            "rückbuchungen",
+            "rückbuchungsgebühr",
+            "contra reembolso",
+            "chargeback fee",
+            "chargeback fees",
+        ),
+        "refunds": (
+            "refund",
+            "refunds",
+            "rückerstattung",
+            "rückerstattungen",
+            "erstattung",
+            "erstattungen",
+            "terugbetaling",
+            "remboursement",
+            "rimborso",
+            "reembolso",
+        ),
+        "disputes": (
+            "dispute",
+            "disputes",
+            "streit",
+            "claim",
+            "claims",
+            "disputed",
+            "klage",
+            "beschwerde",
+            "geschil",
+            "litige",
+            "controversia",
+            "contestazione",
+        ),
+        "card_verification": (
+            "card verification",
+            "kartenverifizierung",
+            "kartenbestätigung",
+            "kreditkartenbestätigung",
+            "credit card verification",
+            "debit card verification",
+            "3d secure",
+            "verification",
+            "verifizierung",
         ),
         "commercial": (
             "geschäftlichen transaktionen",
@@ -2391,6 +2565,8 @@ def _extract_rules_from_rate_table(
         reference = _detect_reference(row, product_id)
         methods, unknown_methods = _extract_apm_methods(label)
         variant_id = _variant_id_for_row(product_id, label, methods)
+        if variant_id is None:
+            variant_id = "standard"
         fixed_schedule = _fixed_fee_schedule_for(product_id)
         intl_schedule = _international_surcharge_schedule_for(product_id)
         conditions = _conditions_for_row(product_id, variant_id, label, methods=methods)
@@ -2431,12 +2607,12 @@ _FIXED_FEE_SCHEDULE_FOR: dict[str, str | None] = {
     "micropayments": "micropayments",
     "alternative_payment_methods": "alternative_payment_methods",
     "pos_transactions": None,
-    "chargebacks": None,
-    "refunds": None,
-    "disputes": None,
-    "card_verification": None,
+    "chargebacks": "chargebacks",
+    "refunds": "refunds",
+    "disputes": "disputes",
+    "card_verification": "card_verification",
     "currency_conversion": None,
-    "withdrawals": None,
+    "withdrawals": "withdrawals",
 }
 
 # Subset of _FIXED_FEE_SCHEDULE_FOR that represents explicit inheritance.
@@ -2465,7 +2641,7 @@ _INTERNATIONAL_SURCHARGE_SCHEDULE_FOR: dict[str, str | None] = {
     "guest_checkout": "commercial",
     "invoice_pay_later": "commercial",
     "pay_later_consumer": "commercial",
-    "qr_code_payments": "commercial",
+    "qr_code_payments": None,
     "donations": "donations",
     "nonprofit": "nonprofit",
     "micropayments": None,
@@ -2486,7 +2662,6 @@ _INTERNATIONAL_SURCHARGE_INHERITANCE: dict[str, str] = {
     "guest_checkout": "commercial",
     "invoice_pay_later": "commercial",
     "pay_later_consumer": "commercial",
-    "qr_code_payments": "commercial",
 }
 
 
@@ -2498,6 +2673,15 @@ def _international_surcharge_schedule_for(product_id: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Schedule assembly
 # ---------------------------------------------------------------------------
+
+
+_DIRECT_FIXED_FEE_SCHEDULE_PRODUCTS: dict[str, str] = {
+    "chargebacks": "chargebacks",
+    "refunds": "refunds",
+    "disputes": "disputes",
+    "card_verification": "card_verification",
+    "withdrawals": "withdrawals",
+}
 
 
 def _collect_schedules(
@@ -2586,6 +2770,49 @@ def _collect_schedules(
     return fixed, international, diagnostics
 
 
+def _create_direct_fixed_fee_rules(
+    fixed_schedules: dict[str, FixedFeeSchedule],
+    referenced_schedules: set[str],
+) -> list[TransactionFeeRule]:
+    """Create calculable rules for schedules that are not referenced by a rate table.
+
+    Chargebacks, disputes, refunds, card verification and withdrawals are
+    expressed as direct monetary amounts per currency. They do not have a
+    percentage-based rate table, so they cannot be represented by the normal
+    rate-table extraction path.
+    """
+    rules: list[TransactionFeeRule] = []
+    for schedule_id, schedule in fixed_schedules.items():
+        if schedule_id in referenced_schedules:
+            continue
+        product_id = _DIRECT_FIXED_FEE_SCHEDULE_PRODUCTS.get(schedule_id)
+        if not product_id:
+            continue
+        components = [
+            FeeComponent(type="fixed_amount", amount=amount, currency=currency)
+            for currency, amount in schedule.entries.items()
+        ]
+        if not components:
+            continue
+        provenance = schedule.sources[0] if schedule.sources else None
+        rules.append(
+            TransactionFeeRule(
+                id=product_id,
+                variant_id="standard",
+                label=provenance.section_heading if provenance else None,
+                percentage=None,
+                fixed_fee_schedule=None,
+                international_surcharge_schedule=None,
+                conditions={},
+                rate_reference=None,
+                source=provenance,
+                calculation_status="calculable",
+                fee_components=components,
+            )
+        )
+    return rules
+
+
 def _merge_provenance_sources(*source_lists: list[Provenance]) -> list[Provenance]:
     """Combine multiple provenance lists without duplicates."""
     merged: list[Provenance] = []
@@ -2601,6 +2828,16 @@ def _merge_provenance_sources(*source_lists: list[Provenance]) -> list[Provenanc
 # ---------------------------------------------------------------------------
 
 
+_STATUS_DEFECT_DIAGNOSTICS: set[str] = {
+    "missing_required_schedule",
+    "conflicting_schedule_entry",
+    "unresolved_reference",
+    "unresolved_nested_reference",
+    "ambiguous_identity",
+    "unsupported_fee_shape",
+}
+
+
 def _derive_status(
     rules: list[TransactionFeeRule],
     unclassified: list[UnclassifiedFeeRow],
@@ -2612,15 +2849,23 @@ def _derive_status(
 ) -> str:
     if not rules and not fixed_schedules and not international_schedules:
         return "unclassified"
-    if ambiguous or unclassified or ignored:
+    # Informational or explicitly ignored rows are not defects. Ambiguous and
+    # unclassified rows are.
+    if ambiguous or unclassified:
         return "partial"
-    # Any diagnostic indicates the classification is not fully trustworthy.
-    if diagnostics:
+    if any(d.type in _STATUS_DEFECT_DIAGNOSTICS for d in diagnostics):
         return "partial"
-    # A complete result should expose the core commercial rules for a market.
-    has_commercial = any(r.id in {"paypal_checkout", "goods_and_services", "other_commercial"} for r in rules)
-    if has_commercial and bool(fixed_schedules):
+    # A complete result should expose the core commercial rules and all core
+    # rules must be calculable with resolved schedule references.
+    core_ids = {"paypal_checkout", "goods_and_services", "other_commercial"}
+    core_rules = [r for r in rules if r.id in core_ids]
+    if core_rules and all(r.calculation_status == "calculable" for r in core_rules) and bool(fixed_schedules):
         return "complete"
+    if any(r.id in core_ids for r in rules):
+        return "partial"
+    # Non-commercial markets may still be partial if any rule is incomplete.
+    if any(r.calculation_status != "calculable" for r in rules if r.id not in core_ids):
+        return "partial"
     return "partial"
 
 
@@ -2658,6 +2903,42 @@ def _rule_has_rate(rule: TransactionFeeRule) -> bool:
 def _is_reference_source(rule: TransactionFeeRule) -> bool:
     """Return True if the rule is a reference that resolves to another rule."""
     return bool(rule.rate_reference is not None and rule.rate_reference.resolved_rate is not None)
+
+
+def _fee_components_for_rule(rule: TransactionFeeRule) -> list[FeeComponent]:
+    """Build the explicit fee components for a transaction rule.
+
+    The legacy ``percentage`` / ``fixed_fee_schedule`` / ``international_surcharge_schedule``
+    fields are translated into a list of typed components so that a fee
+    calculator can consume a single structure.
+    """
+    components: list[FeeComponent] = []
+    if rule.percentage is not None:
+        components.append(FeeComponent(type="percentage", value=rule.percentage))
+    if rule.fixed_fee_schedule is not None:
+        components.append(FeeComponent(type="fixed_fee_schedule", schedule_id=rule.fixed_fee_schedule))
+    if rule.international_surcharge_schedule is not None:
+        components.append(
+            FeeComponent(type="international_surcharge_schedule", schedule_id=rule.international_surcharge_schedule)
+        )
+    if rule.rate_reference and rule.rate_reference.resolved_rate and rule.rate_reference.resolved_rate.percentage:
+        components.append(FeeComponent(type="resolved_percentage", value=rule.rate_reference.resolved_rate.percentage))
+    return components
+
+
+def _derive_calculation_status(rule: TransactionFeeRule) -> str:
+    """Return the calculability status for a rule.
+
+    A rule is ``calculable`` when it has at least one usable fee component:
+    a percentage, a resolved percentage, a fixed-fee schedule or an
+    international-surcharge schedule.  Rules that are purely informational or
+    have no usable component are marked ``incomplete``.
+    """
+    if _fee_components_for_rule(rule):
+        return "calculable"
+    if rule.rate_reference and rule.rate_reference.resolved_rate is None:
+        return "reference_only"
+    return "incomplete"
 
 
 def _deduplicate_rules(
@@ -2708,6 +2989,198 @@ def _canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False)
 
 
+def _resolve_rate_references(
+    extracted_rules: list[_ExtractedRule],
+    unresolved_rules: list[TransactionFeeRule],
+    diagnostics: list[Diagnostic],
+) -> None:
+    """Resolve textual references against all collected rules."""
+    for i, extracted in enumerate(extracted_rules):
+        if not extracted.reference:
+            continue
+        rule = unresolved_rules[i]
+        resolved = _resolve_reference(extracted.reference, unresolved_rules)
+        if resolved:
+            percentage = rule.percentage
+            if resolved.percentage and percentage is None:
+                percentage = resolved.percentage
+            unresolved_rules[i] = rule.model_copy(
+                update={
+                    "rate_reference": RateReference(
+                        reference=extracted.reference,
+                        resolved_rate=resolved,
+                        source=rule.source,
+                    ),
+                    "percentage": percentage,
+                }
+            )
+        else:
+            diagnostics.append(
+                Diagnostic(
+                    type="unresolved_reference",
+                    rule_id=rule.id,
+                    label=extracted.label,
+                    sources=[rule.source] if rule.source else [],
+                )
+            )
+
+
+def _validate_top_level_schedule_references(
+    unresolved_rules: list[TransactionFeeRule],
+    fixed_schedules: dict[str, FixedFeeSchedule],
+    international_schedules: dict[str, InternationalSurchargeSchedule],
+    diagnostics: list[Diagnostic],
+) -> None:
+    """Validate top-level schedule references and emit inherited/missing diagnostics."""
+    for idx, rule in enumerate(unresolved_rules):
+        if rule.fixed_fee_schedule:
+            if rule.fixed_fee_schedule in fixed_schedules:
+                if rule.id in _FIXED_FEE_INHERITANCE and rule.fixed_fee_schedule == _FIXED_FEE_INHERITANCE[rule.id]:
+                    diagnostics.append(
+                        Diagnostic(
+                            type="inherited_schedule",
+                            rule_id=rule.id,
+                            schedule_type="fixed_fee",
+                            expected_schedule=rule.fixed_fee_schedule,
+                            inherited_from=_FIXED_FEE_INHERITANCE[rule.id],
+                            sources=[rule.source] if rule.source else [],
+                        )
+                    )
+            else:
+                diagnostics.append(
+                    Diagnostic(
+                        type="missing_required_schedule",
+                        rule_id=rule.id,
+                        schedule_type="fixed_fee",
+                        expected_schedule=rule.fixed_fee_schedule,
+                        sources=[rule.source] if rule.source else [],
+                    )
+                )
+                rule = rule.model_copy(update={"fixed_fee_schedule": None})
+        if rule.international_surcharge_schedule:
+            if rule.international_surcharge_schedule in international_schedules:
+                if (
+                    rule.id in _INTERNATIONAL_SURCHARGE_INHERITANCE
+                    and rule.international_surcharge_schedule == _INTERNATIONAL_SURCHARGE_INHERITANCE[rule.id]
+                ):
+                    diagnostics.append(
+                        Diagnostic(
+                            type="inherited_schedule",
+                            rule_id=rule.id,
+                            schedule_type="international_surcharge",
+                            expected_schedule=rule.international_surcharge_schedule,
+                            inherited_from=_INTERNATIONAL_SURCHARGE_INHERITANCE[rule.id],
+                            sources=[rule.source] if rule.source else [],
+                        )
+                    )
+            else:
+                diagnostics.append(
+                    Diagnostic(
+                        type="missing_required_schedule",
+                        rule_id=rule.id,
+                        schedule_type="international_surcharge",
+                        expected_schedule=rule.international_surcharge_schedule,
+                        sources=[rule.source] if rule.source else [],
+                    )
+                )
+                rule = rule.model_copy(update={"international_surcharge_schedule": None})
+        unresolved_rules[idx] = rule
+
+
+def _validate_nested_schedule_references(
+    unresolved_rules: list[TransactionFeeRule],
+    fixed_schedules: dict[str, FixedFeeSchedule],
+    international_schedules: dict[str, InternationalSurchargeSchedule],
+    diagnostics: list[Diagnostic],
+) -> None:
+    """Validate nested schedule references inside resolved rates."""
+    for idx, rule in enumerate(unresolved_rules):
+        if not (rule.rate_reference and rule.rate_reference.resolved_rate):
+            continue
+        resolved = rule.rate_reference.resolved_rate
+        new_rate = resolved
+        if resolved.fixed_fee_schedule and resolved.fixed_fee_schedule not in fixed_schedules:
+            diagnostics.append(
+                Diagnostic(
+                    type="unresolved_nested_reference",
+                    rule_id=rule.id,
+                    schedule_type="fixed_fee",
+                    expected_schedule=resolved.fixed_fee_schedule,
+                    sources=[rule.source] if rule.source else [],
+                )
+            )
+            new_rate = new_rate.model_copy(update={"fixed_fee_schedule": None})
+        if (
+            resolved.international_surcharge_schedule
+            and resolved.international_surcharge_schedule not in international_schedules
+        ):
+            diagnostics.append(
+                Diagnostic(
+                    type="unresolved_nested_reference",
+                    rule_id=rule.id,
+                    schedule_type="international_surcharge",
+                    expected_schedule=resolved.international_surcharge_schedule,
+                    sources=[rule.source] if rule.source else [],
+                )
+            )
+            new_rate = new_rate.model_copy(update={"international_surcharge_schedule": None})
+        if new_rate is not resolved:
+            unresolved_rules[idx] = rule.model_copy(
+                update={"rate_reference": rule.rate_reference.model_copy(update={"resolved_rate": new_rate})}
+            )
+
+
+def _materialize_fee_components(
+    rules: list[TransactionFeeRule],
+) -> list[TransactionFeeRule]:
+    """Materialize fee components and calculability status for each rule."""
+    return [
+        rule.model_copy(
+            update={
+                "calculation_status": _derive_calculation_status(rule),
+                "fee_components": _fee_components_for_rule(rule),
+            }
+        )
+        for rule in rules
+    ]
+
+
+def _count_inherited_schedules(rules: list[TransactionFeeRule]) -> int:
+    """Return the number of rules that use inherited schedules."""
+    inherited = 0
+    for rule in rules:
+        if rule.fixed_fee_schedule and rule.id in _FIXED_FEE_INHERITANCE:
+            inherited += 1
+        if rule.international_surcharge_schedule and rule.id in _INTERNATIONAL_SURCHARGE_INHERITANCE:
+            inherited += 1
+    return inherited
+
+
+def _count_direct_fixed_fees(rules: list[TransactionFeeRule]) -> int:
+    """Return the number of direct fixed monetary fee rules."""
+    fixed_schedule_count = sum(
+        1
+        for r in rules
+        if r.percentage is None and r.fixed_fee_schedule is not None and r.international_surcharge_schedule is None
+    )
+    fee_component_count = sum(
+        1 for r in rules for c in r.fee_components if c.type == "fixed_amount" and c.amount is not None
+    )
+    return fixed_schedule_count + fee_component_count
+
+
+def _diagnostic_counts(diagnostics: list[Diagnostic]) -> dict[str, int]:
+    """Return counts for diagnostic types used by coverage summary."""
+    types = [d.type for d in diagnostics]
+    return {
+        "conflicts": types.count("conflicting_schedule_entry"),
+        "missing_schedules": types.count("missing_required_schedule"),
+        "unresolved_references": types.count("unresolved_reference"),
+        "unresolved_nested_references": types.count("unresolved_nested_reference"),
+        "unknown_apm": types.count("unknown_apm_method"),
+    }
+
+
 def _build_coverage_summary(
     rules: list[TransactionFeeRule],
     unresolved_rules: list[TransactionFeeRule],
@@ -2720,51 +3193,37 @@ def _build_coverage_summary(
     extracted_rules: list[_ExtractedRule],
 ) -> CoverageSummary:
     """Compute the classification coverage summary."""
-    fixed_fee_entries = sum(len(s.entries) for s in fixed_schedules.values())
-    intl_entries = sum(len(s.entries) for s in international_schedules.values())
-    reference_sources = sum(1 for e in extracted_rules if e.reference)
-    # Count targets from all resolved references, including the ones that are
-    # deduplicated away in the final transaction rule list.
+    counts = _diagnostic_counts(diagnostics)
     reference_target_ids = {
         r.rate_reference.resolved_rate.rule_id
         for r in unresolved_rules
         if r.rate_reference and r.rate_reference.resolved_rate and r.rate_reference.resolved_rate.rule_id
     }
-    conflicts = sum(1 for d in diagnostics if d.type == "conflicting_schedule_entry")
-    missing_schedules = sum(1 for d in diagnostics if d.type == "missing_required_schedule")
-    unresolved_references = sum(1 for d in diagnostics if d.type == "unresolved_reference")
-    unknown_apm = sum(1 for d in diagnostics if d.type == "unknown_apm_method")
     extracted_apm = sum(
         len(e.conditions.get("payment_methods", []))
         for e in extracted_rules
         if e.product_id == "alternative_payment_methods"
     )
 
-    inherited = 0
-    for rule in rules:
-        if rule.fixed_fee_schedule and rule.fixed_fee_schedule in _FIXED_FEE_INHERITANCE:
-            inherited += 1
-        if (
-            rule.international_surcharge_schedule
-            and rule.international_surcharge_schedule in _INTERNATIONAL_SURCHARGE_INHERITANCE
-        ):
-            inherited += 1
-
     return CoverageSummary(
         transaction_rules=len(rules),
-        fixed_fee_entries=fixed_fee_entries,
-        international_surcharge_entries=intl_entries,
-        reference_sources=reference_sources,
+        calculable_rules=sum(1 for r in rules if r.calculation_status == "calculable"),
+        non_calculable_rules=sum(1 for r in rules if r.calculation_status != "calculable"),
+        direct_fixed_fees=_count_direct_fixed_fees(rules),
+        fixed_fee_entries=sum(len(s.entries) for s in fixed_schedules.values()),
+        international_surcharge_entries=sum(len(s.entries) for s in international_schedules.values()),
+        reference_sources=sum(1 for e in extracted_rules if e.reference),
         reference_targets=len(reference_target_ids),
         ignored=len(ignored_rows),
         unclassified=len(unclassified_rows),
         ambiguous=len(ambiguous_rows),
-        conflicts=conflicts,
-        missing_required_schedules=missing_schedules,
-        inherited_schedules=inherited,
-        unresolved_references=unresolved_references,
+        conflicts=counts["conflicts"],
+        missing_required_schedules=counts["missing_schedules"],
+        inherited_schedules=_count_inherited_schedules(rules),
+        unresolved_references=counts["unresolved_references"],
+        unresolved_nested_references=counts["unresolved_nested_references"],
         extracted_apm_methods=extracted_apm,
-        unknown_apm_methods=unknown_apm,
+        unknown_apm_methods=counts["unknown_apm"],
     )
 
 
@@ -2823,6 +3282,8 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
                 conditions=extracted.conditions,
                 rate_reference=None,
                 source=prov,
+                calculation_status="calculable",
+                fee_components=[],
             )
         )
         for unknown in extracted.unknown_apm_methods or []:
@@ -2841,93 +3302,52 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
                 )
             )
 
-    # Second pass: resolve textual references against all collected rules.
-    for i, extracted in enumerate(extracted_rules):
-        if not extracted.reference:
+    # Direct fixed-fee tables (chargebacks, refunds, withdrawals, etc.) are not
+    # tied to a rate table. Create a rule per schedule for any schedule that is
+    # not already referenced by a product's rate-table rule.
+    referenced_schedules = {r.fixed_fee_schedule for r in unresolved_rules if r.fixed_fee_schedule}
+    direct_fixed_rules = _create_direct_fixed_fee_rules(fixed_schedules, referenced_schedules)
+    unresolved_rules.extend(direct_fixed_rules)
+
+    # Recipient service fees (e.g. UK recipient surcharge) are independent
+    # surcharge schedules and not part of the commercial international surcharge.
+    # Expose them as a separate rule so the fee is selectable.
+    referenced_intl_schedules = {
+        r.international_surcharge_schedule for r in unresolved_rules if r.international_surcharge_schedule
+    }
+    for schedule_id, schedule in international_schedules.items():
+        if schedule_id in referenced_intl_schedules or not schedule.entries:
             continue
-        rule = unresolved_rules[i]
-        resolved = _resolve_reference(extracted.reference, unresolved_rules)
-        if resolved:
-            percentage = rule.percentage
-            if resolved.percentage and percentage is None:
-                percentage = resolved.percentage
-            unresolved_rules[i] = rule.model_copy(
-                update={
-                    "rate_reference": RateReference(
-                        reference=extracted.reference,
-                        resolved_rate=resolved,
-                        source=rule.source,
-                    ),
-                    "percentage": percentage,
-                }
-            )
-        else:
-            diagnostics.append(
-                Diagnostic(
-                    type="unresolved_reference",
-                    rule_id=rule.id,
-                    label=extracted.label,
-                    sources=[rule.source] if rule.source else [],
+        if schedule_id == "recipient_service":
+            provenance = schedule.sources[0] if schedule.sources else None
+            unresolved_rules.append(
+                TransactionFeeRule(
+                    id="recipient_service",
+                    variant_id="standard",
+                    label=provenance.section_heading if provenance else None,
+                    percentage=None,
+                    fixed_fee_schedule=None,
+                    international_surcharge_schedule=schedule_id,
+                    conditions={"recipient_location": "GB"},
+                    rate_reference=None,
+                    source=provenance,
+                    calculation_status="calculable",
+                    fee_components=[FeeComponent(type="international_surcharge_schedule", schedule_id=schedule_id)],
                 )
             )
 
-    # Validate schedule references. Missing schedules are reported as diagnostics
-    # and the dangling reference is cleared; there is no implicit fallback to a
-    # different schedule family.
-    for idx, rule in enumerate(unresolved_rules):
-        if rule.fixed_fee_schedule:
-            if rule.fixed_fee_schedule in fixed_schedules:
-                if rule.fixed_fee_schedule in _FIXED_FEE_INHERITANCE:
-                    diagnostics.append(
-                        Diagnostic(
-                            type="inherited_schedule",
-                            rule_id=rule.id,
-                            schedule_type="fixed_fee",
-                            expected_schedule=rule.fixed_fee_schedule,
-                            inherited_from=_FIXED_FEE_INHERITANCE[rule.fixed_fee_schedule],
-                            sources=[rule.source] if rule.source else [],
-                        )
-                    )
-            else:
-                diagnostics.append(
-                    Diagnostic(
-                        type="missing_required_schedule",
-                        rule_id=rule.id,
-                        schedule_type="fixed_fee",
-                        expected_schedule=rule.fixed_fee_schedule,
-                        sources=[rule.source] if rule.source else [],
-                    )
-                )
-                rule = rule.model_copy(update={"fixed_fee_schedule": None})
-        if rule.international_surcharge_schedule:
-            if rule.international_surcharge_schedule in international_schedules:
-                if rule.international_surcharge_schedule in _INTERNATIONAL_SURCHARGE_INHERITANCE:
-                    diagnostics.append(
-                        Diagnostic(
-                            type="inherited_schedule",
-                            rule_id=rule.id,
-                            schedule_type="international_surcharge",
-                            expected_schedule=rule.international_surcharge_schedule,
-                            inherited_from=_INTERNATIONAL_SURCHARGE_INHERITANCE[rule.international_surcharge_schedule],
-                            sources=[rule.source] if rule.source else [],
-                        )
-                    )
-            else:
-                diagnostics.append(
-                    Diagnostic(
-                        type="missing_required_schedule",
-                        rule_id=rule.id,
-                        schedule_type="international_surcharge",
-                        expected_schedule=rule.international_surcharge_schedule,
-                        sources=[rule.source] if rule.source else [],
-                    )
-                )
-                rule = rule.model_copy(update={"international_surcharge_schedule": None})
-        unresolved_rules[idx] = rule
+    # Resolve references, validate schedules, and create rules for schedules
+    # that are not attached to a rate table.
+    _resolve_rate_references(extracted_rules, unresolved_rules, diagnostics)
+    _validate_top_level_schedule_references(unresolved_rules, fixed_schedules, international_schedules, diagnostics)
+    _validate_nested_schedule_references(unresolved_rules, fixed_schedules, international_schedules, diagnostics)
 
     # Merge equivalent rules and preserve legitimate variants.
     transaction_rules = _deduplicate_rules(unresolved_rules)
     transaction_rules.sort(key=_rule_sort_key)
+
+    # Materialize fee components and calculability status for each rule.
+    transaction_rules = _materialize_fee_components(transaction_rules)
 
     # Currency conversion.
     currency_conversion = None
