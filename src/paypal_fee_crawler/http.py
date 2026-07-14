@@ -112,6 +112,7 @@ class HttpClient:
                 self._client = httpx.AsyncClient(
                     timeout=timeout,
                     follow_redirects=True,
+                    cookies=None,
                     headers={
                         "User-Agent": self.config.user_agent or DEFAULT_USER_AGENT,
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",

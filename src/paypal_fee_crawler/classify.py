@@ -329,7 +329,7 @@ _TABLE_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
         "binnenland",
         "binnenlandse",
         "nationales",
-        "nacionales",
+        "transacciones nacionales",
         "nazionali",
         "nacionais",
         "nationella",
@@ -628,6 +628,8 @@ _TABLE_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
         "fiksna provizija",
         "comision fixa",
         "σταθερή χρέωση",
+        "ค่าธรรมเนียมคงที่",
+        "อัตราคงที่",
         "rögzített díja",
         "rögzített díj",
         "固定費用",
@@ -1012,6 +1014,8 @@ def _classify_table_category(table: Table) -> str | None:
         "fiksna provizija",
         "comision fixa",
         "σταθερή χρέωση",
+        "ค่าธรรมเนียมคงที่",
+        "อัตราคงที่",
         "rögzített díja",
         "rögzített díj",
         "fix díj",
@@ -1057,6 +1061,8 @@ def _classify_table_category(table: Table) -> str | None:
         "πρόσθετη χρέωση υπηρεσίας",
         "további szolgáltatási díj",
         "tarifa adicional porcentual",
+        "comisión porcentual adicional",
+        "comisión adicional con base en un porcentaje",
         "tarifa adicional baseada em porcentagem",
         "comissão percentual adicional",
         "tariffa percentuale aggiuntiva",
@@ -2159,18 +2165,25 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
                 break
 
     # Resolve any dangling schedule references by falling back to the general
-    # commercial schedule when a product-specific schedule is missing.  This keeps
-    # models with incomplete source tables (e.g. test fixtures) valid; real markets
-    # define their product-specific schedules explicitly.
+    # commercial schedule when a product-specific schedule is missing, or clear
+    # the reference when no commercial schedule exists.  This keeps models with
+    # incomplete source tables (e.g. test fixtures) valid and avoids emitting
+    # dangling references for markets that do not publish a separate surcharge
+    # schedule.
     for idx, rule in enumerate(unresolved_rules):
-        if rule.fixed_fee_schedule and rule.fixed_fee_schedule not in fixed_schedules and "commercial" in fixed_schedules:
-            rule = rule.model_copy(update={"fixed_fee_schedule": "commercial"})
+        if rule.fixed_fee_schedule and rule.fixed_fee_schedule not in fixed_schedules:
+            if "commercial" in fixed_schedules:
+                rule = rule.model_copy(update={"fixed_fee_schedule": "commercial"})
+            else:
+                rule = rule.model_copy(update={"fixed_fee_schedule": None})
         if (
             rule.international_surcharge_schedule
             and rule.international_surcharge_schedule not in international_schedules
-            and "commercial" in international_schedules
         ):
-            rule = rule.model_copy(update={"international_surcharge_schedule": "commercial"})
+            if "commercial" in international_schedules:
+                rule = rule.model_copy(update={"international_surcharge_schedule": "commercial"})
+            else:
+                rule = rule.model_copy(update={"international_surcharge_schedule": None})
         unresolved_rules[idx] = rule
 
     # Deduplicate by product id: prefer the first rule with a rate (or reference),
