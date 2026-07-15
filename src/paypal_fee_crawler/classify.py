@@ -13,6 +13,7 @@ import contextlib
 import json
 import logging
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1023,6 +1024,19 @@ _TABLE_CATEGORY_PRODUCT: dict[str, str] = {
 }
 
 
+def _is_currency_conversion_text(text: str) -> bool:
+    """Return True if the table text describes a currency conversion table."""
+    return (
+        "währungsumrechnung" in text
+        or "umrechnung des guthabens" in text
+        or "currency conversion" in text
+        or "converting payments" in text
+        or "conversions in" in text
+        or ("converting" in text and "currency" in text)
+        or ("conversion" in text and "currency" in text)
+    )
+
+
 def _classify_table_category(table: Table) -> str | None:
     text = _table_text(table)
     # Explicit schedule-type captions are authoritative and win over product
@@ -1144,15 +1158,7 @@ def _classify_table_category(table: Table) -> str | None:
     )
     if any(kw in text for kw in international_surcharge_keywords):
         return "international_surcharge_table"
-    if (
-        "währungsumrechnung" in text
-        or "umrechnung des guthabens" in text
-        or "currency conversion" in text
-        or "converting payments" in text
-        or "conversions in" in text
-        or ("converting" in text and "currency" in text)
-        or ("conversion" in text and "currency" in text)
-    ):
+    if _is_currency_conversion_text(text):
         return "currency_conversion_table"
 
     min_max_fee_keywords = (
@@ -1175,6 +1181,11 @@ def _classify_table_category(table: Table) -> str | None:
     if any(kw in text for kw in min_max_fee_keywords):
         return "min_max_fee_table"
 
+    return _select_category_from_scores(table, text)
+
+
+def _select_category_from_scores(table: Table, text: str) -> str | None:
+    """Score table text against category keywords and resolve the best category."""
     scores: dict[str, int] = {}
     for category, keywords in _TABLE_CATEGORY_KEYWORDS.items():
         score = 0
@@ -1185,39 +1196,42 @@ def _classify_table_category(table: Table) -> str | None:
         if score:
             scores[category] = score
     if not scores:
-        # Fallback: infer the category from product-specific row labels when the
-        # caption/headers are too generic (e.g. APM tables titled "Receiving
-        # Inland Transactions").
         return _classify_table_by_row_labels(table)
-    max_score = max(scores.values())
-    candidates = [cat for cat, sc in scores.items() if sc == max_score]
-    # Apply negative signals for any candidate category whose text contains a
-    # contradictory signal (e.g. "other fees" for an online-card table).
-    for category in list(candidates):
-        negatives = _TABLE_NEGATIVE_SIGNALS.get(category, ())
-        for neg in negatives:
-            if _norm(neg) in text:
-                candidates.remove(category)
-                break
+    candidates = _top_category_candidates(scores)
+    candidates = _filter_category_negative_signals(candidates, text)
     if not candidates:
-        # If the top candidates were removed, fall back to the next-highest-scoring
-        # category or to row-label inference.
-        removed = set(_TABLE_NEGATIVE_SIGNALS.keys())
-        remaining = {cat: sc for cat, sc in scores.items() if cat not in removed}
-        if not remaining:
-            remaining = scores
-        next_score = max(remaining.values())
-        candidates = [cat for cat, sc in remaining.items() if sc == next_score]
-        # Re-apply negative signals on the fallback candidates.
-        for category in list(candidates):
-            for neg in _TABLE_NEGATIVE_SIGNALS.get(category, ()):
-                if _norm(neg) in text:
-                    candidates.remove(category)
-                    break
-        if len(candidates) == 1:
-            return candidates[0]
-        return _classify_table_by_row_labels(table)
+        return _fallback_category_candidate(scores, text, table)
     return candidates[0]
+
+
+def _top_category_candidates(scores: dict[str, int]) -> list[str]:
+    max_score = max(scores.values())
+    return [cat for cat, sc in scores.items() if sc == max_score]
+
+
+def _filter_category_negative_signals(candidates: list[str], text: str) -> list[str]:
+    kept: list[str] = []
+    for category in candidates:
+        negatives = _TABLE_NEGATIVE_SIGNALS.get(category, ())
+        if any(_norm(neg) in text for neg in negatives):
+            continue
+        kept.append(category)
+    return kept
+
+
+def _fallback_category_candidate(scores: dict[str, int], text: str, table: Table) -> str | None:
+    # If the top candidates were removed, fall back to the next-highest-scoring
+    # category or to row-label inference.
+    removed = set(_TABLE_NEGATIVE_SIGNALS.keys())
+    remaining = {cat: sc for cat, sc in scores.items() if cat not in removed}
+    if not remaining:
+        remaining = scores
+    next_score = max(remaining.values())
+    candidates = [cat for cat, sc in remaining.items() if sc == next_score]
+    candidates = _filter_category_negative_signals(candidates, text)
+    if len(candidates) == 1:
+        return candidates[0]
+    return _classify_table_by_row_labels(table)
 
 
 def _classify_table_by_row_labels(table: Table) -> str | None:
@@ -1799,6 +1813,227 @@ def _is_domestic_label(label: str) -> bool:
     )
 
 
+def _first_variant_match(text: str, rules: Iterable[tuple[Iterable[str], str]]) -> str | None:
+    for keywords, variant_id in rules:
+        if any(kw in text for kw in keywords):
+            return variant_id
+    return None
+
+
+def _is_sending_donation_table(table_text: str) -> bool:
+    return any(kw in table_text for kw in ("sending", "senden", "envoi", "envío", "invio", "wysyłka"))
+
+
+# Product-specific variant keyword rules (order matters: first match wins)
+_APM_VARIANTS: list[tuple[tuple[str, ...], str]] = [
+    (("pay link", "payment link", "zahlungslink", "liens de paiement"), "payment_links"),
+    (("cash a check", "cheque", "check"), "cash_a_check"),
+    (("wire transfer", "virement", "transferencia bancaria"), "wire_transfer"),
+    (("spendback", "remboursement"), "spendback_transfer"),
+    (("debit card", "carte de débit", "tarjeta de débito"), "debit_card_transfer"),
+    (("bank transfer", "domestic bank transfer", "virement bancaire"), "bank_transfer"),
+]
+
+_ADVANCED_CARD_VARIANTS: list[tuple[tuple[str, ...], str]] = [
+    (("eterminal", "terminal", "point of sale", "card present"), "eterminal"),
+    (("standard credit", "carte standard"), "standard_card"),
+    (("american express", "amex", "carte american express"), "american_express"),
+    (("advanced credit", "advanced debit"), "advanced_card"),
+    (("payments advanced", "advanced payments", "payment advanced"), "payments_advanced"),
+    (("payments pro", "payment pro", "solution hébergée", "hosted solution"), "payments_pro"),
+    (("ach", "automated clearing"), "ach"),
+    (("additional risk", "risk factors", "risk factor"), "risk_factors"),
+    (("failure to implement", "express checkout", "checkout requis"), "express_checkout"),
+    (("foreign exchange", "currency conversion", "devise", "fx as a service"), "fx_service"),
+    (("regroup", "flat rate", "forfait", "regroupée"), "flat_rate"),
+]
+
+_QR_BELOW_THRESHOLD: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("unter", "under", "below", "less than", "<", "bis zu", "up to", "jusqu'à", "inférieure", "inferior"),
+        "below_threshold",
+    ),
+)
+
+_QR_ABOVE_THRESHOLD: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        (
+            "über",
+            "over",
+            "above",
+            "greater than",
+            ">",
+            "mindestens",
+            "at least",
+            "à partir de",
+            "supérieure",
+            "superior",
+        ),
+        "above_threshold",
+    ),
+)
+
+_MICROPAYMENT_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("digital", "digitala", "digitale", "dijital"), "digital_goods"),
+)
+
+_PAYPAL_CHECKOUT_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("crypto", "bitcoin", "cryptocurrency", "krypto", "cryptomonnaie", "criptomoneda"), "crypto"),
+)
+
+_OTHER_COMMERCIAL_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("campaign", "store cash", "campagne"), "campaign_fee"),
+    (("pyusd",), "pyusd"),
+    (("ach", "pay by bank", "virement bancaire"), "ach"),
+    (("card funded", "approvisionné par carte", "financiada", "card-funded"), "card_funded"),
+)
+
+_POS_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("manual", "manuelle", "manuale", "manual entry", "saisie manuelle", "saisie"), "manual_entry"),
+    (("card present", "present", "präsent", "présente", "presente"), "card_present"),
+    (("payment link", "zahlungslink", "liens de paiement", "payment links"), "payment_links"),
+)
+
+_DONATIONS_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        (
+            "campaign",
+            "aktion",
+            "collect",
+            "campagne",
+            "collecte",
+            "cause",
+            "dons collectifs",
+            "fundraiser",
+            "fundraisers",
+        ),
+        "campaign",
+    ),
+    (("button", "bouton", "botón", "pulsante", "knop"), "button"),
+)
+
+_INVOICE_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("rückzahlung", "repayment", "remboursement", "reembolso", "rimborso", "refund", "refund"), "repayment"),
+)
+
+_PAY_LATER_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("payment link", "payment links", "zahlungslink", "liens de paiement"), "payment_links"),
+)
+
+
+def _variant_for_apm(
+    label: str, norm_label: str, table_text: str, combined: str, methods: list[str], is_intl: bool, is_dom: bool
+) -> str | None:
+    if any(m in _APM_SPECIAL_METHOD_IDS for m in methods):
+        return "special"
+    if _is_generic_apm_label(label):
+        return "default"
+    return _first_variant_match(norm_label, _APM_VARIANTS) or "default"
+
+
+def _variant_for_advanced_card(
+    label: str, norm_label: str, table_text: str, combined: str, methods: list[str], is_intl: bool, is_dom: bool
+) -> str | None:
+    if "interchange" in norm_label or "interchange plus plus" in table_text or "interchange plus" in table_text:
+        if "++" in norm_label or "plus plus" in norm_label or "interchange plus plus" in table_text:
+            return "interchange_plus_plus"
+        return "interchange_plus"
+    if _is_charity_label(combined):
+        return "donations"
+    return _first_variant_match(norm_label, _ADVANCED_CARD_VARIANTS) or "standard"
+
+
+def _variant_for_qr_code(
+    label: str, norm_label: str, table_text: str, combined: str, methods: list[str], is_intl: bool, is_dom: bool
+) -> str | None:
+    if _first_variant_match(norm_label, _QR_BELOW_THRESHOLD):
+        return "below_threshold"
+    if _first_variant_match(norm_label, _QR_ABOVE_THRESHOLD):
+        return "above_threshold"
+    return "standard"
+
+
+def _variant_for_micropayments(
+    label: str, norm_label: str, table_text: str, combined: str, methods: list[str], is_intl: bool, is_dom: bool
+) -> str | None:
+    variant = _first_variant_match(norm_label, _MICROPAYMENT_VARIANTS)
+    if variant:
+        return variant
+    if is_intl:
+        return "international"
+    if is_dom:
+        return "domestic"
+    return "standard"
+
+
+def _variant_for_paypal_checkout(
+    label: str, norm_label: str, table_text: str, combined: str, methods: list[str], is_intl: bool, is_dom: bool
+) -> str | None:
+    if _is_charity_label(label):
+        return "donations"
+    parts = re.split(r"[^a-z0-9]+", norm_label)
+    if "venmo" in parts and not any(
+        i > 0 and parts[i - 1] in {"or", "and", "ou"} for i in range(1, len(parts)) if parts[i] == "venmo"
+    ):
+        return "venmo"
+    variant = _first_variant_match(norm_label, _PAYPAL_CHECKOUT_VARIANTS)
+    if variant:
+        return variant
+    if is_intl:
+        return "international"
+    if is_dom:
+        return "domestic"
+    return "standard"
+
+
+def _variant_for_other_commercial(
+    label: str, norm_label: str, table_text: str, combined: str, methods: list[str], is_intl: bool, is_dom: bool
+) -> str | None:
+    if _is_generic_other_commercial_label(label):
+        return "standard"
+    return _first_variant_match(norm_label, _OTHER_COMMERCIAL_VARIANTS) or "standard"
+
+
+def _variant_for_pos_transactions(
+    label: str, norm_label: str, table_text: str, combined: str, methods: list[str], is_intl: bool, is_dom: bool
+) -> str | None:
+    return _first_variant_match(norm_label, _POS_VARIANTS) or "standard"
+
+
+def _variant_for_donations(
+    label: str, norm_label: str, table_text: str, combined: str, methods: list[str], is_intl: bool, is_dom: bool
+) -> str | None:
+    if _is_sending_donation_table(table_text):
+        return "sending"
+    return _first_variant_match(norm_label, _DONATIONS_VARIANTS) or "standard"
+
+
+def _variant_for_invoice_pay_later(
+    label: str, norm_label: str, table_text: str, combined: str, methods: list[str], is_intl: bool, is_dom: bool
+) -> str | None:
+    return _first_variant_match(norm_label, _INVOICE_VARIANTS) or "standard"
+
+
+def _variant_for_pay_later_consumer(
+    label: str, norm_label: str, table_text: str, combined: str, methods: list[str], is_intl: bool, is_dom: bool
+) -> str | None:
+    return _first_variant_match(norm_label, _PAY_LATER_VARIANTS) or "standard"
+
+
+_VARIANT_DISPATCH: dict[str, Callable[..., str | None]] = {
+    "alternative_payment_methods": _variant_for_apm,
+    "advanced_card_payments": _variant_for_advanced_card,
+    "qr_code_payments": _variant_for_qr_code,
+    "micropayments": _variant_for_micropayments,
+    "paypal_checkout": _variant_for_paypal_checkout,
+    "other_commercial": _variant_for_other_commercial,
+    "pos_transactions": _variant_for_pos_transactions,
+    "donations": _variant_for_donations,
+    "invoice_pay_later": _variant_for_invoice_pay_later,
+    "pay_later_consumer": _variant_for_pay_later_consumer,
+}
+
+
 def _variant_id_for_row(product_id: str, label: str, methods: list[str], table: Table | None = None) -> str | None:
     """Return a stable variant id for a row, if needed."""
     norm_label = _norm(label)
@@ -1810,180 +2045,11 @@ def _variant_id_for_row(product_id: str, label: str, methods: list[str], table: 
     is_international = _is_international_label(label)
     is_domestic = _is_domestic_label(label)
 
-    if product_id == "alternative_payment_methods":
-        if any(m in _APM_SPECIAL_METHOD_IDS for m in methods):
-            return "special"
-        if _is_generic_apm_label(label):
-            return "default"
-        if any(kw in norm_label for kw in ("pay link", "payment link", "zahlungslink", "liens de paiement")):
-            return "payment_links"
-        if any(kw in norm_label for kw in ("cash a check", "cheque", "check")):
-            return "cash_a_check"
-        if any(kw in norm_label for kw in ("wire transfer", "virement", "transferencia bancaria")):
-            return "wire_transfer"
-        if any(kw in norm_label for kw in ("spendback", "remboursement")):
-            return "spendback_transfer"
-        if any(kw in norm_label for kw in ("debit card", "carte de débit", "tarjeta de débito")):
-            return "debit_card_transfer"
-        if any(kw in norm_label for kw in ("bank transfer", "domestic bank transfer", "virement bancaire")):
-            return "bank_transfer"
-        return "default"
-
-    if product_id == "advanced_card_payments":
-        # Interchange-plus tables can list the generic product label with the
-        # actual "plus plus" context in the table heading/caption.
-        if "interchange" in norm_label or "interchange plus plus" in table_text or "interchange plus" in table_text:
-            if "++" in label or "plus plus" in norm_label or "interchange plus plus" in table_text:
-                return "interchange_plus_plus"
-            return "interchange_plus"
-        if _is_charity_label(combined):
-            return "donations"
-        if any(kw in norm_label for kw in ("eterminal", "terminal", "point of sale", "card present")):
-            return "eterminal"
-        if any(kw in norm_label for kw in ("standard credit", "carte standard")):
-            return "standard_card"
-        # American Express sub-variants should be detected before the generic
-        # "advanced credit" pattern, which otherwise swallows them.
-        if any(kw in norm_label for kw in ("american express", "amex", "carte american express")):
-            return "american_express"
-        if any(kw in norm_label for kw in ("advanced credit", "advanced debit")):
-            return "advanced_card"
-        if any(kw in norm_label for kw in ("payments advanced", "advanced payments", "payment advanced")):
-            return "payments_advanced"
-        if any(kw in norm_label for kw in ("payments pro", "payment pro", "solution hébergée", "hosted solution")):
-            return "payments_pro"
-        if "ach" in norm_label or "automated clearing" in norm_label:
-            return "ach"
-        if any(kw in norm_label for kw in ("additional risk", "risk factors", "risk factor")):
-            return "risk_factors"
-        if any(kw in norm_label for kw in ("failure to implement", "express checkout", "checkout requis")):
-            return "express_checkout"
-        if any(kw in norm_label for kw in ("foreign exchange", "currency conversion", "devise", "fx as a service")):
-            return "fx_service"
-        if any(kw in norm_label for kw in ("regroup", "flat rate", "forfait", "regroupée")):
-            return "flat_rate"
-        return "standard"
-
-    if product_id == "qr_code_payments":
-        if any(
-            kw in norm_label
-            for kw in (
-                "unter",
-                "under",
-                "below",
-                "less than",
-                "<",
-                "bis zu",
-                "up to",
-                "jusqu'à",
-                "inférieure",
-                "inferior",
-            )
-        ):
-            return "below_threshold"
-        if any(
-            kw in norm_label
-            for kw in (
-                "über",
-                "over",
-                "above",
-                "greater than",
-                ">",
-                "mindestens",
-                "at least",
-                "à partir de",
-                "supérieure",
-                "superior",
-            )
-        ):
-            return "above_threshold"
-        return "standard"
-
-    if product_id == "micropayments":
-        if any(kw in norm_label for kw in ("digital", "digitala", "digitale", "digitale", "dijital")):
-            return "digital_goods"
-        if is_international:
-            return "international"
-        if is_domestic:
-            return "domestic"
-        return "standard"
-
-    if product_id == "paypal_checkout":
-        if _is_charity_label(label):
-            return "donations"
-        if re.search(r"\bvenmo\b", norm_label) and not re.search(r"(?:\bor\b|\band\b|\bou\b)\s+venmo", norm_label):
-            return "venmo"
-        if any(
-            kw in norm_label
-            for kw in ("crypto", "bitcoin", "cryptocurrency", "krypto", "cryptomonnaie", "criptomoneda")
-        ):
-            return "crypto"
-        if is_international:
-            return "international"
-        if is_domestic:
-            return "domestic"
-        return "standard"
-
-    if product_id == "other_commercial":
-        if _is_generic_other_commercial_label(label):
-            return "standard"
-        if any(kw in norm_label for kw in ("campaign", "store cash", "campagne")):
-            return "campaign_fee"
-        if "pyusd" in norm_label:
-            return "pyusd"
-        if any(kw in norm_label for kw in ("ach", "pay by bank", "virement bancaire")):
-            return "ach"
-        if any(kw in norm_label for kw in ("card funded", "approvisionné par carte", "financiada", "card-funded")):
-            return "card_funded"
-        return "standard"
-
-    if product_id == "pos_transactions":
-        if any(
-            kw in norm_label for kw in ("manual", "manuelle", "manuale", "manual entry", "saisie manuelle", "saisie")
-        ):
-            return "manual_entry"
-        if any(kw in norm_label for kw in ("card present", "present", "präsent", "présente", "presente")):
-            return "card_present"
-        if any(kw in norm_label for kw in ("payment link", "zahlungslink", "liens de paiement", "payment links")):
-            return "payment_links"
-        return "standard"
-
-    if product_id == "donations":
-        # Sending and receiving donation tables are different fee schedules; give
-        # sending tables their own variant so they do not collide with receiving.
-        if any(kw in table_text for kw in ("sending", "senden", "envoi", "envío", "invio", "wysyłka")):
-            return "sending"
-        if any(
-            kw in norm_label
-            for kw in (
-                "campaign",
-                "aktion",
-                "collect",
-                "campagne",
-                "collecte",
-                "cause",
-                "dons collectifs",
-                "fundraiser",
-                "fundraisers",
-            )
-        ):
-            return "campaign"
-        if any(kw in norm_label for kw in ("button", "bouton", "botón", "pulsante", "knop")):
-            return "button"
-        return "standard"
-
-    if product_id == "invoice_pay_later":
-        if any(
-            kw in norm_label
-            for kw in ("rückzahlung", "repayment", "remboursement", "reembolso", "rimborso", "refund", "refund")
-        ):
-            return "repayment"
-        return "standard"
-
-    if product_id == "pay_later_consumer":
-        if any(kw in norm_label for kw in ("payment link", "payment links", "zahlungslink", "liens de paiement")):
-            return "payment_links"
-        return "standard"
+    resolver = _VARIANT_DISPATCH.get(product_id)
+    if resolver:
+        variant = resolver(label, norm_label, table_text, combined, methods, is_international, is_domestic)
+        if variant is not None:
+            return variant
 
     if is_international:
         return "international"
