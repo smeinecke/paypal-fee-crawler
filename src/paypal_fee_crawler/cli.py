@@ -26,7 +26,7 @@ from .exceptions import (
     ValidationError as CrawlerValidationError,
 )
 from .models import CrawlConfiguration, CrawlReport
-from .validation import validate_all_output
+from .validation import validate_all_output, validate_output_tree
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +295,8 @@ def validate(output_dir: str, verbose: bool) -> None:
     """Validate all generated JSON files in the output directory."""
     _configure_logging(verbose)
     errors = validate_all_output(output_dir)
+    errors.extend(validate_output_tree(output_dir))
+    errors = sorted(set(errors))
     if errors:
         for error in errors:
             click.echo(error)

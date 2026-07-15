@@ -21,6 +21,12 @@ from .exceptions import ValidationError as CrawlerValidationError
 from .models import (
     ChangeReport,
     ClassifierMetadata,
+    CoreFeeDerived,
+    CoreFeeFixedFeeSchedule,
+    CoreFeeInternationalSurchargeSchedule,
+    CoreFeeRateReference,
+    CoreFeeResolvedRate,
+    CoreFeeRule,
     CoreFees,
     CountryIndex,
     CountryIndexEntry,
@@ -213,6 +219,62 @@ class OutputPublisher:
             fingerprints.append(f"sha256:{table_hash}")
         return fingerprints
 
+    def _to_core_fee_derived(self, derived: Any) -> CoreFeeDerived:
+        """Return a compact calculator-only copy of a derived fee result."""
+        rules: list[CoreFeeRule] = []
+        for rule in derived.transaction_fee_rules:
+            rate_ref = None
+            if rule.rate_reference is not None:
+                resolved = None
+                if rule.rate_reference.resolved_rate is not None:
+                    resolved = CoreFeeResolvedRate(
+                        percentage=rule.rate_reference.resolved_rate.percentage,
+                        fixed_fee_schedule=rule.rate_reference.resolved_rate.fixed_fee_schedule,
+                        international_surcharge_schedule=rule.rate_reference.resolved_rate.international_surcharge_schedule,
+                        maximum_fee_schedule=rule.rate_reference.resolved_rate.maximum_fee_schedule,
+                        rule_id=rule.rate_reference.resolved_rate.rule_id,
+                    )
+                rate_ref = CoreFeeRateReference(
+                    reference=rule.rate_reference.reference,
+                    resolved_rate=resolved,
+                )
+            rules.append(
+                CoreFeeRule(
+                    id=rule.id,
+                    variant_id=rule.variant_id,
+                    label=rule.label,
+                    percentage=rule.percentage,
+                    fixed_fee_schedule=rule.fixed_fee_schedule,
+                    international_surcharge_schedule=rule.international_surcharge_schedule,
+                    maximum_fee_schedule=rule.maximum_fee_schedule,
+                    rate_reference=rate_ref,
+                    conditions=rule.conditions,
+                    calculation_status=rule.calculation_status,
+                    fee_components=rule.fee_components,
+                )
+            )
+
+        fixed: dict[str, CoreFeeFixedFeeSchedule] = {
+            name: CoreFeeFixedFeeSchedule(entries=schedule.entries)
+            for name, schedule in derived.fixed_fee_schedules.items()
+        }
+        intl: dict[str, CoreFeeInternationalSurchargeSchedule] = {
+            name: CoreFeeInternationalSurchargeSchedule(entries=schedule.entries)
+            for name, schedule in derived.international_surcharge_schedules.items()
+        }
+        maximum: dict[str, CoreFeeFixedFeeSchedule] = {
+            name: CoreFeeFixedFeeSchedule(entries=schedule.entries)
+            for name, schedule in derived.maximum_fee_schedules.items()
+        }
+        return CoreFeeDerived(
+            status=derived.status,
+            transaction_fee_rules=rules,
+            fixed_fee_schedules=fixed,
+            international_surcharge_schedules=intl,
+            maximum_fee_schedules=maximum,
+            currency_conversion=derived.currency_conversion,
+        )
+
     def _load_existing_cache(self) -> CrawlCache:
         """Load the previous crawl cache so 304/reused runs retain cache headers."""
         path = self.output_dir / "meta" / "crawl-cache.json"
@@ -305,7 +367,7 @@ class OutputPublisher:
                     paypal_market_code=output.market.paypal_market_code,
                     iso_country_code=output.market.iso_country_code,
                     derived_status=output.derived.status,
-                    derived=output.derived,
+                    derived=self._to_core_fee_derived(output.derived),
                 )
             )
 

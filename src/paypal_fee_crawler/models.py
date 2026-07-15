@@ -259,6 +259,7 @@ class ResolvedRate(PublicModel):
     percentage: str | None = None
     fixed_fee_schedule: str | None = None
     international_surcharge_schedule: str | None = None
+    maximum_fee_schedule: str | None = None
     source: Provenance | None = None
     rule_id: str | None = None
 
@@ -307,6 +308,7 @@ class TransactionFeeRule(PublicModel):
     percentage: str | None = None
     fixed_fee_schedule: str | None = None
     international_surcharge_schedule: str | None = None
+    maximum_fee_schedule: str | None = None
     rate_reference: RateReference | None = None
     conditions: dict[str, Any] = Field(default_factory=dict)
     source: Provenance | None = None
@@ -363,6 +365,7 @@ class CoverageSummary(PublicModel):
     direct_fixed_fees: int = 0
     fixed_fee_entries: int = 0
     international_surcharge_entries: int = 0
+    maximum_fee_entries: int = 0
     reference_sources: int = 0
     reference_targets: int = 0
     ignored: int = 0
@@ -386,6 +389,7 @@ class DerivedFeeResult(PublicModel):
     transaction_fee_rules: list[TransactionFeeRule] = Field(default_factory=list)
     fixed_fee_schedules: dict[str, FixedFeeSchedule] = Field(default_factory=dict)
     international_surcharge_schedules: dict[str, InternationalSurchargeSchedule] = Field(default_factory=dict)
+    maximum_fee_schedules: dict[str, FixedFeeSchedule] = Field(default_factory=dict)
     currency_conversion: CurrencyConversion | None = None
     unclassified_fee_rows: list[UnclassifiedFeeRow] = Field(default_factory=list)
     ambiguous_rows: list[AmbiguousFeeRow] = Field(default_factory=list)
@@ -615,13 +619,69 @@ class CountryManifest(PublicModel):
     fee_page_urls: dict[str, str] = Field(default_factory=dict)
 
 
+class CoreFeeFixedFeeSchedule(PublicModel):
+    """Compact fixed fee schedule used in core-fees.json (no provenance)."""
+
+    entries: dict[str, str] = Field(default_factory=dict)
+
+
+class CoreFeeInternationalSurchargeSchedule(PublicModel):
+    """Compact international surcharge schedule used in core-fees.json (no provenance)."""
+
+    entries: list[InternationalSurchargeScheduleEntry] = Field(default_factory=list)
+
+
+class CoreFeeResolvedRate(PublicModel):
+    """Compact resolved rate without provenance."""
+
+    percentage: str | None = None
+    fixed_fee_schedule: str | None = None
+    international_surcharge_schedule: str | None = None
+    maximum_fee_schedule: str | None = None
+    rule_id: str | None = None
+
+
+class CoreFeeRateReference(PublicModel):
+    """Compact rate reference without provenance."""
+
+    reference: str
+    resolved_rate: CoreFeeResolvedRate | None = None
+
+
+class CoreFeeRule(PublicModel):
+    """Compact transaction fee rule used in core-fees.json (no provenance)."""
+
+    id: str
+    variant_id: str | None = None
+    label: str | None = None
+    percentage: str | None = None
+    fixed_fee_schedule: str | None = None
+    international_surcharge_schedule: str | None = None
+    maximum_fee_schedule: str | None = None
+    rate_reference: CoreFeeRateReference | None = None
+    conditions: dict[str, Any] = Field(default_factory=dict)
+    calculation_status: str = "calculable"
+    fee_components: list[FeeComponent] = Field(default_factory=list)
+
+
+class CoreFeeDerived(PublicModel):
+    """Compact derived fee result for core-fees.json."""
+
+    status: str = Field(default="unclassified")
+    transaction_fee_rules: list[CoreFeeRule] = Field(default_factory=list)
+    fixed_fee_schedules: dict[str, CoreFeeFixedFeeSchedule] = Field(default_factory=dict)
+    international_surcharge_schedules: dict[str, CoreFeeInternationalSurchargeSchedule] = Field(default_factory=dict)
+    maximum_fee_schedules: dict[str, CoreFeeFixedFeeSchedule] = Field(default_factory=dict)
+    currency_conversion: CurrencyConversion | None = None
+
+
 class PublicCoreFeeEntry(PublicModel):
     """A single country's confidently derived core fees (public)."""
 
     paypal_market_code: str
     iso_country_code: str | None = None
     derived_status: str
-    derived: DerivedFeeResult
+    derived: CoreFeeDerived
 
     @field_validator("paypal_market_code")
     @classmethod
