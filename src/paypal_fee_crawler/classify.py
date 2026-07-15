@@ -1144,7 +1144,15 @@ def _classify_table_category(table: Table) -> str | None:
     )
     if any(kw in text for kw in international_surcharge_keywords):
         return "international_surcharge_table"
-    if "währungsumrechnung" in text or "umrechnung des guthabens" in text or "currency conversion" in text:
+    if (
+        "währungsumrechnung" in text
+        or "umrechnung des guthabens" in text
+        or "currency conversion" in text
+        or "converting payments" in text
+        or "conversions in" in text
+        or ("converting" in text and "currency" in text)
+        or ("conversion" in text and "currency" in text)
+    ):
         return "currency_conversion_table"
 
     min_max_fee_keywords = (
