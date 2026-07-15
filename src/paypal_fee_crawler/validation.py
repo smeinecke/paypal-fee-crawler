@@ -139,7 +139,7 @@ def _validate_transaction_rules(derived: Any, label: str) -> list[str]:
 
         conditions = rule.conditions or {}
         key = json.dumps(
-            [rule.id, rule.variant_id, sorted(conditions.keys()), [conditions[k] for k in sorted(conditions)]]
+            [rule.id, rule.variant_id, rule.label, sorted(conditions.keys()), [conditions[k] for k in sorted(conditions)]]
         )
         if key in seen_rule_keys:
             other = seen_rule_keys[key]
