@@ -118,8 +118,8 @@ def test_germany_advanced_card_variants() -> None:
     assert advanced_rules
     standard = next(r for r in advanced_rules if r.variant_id == "standard")
     assert standard.percentage == "2.99"
-    assert standard.fixed_fee_schedule == "online_card_payments"
-    assert standard.international_surcharge_schedule == "commercial"
+    assert standard.fixed_fee_schedule == "advanced_card_payments"
+    assert standard.international_surcharge_schedule == "advanced_card_payments"
     assert standard.rate_reference is not None
     assert standard.rate_reference.resolved_rate is not None
     assert standard.rate_reference.resolved_rate.percentage == "2.99"
@@ -150,8 +150,8 @@ def test_germany_apm_variants() -> None:
     ]
 
 
-def test_inheritance_diagnostic_uses_product_id_not_schedule_id() -> None:
-    """Coverage and diagnostics must count inherited schedules by product, not schedule name."""
+def test_no_cross_product_schedule_inheritance() -> None:
+    """Product-specific rules must not be merged into a generic commercial schedule."""
     commercial = _table(
         "Standardgebühr beim Empfang von Inlandstransaktionen",
         [
@@ -165,10 +165,23 @@ def test_inheritance_diagnostic_uses_product_id_not_schedule_id() -> None:
             ["EUR", "0.39 EUR"],
         ],
     )
-    result = classify_tables([commercial, fixed_fee])
-    assert result.coverage_summary.inherited_schedules >= 1
+    intl_surcharge = _table(
+        "Prozentuale Zusatzgebühr für internationale geschäftliche Transaktionen",
+        [
+            ["EUR", "0.00%"],
+        ],
+    )
+    result = classify_tables([commercial, fixed_fee, intl_surcharge])
+    assert result.coverage_summary.inherited_schedules == 0
     inherited = [d for d in result.diagnostics if d.type == "inherited_schedule"]
-    assert any(d.rule_id == "paypal_checkout" for d in inherited)
+    assert not inherited
+    for rule in result.transaction_fee_rules:
+        if rule.id == "paypal_checkout":
+            assert rule.fixed_fee_schedule == "paypal_checkout"
+            assert rule.international_surcharge_schedule == "paypal_checkout"
+        if rule.id == "other_commercial":
+            assert rule.fixed_fee_schedule == "other_commercial"
+            assert rule.international_surcharge_schedule == "other_commercial"
 
 
 def test_nested_reference_schedule_validated() -> None:

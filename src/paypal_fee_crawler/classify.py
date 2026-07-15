@@ -785,6 +785,36 @@ _TABLE_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
         "converting balance",
         "converting",
     ),
+    "other_fees_table": (
+        "sonstige gebühren",
+        "other fees",
+        "autres frais",
+        "altre commissioni",
+        "otros honorarios",
+        "otros cargos",
+        "outras taxas",
+        "overige kosten",
+        "sonstige kosten",
+        "overige vergoedingen",
+        "diversas taxas",
+        "andere kosten",
+        "muut kulut",
+        "muut maksut",
+        "muut kulud",
+        "pozostałe opłaty",
+        "ostatní poplatky",
+        "iné poplatky",
+        "ostali troškovi",
+        "druge naknade",
+        "altres comissions",
+        "altres despeses",
+        "diger ucretler",
+        "diger ücretler",
+        "diversi",
+        "diverse",
+        "miscellaneous fees",
+        "additional fees",
+    ),
 }
 
 # When a caption contains one of these negative signals, it is not treated as a
@@ -1102,6 +1132,46 @@ def _classify_table_category(table: Table) -> str | None:
     )
     if any(kw in text for kw in direct_fixed_fee_keywords):
         return "fixed_fee_table"
+
+    # Limits, caps, min/max and ceiling/floor tables are not transaction fees
+    # and must be detected before generic international-surcharge or
+    # rate-table keywords can misclassify them.
+    min_max_fee_keywords = (
+        "mindest",
+        "höchst",
+        "minimum",
+        "maximum",
+        "minim",
+        "maxim",
+        "mínim",
+        "máxim",
+        "massim",
+        "minsta",
+        "största",
+        "minste",
+        "maks",
+        "lavest",
+        "højest",
+        "obergrenze",
+        "obergr",
+        "limit",
+        "cap",
+        "ceiling",
+        "floor",
+        "payout maximum",
+        "withdrawal limit",
+        "transaction limit",
+        "send limit",
+        "receive limit",
+        "mindestbetrag",
+        "höchstbetrag",
+        "max cap",
+        "max limit",
+        "maximum cap",
+    )
+    if any(kw in text for kw in min_max_fee_keywords):
+        return "min_max_fee_table"
+
     international_surcharge_keywords = (
         "prozentuale zusatzgebühr",
         "zusätzliche prozentuale gebühr",
@@ -1161,27 +1231,70 @@ def _classify_table_category(table: Table) -> str | None:
     if _is_currency_conversion_text(text):
         return "currency_conversion_table"
 
-    min_max_fee_keywords = (
-        "mindest",
-        "höchst",
-        "minimum",
-        "maximum",
-        "minim",
-        "maxim",
-        "mínim",
-        "máxim",
-        "massim",
-        "minsta",
-        "största",
-        "minste",
-        "maks",
-        "lavest",
-        "højest",
-    )
-    if any(kw in text for kw in min_max_fee_keywords):
-        return "min_max_fee_table"
-
     return _select_category_from_scores(table, text)
+
+
+_LIMIT_OR_CAP_KEYWORDS = (
+    "withdrawal limit",
+    "withdrawal limits",
+    "payout limit",
+    "payout limits",
+    "payout maximum",
+    "payout maximums",
+    "payout max",
+    "payout minimum",
+    "payout min",
+    "transaction limit",
+    "transaction limits",
+    "send limit",
+    "send limits",
+    "receive limit",
+    "receive limits",
+    "mindest",
+    "höchst",
+    "minimum",
+    "maximum",
+    "minim",
+    "maxim",
+    "mínim",
+    "máxim",
+    "massim",
+    "minsta",
+    "största",
+    "minste",
+    "maks",
+    "lavest",
+    "højest",
+    "obergrenze",
+    "obergr",
+    "untergrenze",
+    "untergr",
+    "limit",
+    "limit cap",
+    "cap",
+    "ceiling",
+    "floor",
+    "max cap",
+    "max limit",
+    "maximum cap",
+    "min cap",
+    "minimum cap",
+    "mindestbetrag",
+    "höchstbetrag",
+    "no more than",
+    "not more than",
+    "not less than",
+    "at least",
+    "at most",
+    "up to",
+    "up-to",
+)
+
+
+def _is_limit_or_cap_row(label: str, fee_text: str = "") -> bool:
+    """Return True if a row describes a limit, cap, min/max or ceiling/floor."""
+    combined = _norm(label + " " + fee_text)
+    return any(kw in combined for kw in _LIMIT_OR_CAP_KEYWORDS)
 
 
 def _select_category_from_scores(table: Table, text: str) -> str | None:
@@ -1404,6 +1517,34 @@ _APM_METHOD_ALIASES: dict[str, tuple[str, ...]] = {
         "floa",
     ),
     "scalapay": ("scalapay",),
+    "naver_pay": (
+        "naver pay",
+        "naverpay",
+    ),
+    "picpay": ("picpay",),
+    "nupay": ("nupay",),
+    "true_money": (
+        "true money",
+        "truemoney",
+    ),
+    "airtel": ("airtel",),
+    "pago_efectivo": (
+        "pago efectivo",
+        "pagoefectivo",
+    ),
+    "mercado_pago": (
+        "mercado pago",
+        "mercadopago",
+    ),
+    "pesa": (
+        "pesa",
+        "m-pesa",
+        "mpesa",
+    ),
+    "shopee_pay": (
+        "shopee pay",
+        "shopeepay",
+    ),
 }
 
 _APM_SPECIAL_METHOD_IDS: frozenset[str] = frozenset(
@@ -1418,6 +1559,15 @@ _APM_SPECIAL_METHOD_IDS: frozenset[str] = frozenset(
         "kredivo",
         "floa_pay",
         "scalapay",
+        "naver_pay",
+        "picpay",
+        "nupay",
+        "true_money",
+        "airtel",
+        "pago_efectivo",
+        "mercado_pago",
+        "pesa",
+        "shopee_pay",
     ]
 )
 
@@ -1645,6 +1795,15 @@ _APM_METHOD_MATCHERS: list[tuple[str, list[set[str]], set[str]]] = [
     ("kredivo", [{"kredivo"}], set()),
     ("floa_pay", [{"floapay", "floa"}], set()),
     ("scalapay", [{"scalapay"}], set()),
+    ("naver_pay", [{"naverpay", "naver"}], set()),
+    ("picpay", [{"picpay"}], set()),
+    ("nupay", [{"nupay"}], set()),
+    ("true_money", [{"truemoney", "true"}], set()),
+    ("airtel", [{"airtel"}], set()),
+    ("pago_efectivo", [{"pagoefectivo", "pago"}], set()),
+    ("mercado_pago", [{"mercadopago", "mercado"}], set()),
+    ("pesa", [{"pesa", "mpesa"}], set()),
+    ("shopee_pay", [{"shopeepay", "shopee"}], set()),
 ]
 
 
@@ -1660,6 +1819,12 @@ def _tokenize_apm_label(part_norm: str) -> set[str]:
         .replace("ovo premium", "ovopremium")
         .replace("floa pay", "floapay")
         .replace("blik pay later", "blikpaylater")
+        .replace("naver pay", "naverpay")
+        .replace("true money", "truemoney")
+        .replace("pago efectivo", "pagoefectivo")
+        .replace("mercado pago", "mercadopago")
+        .replace("shopee pay", "shopeepay")
+        .replace("m pesa", "mpesa")
     )
     # Split on punctuation and whitespace.
     joined = re.sub(r"[^\w\s]", " ", joined)
@@ -1897,6 +2062,24 @@ _POS_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
 _DONATIONS_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (
         (
+            "aufgeführte",
+            "listed",
+            "listed campaigns",
+        ),
+        "campaign_listed",
+    ),
+    (
+        (
+            "nicht aufgeführte",
+            "unlisted",
+            "non listée",
+            "non listados",
+            "non listate",
+        ),
+        "campaign_unlisted",
+    ),
+    (
+        (
             "campaign",
             "aktion",
             "collect",
@@ -1914,6 +2097,10 @@ _DONATIONS_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
 
 _INVOICE_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("rückzahlung", "repayment", "remboursement", "reembolso", "rimborso", "refund", "refund"), "repayment"),
+)
+
+_NONPROFIT_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("qr-code", "qr code", "qr-code-transaktionen", "qr-code-transaktion", "qr-code-zahlungen"), "qr_code"),
 )
 
 _PAY_LATER_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
@@ -2008,6 +2195,12 @@ def _variant_for_donations(
     return _first_variant_match(norm_label, _DONATIONS_VARIANTS) or "standard"
 
 
+def _variant_for_nonprofit(
+    label: str, norm_label: str, table_text: str, combined: str, methods: list[str], is_intl: bool, is_dom: bool
+) -> str | None:
+    return _first_variant_match(norm_label, _NONPROFIT_VARIANTS) or "standard"
+
+
 def _variant_for_invoice_pay_later(
     label: str, norm_label: str, table_text: str, combined: str, methods: list[str], is_intl: bool, is_dom: bool
 ) -> str | None:
@@ -2029,6 +2222,7 @@ _VARIANT_DISPATCH: dict[str, Callable[..., str | None]] = {
     "other_commercial": _variant_for_other_commercial,
     "pos_transactions": _variant_for_pos_transactions,
     "donations": _variant_for_donations,
+    "nonprofit": _variant_for_nonprofit,
     "invoice_pay_later": _variant_for_invoice_pay_later,
     "pay_later_consumer": _variant_for_pay_later_consumer,
 }
@@ -2600,6 +2794,8 @@ def _schedule_name_from_table(table: Table, default: str | None) -> str:
 def _extract_fixed_fee_schedule(table: Table, source: Source | None = None) -> FixedFeeSchedule | None:
     amounts: dict[str, str] = {}
     for row in table.rows:
+        if _is_limit_or_cap_row(_row_label(row), _row_fee_cell(row)):
+            continue
         cells = [c for c in row.cells if c.text.strip()]
         # Fixed-fee tables are laid out as (currency label, amount) pairs, sometimes
         # with two pairs per row.
@@ -2648,8 +2844,10 @@ def _extract_international_surcharge_schedule(
     seen: set[str] = set()
     fallback_rows: list[tuple[str, str]] = []
     for row in table.rows:
-        pct = _first_percentage(row)
         label = _row_label(row)
+        if _is_limit_or_cap_row(label, _row_fee_cell(row)):
+            continue
+        pct = _first_percentage(row)
         region = _normalize_region(label)
         if pct is None:
             # "No fee" / "Free" entries represent a 0% surcharge.
@@ -2901,6 +3099,16 @@ _REFERENCE_SCHEDULE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "gemeinnützig",
         "nonprofit",
     ),
+    "other_commercial": (
+        "geschäftliche transaktionen",
+        "commercial transactions",
+        "commercial transaction fees",
+        "comercial",
+        "transacciones comerciales",
+        "transações comerciais",
+        "transazioni commerciali",
+        "transactions commerciales",
+    ),
 }
 
 # Map a reference suffix to the product id it denotes.
@@ -2933,11 +3141,26 @@ def _detect_reference(row: Row, product_id: str | None) -> str | None:
     return None
 
 
+def _reference_product_id(reference: str) -> str | None:
+    """Return the product id a textual reference points to."""
+    if "." in reference:
+        base, suffix = reference.split(".", 1)
+        return _REFERENCE_SUFFIX_TO_PRODUCT.get(suffix, base)
+    return reference
+
+
 def _resolve_reference(
     reference: str,
     rules: list[TransactionFeeRule],
-) -> ResolvedRate | None:
-    """Resolve a textual reference to a concrete percentage and schedule names."""
+    source_variant_id: str | None = None,
+) -> tuple[ResolvedRate | None, bool]:
+    """Resolve a textual reference to a concrete percentage and schedule names.
+
+    A reference resolves only unambiguously. If more than one target rule
+    matches, the reference is reported as ambiguous and ``(None, True)`` is
+    returned. The source variant is used to disambiguate when the reference
+    is tied to a specific variant.
+    """
     # References may be qualified with a product suffix, e.g. "online_card_payments.advanced".
     target_id: str
     if "." in reference:
@@ -2949,40 +3172,52 @@ def _resolve_reference(
     else:
         target_id = reference
 
-    # Find a concrete target rule. Prefer a generic/default variant (variant_id
-    # is None or the literal "default" string) because a bare reference like
-    # "alternative_payment_methods" should resolve to the default variant, not
-    # to a special variant.
-    for rule in rules:
-        if rule.id == target_id and rule.percentage is not None and rule.variant_id in (None, "default"):
+    candidates = [r for r in rules if r.id == target_id and r.percentage is not None]
+    if not candidates:
+        # Fallback: find a rule whose label matches the reference product aliases.
+        aliases = _PRODUCT_ALIASES.get(target_id, ())
+        candidates = [r for r in rules if r.label and any(_norm(a) in _norm(r.label) for a in aliases)]
+
+    if not candidates:
+        return None, False
+
+    if len(candidates) == 1:
+        rule = candidates[0]
+        return ResolvedRate(
+            percentage=rule.percentage,
+            fixed_fee_schedule=rule.fixed_fee_schedule,
+            international_surcharge_schedule=rule.international_surcharge_schedule,
+            source=rule.source,
+            rule_id=rule.id,
+        ), False
+
+    # Multiple candidates: try to disambiguate by source variant.
+    if source_variant_id is not None:
+        matched = [r for r in candidates if r.variant_id == source_variant_id]
+        if len(matched) == 1:
+            rule = matched[0]
             return ResolvedRate(
                 percentage=rule.percentage,
                 fixed_fee_schedule=rule.fixed_fee_schedule,
                 international_surcharge_schedule=rule.international_surcharge_schedule,
                 source=rule.source,
                 rule_id=rule.id,
-            )
-    for rule in rules:
-        if rule.id == target_id and rule.percentage is not None:
-            return ResolvedRate(
-                percentage=rule.percentage,
-                fixed_fee_schedule=rule.fixed_fee_schedule,
-                international_surcharge_schedule=rule.international_surcharge_schedule,
-                source=rule.source,
-                rule_id=rule.id,
-            )
-    # Fallback: find a rule whose label matches the reference product aliases.
-    aliases = _PRODUCT_ALIASES.get(target_id, ())
-    for rule in rules:
-        if rule.label and any(_norm(a) in _norm(rule.label) for a in aliases):
-            return ResolvedRate(
-                percentage=rule.percentage,
-                fixed_fee_schedule=rule.fixed_fee_schedule,
-                international_surcharge_schedule=rule.international_surcharge_schedule,
-                source=rule.source,
-                rule_id=rule.id,
-            )
-    return None
+            ), False
+        # If no exact variant match, fall back to a unique default variant.
+        if not matched:
+            default_candidates = [r for r in candidates if r.variant_id in (None, "default", "standard")]
+            if len(default_candidates) == 1:
+                rule = default_candidates[0]
+                return ResolvedRate(
+                    percentage=rule.percentage,
+                    fixed_fee_schedule=rule.fixed_fee_schedule,
+                    international_surcharge_schedule=rule.international_surcharge_schedule,
+                    source=rule.source,
+                    rule_id=rule.id,
+                ), False
+
+    # Ambiguous because more than one matching rule exists.
+    return None, True
 
 
 # ---------------------------------------------------------------------------
@@ -3102,7 +3337,7 @@ def _extract_rules_from_rate_table(
         if ambiguous_candidates:
             if force_default_product and default_product:
                 product_id = default_product
-            else:
+            elif _row_has_percentage(row) or _first_money(row):
                 ambiguous.append(
                     AmbiguousFeeRow(
                         normalized_cells=_row_cells_text(row),
@@ -3112,13 +3347,33 @@ def _extract_rules_from_rate_table(
                     )
                 )
                 continue
+            else:
+                # A row with no determinable rate is informational, not a genuine
+                # ambiguity.
+                ignored.append(
+                    UnclassifiedFeeRow(
+                        normalized_cells=_row_cells_text(row),
+                        original_label=label,
+                        source=_provenance(table, row, idx, source, original_label=label),
+                        reason="ambiguous product without fee",
+                    )
+                )
+                continue
         if force_default_product and default_product:
             product_id = default_product
+
+        fee_text = _row_fee_cell(row)
+        reference = _detect_reference(row, product_id)
+
         if product_id is None:
             # Use the table category as a fallback for rows that do not match any
             # product alias (e.g. "Deutschland" in the nonprofit table).
-            if default_product and (_row_has_percentage(row) or _detect_reference(row, default_product)):
+            if default_product and force_default_product and (_row_has_percentage(row) or reference):
                 product_id = default_product
+            elif reference and _reference_product_id(reference):
+                # A reference row that carries no product alias should be tagged
+                # with the product it points to rather than the table's default.
+                product_id = _reference_product_id(reference)
             elif len(label) > 3 and _row_has_percentage(row):
                 unclassified.append(
                     UnclassifiedFeeRow(
@@ -3139,15 +3394,46 @@ def _extract_rules_from_rate_table(
                     )
                 )
                 continue
-        fee_text = _row_fee_cell(row)
+        if product_id is None:
+            continue
+        if _is_limit_or_cap_row(label, fee_text):
+            ignored.append(
+                UnclassifiedFeeRow(
+                    normalized_cells=_row_cells_text(row),
+                    original_label=label,
+                    source=_provenance(table, row, idx, source, original_label=label),
+                    reason="limit or cap",
+                )
+            )
+            continue
         pct, _fixed = _parse_rate_expression(fee_text)
-        reference = _detect_reference(row, product_id)
         methods, unknown_methods = _extract_apm_methods(label)
         variant_id = _variant_id_for_row(product_id, label, methods, table)
         if variant_id is None:
             variant_id = "standard"
         fixed_schedule = _fixed_fee_schedule_for(product_id)
         intl_schedule = _international_surcharge_schedule_for(product_id)
+
+        # Listed-campaign donation campaigns are free, so they should not carry
+        # a percentage or fixed fee schedule.
+        if variant_id == "campaign_unlisted":
+            pct = "0"
+            fixed_schedule = None
+            intl_schedule = None
+
+        # A row with no percentage and no reference is not a usable transaction
+        # fee rule (e.g. a footnote in an Other Fees table).
+        if pct is None and reference is None:
+            ignored.append(
+                UnclassifiedFeeRow(
+                    normalized_cells=_row_cells_text(row),
+                    original_label=label,
+                    source=_provenance(table, row, idx, source, original_label=label),
+                    reason="no rate or reference",
+                )
+            )
+            continue
+
         conditions = _conditions_for_row(product_id, variant_id, label, methods=methods, table=table)
         rules.append(
             _ExtractedRule(
@@ -3168,18 +3454,20 @@ def _extract_rules_from_rate_table(
     return rules, unclassified, ambiguous, ignored
 
 
-# Maps a product to the fixed-fee schedule it uses. The target schedule may be
-# the product's own schedule (e.g. goods_and_services) or an inherited schedule
-# (e.g. paypal_checkout -> commercial). None means the product has no fixed fee.
+# Maps a product to its own fixed-fee schedule. The target schedule may be a
+# product-specific schedule (e.g. goods_and_services) or None if the product has
+# no fixed fee. When a product-specific schedule is missing from the extracted
+# schedules, _ensure_fallback_schedules can copy a fallback schedule so the
+# rule remains resolvable without merging into a generic commercial schedule.
 _FIXED_FEE_SCHEDULE_FOR: dict[str, str | None] = {
-    "paypal_checkout": "commercial",
+    "paypal_checkout": "paypal_checkout",
     "goods_and_services": "goods_and_services",
     "online_card_payments": "online_card_payments",
-    "advanced_card_payments": "online_card_payments",
-    "other_commercial": "commercial",
-    "guest_checkout": "commercial",
-    "invoice_pay_later": "commercial",
-    "pay_later_consumer": "commercial",
+    "advanced_card_payments": "advanced_card_payments",
+    "other_commercial": "other_commercial",
+    "guest_checkout": "guest_checkout",
+    "invoice_pay_later": "invoice_pay_later",
+    "pay_later_consumer": "pay_later_consumer",
     "qr_code_payments": None,
     "donations": "donations",
     "nonprofit": "nonprofit",
@@ -3195,14 +3483,8 @@ _FIXED_FEE_SCHEDULE_FOR: dict[str, str | None] = {
 }
 
 # Subset of _FIXED_FEE_SCHEDULE_FOR that represents explicit inheritance.
-_FIXED_FEE_INHERITANCE: dict[str, str] = {
-    "paypal_checkout": "commercial",
-    "other_commercial": "commercial",
-    "guest_checkout": "commercial",
-    "invoice_pay_later": "commercial",
-    "pay_later_consumer": "commercial",
-    "advanced_card_payments": "online_card_payments",
-}
+# Kept empty now that product-specific schedule identities are maintained.
+_FIXED_FEE_INHERITANCE: dict[str, str] = {}
 
 
 def _fixed_fee_schedule_for(product_id: str) -> str | None:
@@ -3210,16 +3492,33 @@ def _fixed_fee_schedule_for(product_id: str) -> str | None:
     return _FIXED_FEE_SCHEDULE_FOR.get(product_id)
 
 
+# Fallback schedule order per product used when the product-specific schedule
+# is not present in the extracted data. The first existing schedule is copied.
+_FIXED_FEE_SCHEDULE_FALLBACK: dict[str, tuple[str, ...]] = {
+    "paypal_checkout": ("commercial",),
+    "other_commercial": ("commercial",),
+    "guest_checkout": ("commercial",),
+    "invoice_pay_later": ("commercial",),
+    "pay_later_consumer": ("commercial",),
+    "advanced_card_payments": ("online_card_payments", "commercial"),
+    "goods_and_services": ("commercial",),
+    "donations": ("commercial",),
+    "nonprofit": ("commercial",),
+    "micropayments": ("commercial",),
+    "alternative_payment_methods": ("commercial",),
+}
+
+
 # Same as above for international surcharge schedules.
 _INTERNATIONAL_SURCHARGE_SCHEDULE_FOR: dict[str, str | None] = {
-    "paypal_checkout": "commercial",
+    "paypal_checkout": "paypal_checkout",
     "goods_and_services": "goods_and_services",
     "online_card_payments": "online_card_payments",
-    "advanced_card_payments": "commercial",
-    "other_commercial": "commercial",
-    "guest_checkout": "commercial",
-    "invoice_pay_later": "commercial",
-    "pay_later_consumer": "commercial",
+    "advanced_card_payments": "advanced_card_payments",
+    "other_commercial": "other_commercial",
+    "guest_checkout": "guest_checkout",
+    "invoice_pay_later": "invoice_pay_later",
+    "pay_later_consumer": "pay_later_consumer",
     "qr_code_payments": None,
     "donations": "donations",
     "nonprofit": "nonprofit",
@@ -3234,13 +3533,20 @@ _INTERNATIONAL_SURCHARGE_SCHEDULE_FOR: dict[str, str | None] = {
     "withdrawals": None,
 }
 
-_INTERNATIONAL_SURCHARGE_INHERITANCE: dict[str, str] = {
-    "paypal_checkout": "commercial",
-    "other_commercial": "commercial",
-    "advanced_card_payments": "commercial",
-    "guest_checkout": "commercial",
-    "invoice_pay_later": "commercial",
-    "pay_later_consumer": "commercial",
+_INTERNATIONAL_SURCHARGE_INHERITANCE: dict[str, str] = {}
+
+
+# Fallback order for product-specific international surcharge schedules.
+_INTERNATIONAL_SURCHARGE_SCHEDULE_FALLBACK: dict[str, tuple[str, ...]] = {
+    "paypal_checkout": ("commercial",),
+    "other_commercial": ("commercial",),
+    "guest_checkout": ("commercial",),
+    "invoice_pay_later": ("commercial",),
+    "pay_later_consumer": ("commercial",),
+    "advanced_card_payments": ("commercial",),
+    "goods_and_services": ("commercial",),
+    "donations": ("commercial",),
+    "nonprofit": ("commercial",),
 }
 
 
@@ -3367,11 +3673,7 @@ def _create_direct_fixed_fee_rules(
         product_id = _DIRECT_FIXED_FEE_SCHEDULE_PRODUCTS.get(schedule_id)
         if not product_id:
             continue
-        components = [
-            FeeComponent(type="fixed_amount", amount=amount, currency=currency)
-            for currency, amount in schedule.entries.items()
-        ]
-        if not components:
+        if not schedule.entries:
             continue
         provenance = schedule.sources[0] if schedule.sources else None
         rules.append(
@@ -3380,16 +3682,46 @@ def _create_direct_fixed_fee_rules(
                 variant_id="standard",
                 label=provenance.section_heading if provenance else None,
                 percentage=None,
-                fixed_fee_schedule=None,
+                fixed_fee_schedule=schedule_id,
                 international_surcharge_schedule=None,
                 conditions={},
                 rate_reference=None,
                 source=provenance,
                 calculation_status="calculable",
-                fee_components=components,
+                fee_components=[],
             )
         )
     return rules
+
+
+def _ensure_fallback_schedules(
+    rules: list[TransactionFeeRule],
+    fixed_schedules: dict[str, FixedFeeSchedule],
+    international_schedules: dict[str, InternationalSurchargeSchedule],
+) -> None:
+    """Copy fallback schedules for product-specific rules whose schedule is missing.
+
+    This keeps product identities separate (e.g. paypal_checkout) without forcing
+    a merge into a generic commercial schedule. When a product-specific schedule
+    is not present, the first available fallback schedule is copied.
+    """
+    referenced_fixed = {r.fixed_fee_schedule for r in rules if r.fixed_fee_schedule}
+    for schedule_id in referenced_fixed:
+        if schedule_id in fixed_schedules:
+            continue
+        for fallback in _FIXED_FEE_SCHEDULE_FALLBACK.get(schedule_id, ()):
+            if fallback in fixed_schedules:
+                fixed_schedules[schedule_id] = fixed_schedules[fallback].model_copy()
+                break
+
+    referenced_intl = {r.international_surcharge_schedule for r in rules if r.international_surcharge_schedule}
+    for schedule_id in referenced_intl:
+        if schedule_id in international_schedules:
+            continue
+        for fallback in _INTERNATIONAL_SURCHARGE_SCHEDULE_FALLBACK.get(schedule_id, ()):
+            if fallback in international_schedules:
+                international_schedules[schedule_id] = international_schedules[fallback].model_copy()
+                break
 
 
 def _merge_provenance_sources(*source_lists: list[Provenance]) -> list[Provenance]:
@@ -3410,10 +3742,13 @@ def _merge_provenance_sources(*source_lists: list[Provenance]) -> list[Provenanc
 _STATUS_DEFECT_DIAGNOSTICS: set[str] = {
     "missing_required_schedule",
     "conflicting_schedule_entry",
+    "conflicting_rule_identity",
     "unresolved_reference",
     "unresolved_nested_reference",
     "ambiguous_identity",
     "unsupported_fee_shape",
+    "ambiguous_reference",
+    "unknown_apm_method",
 }
 
 
@@ -3449,23 +3784,19 @@ def _derive_status(
 
 
 def _rule_identity(rule: TransactionFeeRule) -> str:
-    """Return a stable identity key for deduplicating equivalent rules.
+    """Return a stable selector key for deduplicating equivalent rules.
 
-    The identity covers product family, variant, percentage, applicable
-    conditions and the schedule references that determine which fee table is
-    used. The source provenance and the concrete rate reference object are
-    intentionally excluded so that a source row that references a target and
-    the target row itself can be merged into one rule.
+    A rule selector is uniquely defined by product family, variant and
+    applicable conditions. The localized ``label``, percentage and schedule
+    references are intentionally excluded: the same selector with different
+    fees is a conflict, not a different rule. Different rates must be
+    expressed through different variants or conditions.
     """
     return json.dumps(
         {
             "id": rule.id,
             "variant_id": rule.variant_id,
-            "label": rule.label,
-            "percentage": str(rule.percentage) if rule.percentage is not None else None,
             "conditions": {k: rule.conditions[k] for k in sorted(rule.conditions)} if rule.conditions else {},
-            "fixed_fee_schedule": rule.fixed_fee_schedule,
-            "international_surcharge_schedule": rule.international_surcharge_schedule,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -3521,18 +3852,40 @@ def _derive_calculation_status(rule: TransactionFeeRule) -> str:
     return "incomplete"
 
 
+def _rule_fee_signature(rule: TransactionFeeRule) -> str:
+    """Return a canonical signature of the fee values carried by a rule.
+
+    The resolved reference object is intentionally ignored: a reference row
+    and the row it points to are equivalent when the resulting percentage and
+    schedule references are the same.
+    """
+    return json.dumps(
+        {
+            "percentage": str(rule.percentage) if rule.percentage is not None else None,
+            "fixed_fee_schedule": rule.fixed_fee_schedule,
+            "international_surcharge_schedule": rule.international_surcharge_schedule,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+
+
 def _deduplicate_rules(
     rules: list[TransactionFeeRule],
     diagnostics: list[Diagnostic] | None = None,
 ) -> list[TransactionFeeRule]:
     """Merge equivalent rules, preserving variants and preferring resolved references.
 
-    Rules are equivalent when their product family, variant, conditions and
-    schedule references are identical. Within an equivalence group we prefer:
+    Rules are equivalent when their product family, variant and conditions are
+    identical. Within an equivalence group we prefer:
     1. a rule with a usable rate (or a resolved reference), and
     2. a rule that carries a reference (because it ties the source and target
        together), then
     3. the first rule in source order.
+
+    If the same selector has different fee values, the group is a genuine
+    conflict: a synthetic incomplete rule is emitted and a
+    ``conflicting_rule_identity`` diagnostic is added.
     """
     groups: dict[str, list[tuple[int, TransactionFeeRule]]] = {}
     for idx, rule in enumerate(rules):
@@ -3540,6 +3893,37 @@ def _deduplicate_rules(
 
     selected: list[TransactionFeeRule] = []
     for group in groups.values():
+        if len(group) > 1:
+            signatures = {_rule_fee_signature(rule) for _, rule in group}
+            if len(signatures) > 1:
+                # Genuine conflict: the same selector resolves to different fees.
+                if diagnostics is not None:
+                    first = min(group, key=lambda item: item[0])[1]
+                    diagnostics.append(
+                        Diagnostic(
+                            type="conflicting_rule_identity",
+                            rule_id=first.id,
+                            label=first.label,
+                            values=[_rule_fee_signature(rule) for _, rule in group],
+                            sources=[rule.source for _, rule in group if rule.source],
+                        )
+                    )
+                # Emit an incomplete placeholder for the selector so the
+                # conflict is visible but no authoritative value is exposed.
+                representative = min(group, key=lambda item: item[0])[1]
+                selected.append(
+                    representative.model_copy(
+                        update={
+                            "percentage": None,
+                            "fixed_fee_schedule": None,
+                            "international_surcharge_schedule": None,
+                            "rate_reference": None,
+                            "calculation_status": "incomplete",
+                        }
+                    )
+                )
+                continue
+
         group.sort(
             key=lambda item: (
                 0 if _rule_has_rate(item[1]) else 1,
@@ -3579,11 +3963,19 @@ def _resolve_rate_references(
         if not extracted.reference:
             continue
         rule = unresolved_rules[i]
-        resolved = _resolve_reference(extracted.reference, unresolved_rules)
+        resolved, ambiguous = _resolve_reference(
+            extracted.reference, unresolved_rules, source_variant_id=rule.variant_id
+        )
         if resolved:
             percentage = rule.percentage
             if resolved.percentage and percentage is None:
                 percentage = resolved.percentage
+            fixed_fee_schedule = rule.fixed_fee_schedule
+            if resolved.fixed_fee_schedule is not None:
+                fixed_fee_schedule = resolved.fixed_fee_schedule
+            international_surcharge_schedule = rule.international_surcharge_schedule
+            if resolved.international_surcharge_schedule is not None:
+                international_surcharge_schedule = resolved.international_surcharge_schedule
             unresolved_rules[i] = rule.model_copy(
                 update={
                     "rate_reference": RateReference(
@@ -3592,12 +3984,14 @@ def _resolve_rate_references(
                         source=rule.source,
                     ),
                     "percentage": percentage,
+                    "fixed_fee_schedule": fixed_fee_schedule,
+                    "international_surcharge_schedule": international_surcharge_schedule,
                 }
             )
         else:
             diagnostics.append(
                 Diagnostic(
-                    type="unresolved_reference",
+                    type="ambiguous_reference" if ambiguous else "unresolved_reference",
                     rule_id=rule.id,
                     label=extracted.label,
                     sources=[rule.source] if rule.source else [],
@@ -3833,6 +4227,7 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
             "apm_rate_table",
             "pos_rate_table",
             "micropayment_rate_table",
+            "other_fees_table",
         }:
             rules, uncls, ambig, ignored = _extract_rules_from_rate_table(table, category, source)
             extracted_rules.extend(rules)
@@ -3919,11 +4314,12 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
     # Resolve references, validate schedules, and create rules for schedules
     # that are not attached to a rate table.
     _resolve_rate_references(extracted_rules, unresolved_rules, diagnostics)
+    _ensure_fallback_schedules(unresolved_rules, fixed_schedules, international_schedules)
     _validate_top_level_schedule_references(unresolved_rules, fixed_schedules, international_schedules, diagnostics)
     _validate_nested_schedule_references(unresolved_rules, fixed_schedules, international_schedules, diagnostics)
 
     # Merge equivalent rules and preserve legitimate variants.
-    transaction_rules = _deduplicate_rules(unresolved_rules)
+    transaction_rules = _deduplicate_rules(unresolved_rules, diagnostics)
     transaction_rules.sort(key=_rule_sort_key)
 
     # Materialize fee components and calculability status for each rule.

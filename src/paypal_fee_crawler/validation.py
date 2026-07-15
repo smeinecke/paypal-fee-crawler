@@ -142,7 +142,6 @@ def _validate_transaction_rules(derived: Any, label: str) -> list[str]:
             [
                 rule.id,
                 rule.variant_id,
-                rule.label,
                 sorted(conditions.keys()),
                 [conditions[k] for k in sorted(conditions)],
             ]
