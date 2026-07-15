@@ -1865,9 +1865,37 @@ def _variant_id_for_row(product_id: str, label: str, methods: list[str], table: 
         return "standard"
 
     if product_id == "qr_code_payments":
-        if any(kw in norm_label for kw in ("unter", "under", "below", "less than", "<", "bis zu", "up to", "jusqu'à", "inférieure", "inferior")):
+        if any(
+            kw in norm_label
+            for kw in (
+                "unter",
+                "under",
+                "below",
+                "less than",
+                "<",
+                "bis zu",
+                "up to",
+                "jusqu'à",
+                "inférieure",
+                "inferior",
+            )
+        ):
             return "below_threshold"
-        if any(kw in norm_label for kw in ("über", "over", "above", "greater than", ">", "mindestens", "at least", "à partir de", "supérieure", "superior")):
+        if any(
+            kw in norm_label
+            for kw in (
+                "über",
+                "over",
+                "above",
+                "greater than",
+                ">",
+                "mindestens",
+                "at least",
+                "à partir de",
+                "supérieure",
+                "superior",
+            )
+        ):
             return "above_threshold"
         return "standard"
 
@@ -1885,7 +1913,10 @@ def _variant_id_for_row(product_id: str, label: str, methods: list[str], table: 
             return "donations"
         if re.search(r"\bvenmo\b", norm_label) and not re.search(r"(?:\bor\b|\band\b|\bou\b)\s+venmo", norm_label):
             return "venmo"
-        if any(kw in norm_label for kw in ("crypto", "bitcoin", "cryptocurrency", "krypto", "cryptomonnaie", "criptomoneda")):
+        if any(
+            kw in norm_label
+            for kw in ("crypto", "bitcoin", "cryptocurrency", "krypto", "cryptomonnaie", "criptomoneda")
+        ):
             return "crypto"
         if is_international:
             return "international"
@@ -1907,7 +1938,9 @@ def _variant_id_for_row(product_id: str, label: str, methods: list[str], table: 
         return "standard"
 
     if product_id == "pos_transactions":
-        if any(kw in norm_label for kw in ("manual", "manuelle", "manuale", "manual entry", "saisie manuelle", "saisie")):
+        if any(
+            kw in norm_label for kw in ("manual", "manuelle", "manuale", "manual entry", "saisie manuelle", "saisie")
+        ):
             return "manual_entry"
         if any(kw in norm_label for kw in ("card present", "present", "präsent", "présente", "presente")):
             return "card_present"
@@ -1920,14 +1953,30 @@ def _variant_id_for_row(product_id: str, label: str, methods: list[str], table: 
         # sending tables their own variant so they do not collide with receiving.
         if any(kw in table_text for kw in ("sending", "senden", "envoi", "envío", "invio", "wysyłka")):
             return "sending"
-        if any(kw in norm_label for kw in ("campaign", "aktion", "collect", "campagne", "collecte", "cause", "dons collectifs", "fundraiser", "fundraisers")):
+        if any(
+            kw in norm_label
+            for kw in (
+                "campaign",
+                "aktion",
+                "collect",
+                "campagne",
+                "collecte",
+                "cause",
+                "dons collectifs",
+                "fundraiser",
+                "fundraisers",
+            )
+        ):
             return "campaign"
         if any(kw in norm_label for kw in ("button", "bouton", "botón", "pulsante", "knop")):
             return "button"
         return "standard"
 
     if product_id == "invoice_pay_later":
-        if any(kw in norm_label for kw in ("rückzahlung", "repayment", "remboursement", "reembolso", "rimborso", "refund", "refund")):
+        if any(
+            kw in norm_label
+            for kw in ("rückzahlung", "repayment", "remboursement", "reembolso", "rimborso", "refund", "refund")
+        ):
             return "repayment"
         return "standard"
 
