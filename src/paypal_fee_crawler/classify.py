@@ -1323,8 +1323,7 @@ def _classify_table_category(table: Table) -> str | None:
     # country. Classify these as commercial rate tables so the rows become
     # product rules with market applicability instead of surcharge schedules.
     if (
-        "receiving international transactions" in text
-        or "sending international transactions" in text
+        "receiving international transactions" in text or "sending international transactions" in text
     ) and _table_has_fixed_fee_rate(table):
         return "commercial_rate_table"
 
@@ -2054,7 +2053,6 @@ _ESTONIAN_TOKENS = {
     "estonsku",
     "estónsku",
     "estnischen",
-    "estnische",
 }
 _BANK_TOKENS = {
     "bank",
@@ -2116,7 +2114,11 @@ _APM_METHOD_MATCHERS: list[tuple[str, list[set[str]], set[str]]] = [
     ("latvian_online_bank_transfer", [_LATVIAN_TOKENS, _ONLINE_TOKENS, _BANK_TOKENS], set()),
     ("lithuanian_online_bank_transfer", [_LITHUANIAN_TOKENS, _ONLINE_TOKENS, _BANK_TOKENS], set()),
     ("estonian_online_bank_transfer", [_ESTONIAN_TOKENS, _BANK_TOKENS], set()),
-    ("online_bank_transfer", [_ONLINE_TOKENS, _BANK_TOKENS], _THAI_TOKENS | _LATVIAN_TOKENS | _LITHUANIAN_TOKENS | _ESTONIAN_TOKENS),
+    (
+        "online_bank_transfer",
+        [_ONLINE_TOKENS, _BANK_TOKENS],
+        _THAI_TOKENS | _LATVIAN_TOKENS | _LITHUANIAN_TOKENS | _ESTONIAN_TOKENS,
+    ),
     ("skrill", [{"skrill"}], set()),
     ("ovo_premium", [{"ovopremium", "ovo", "ovos"}], set()),
     ("gopay", [{"gopay", "go", "gopa"}], set()),
@@ -2382,7 +2384,20 @@ def _is_sending_donation_table(table_text: str) -> bool:
 
 # Product-specific variant keyword rules (order matters: first match wins)
 _APM_VARIANTS: list[tuple[tuple[str, ...], str]] = [
-    (("pay link", "pay links", "payment link", "payment links", "payment links and buttons", "buy buttons", "shopping cart buttons", "zahlungslink", "liens de paiement"), "payment_links"),
+    (
+        (
+            "pay link",
+            "pay links",
+            "payment link",
+            "payment links",
+            "payment links and buttons",
+            "buy buttons",
+            "shopping cart buttons",
+            "zahlungslink",
+            "liens de paiement",
+        ),
+        "payment_links",
+    ),
     (("cash a check", "cheque", "check"), "cash_a_check"),
     (("wire transfer", "virement", "transferencia bancaria"), "wire_transfer"),
     (("spendback", "remboursement"), "spendback_transfer"),
@@ -2393,17 +2408,70 @@ _APM_VARIANTS: list[tuple[tuple[str, ...], str]] = [
 ]
 
 _ADVANCED_CARD_VARIANTS: list[tuple[tuple[str, ...], str]] = [
-    (("eterminal", "terminal", "point of sale", "card present", "pagamenti telefonici", "telefonici", "pago por teléfono", "pagos por teléfono"), "eterminal"),
+    (
+        (
+            "eterminal",
+            "terminal",
+            "point of sale",
+            "card present",
+            "pagamenti telefonici",
+            "telefonici",
+            "pago por teléfono",
+            "pagos por teléfono",
+        ),
+        "eterminal",
+    ),
     (("standard credit", "carte standard", "tarjeta de crédito y débito"), "standard_card"),
     (("american express", "amex", "carte american express"), "american_express"),
-    (("advanced credit", "advanced debit", "carte bancaire avancés", "carte bancaire avancée", "cartes bancaires avancées", "pagamenti avanzati con carta", "avancerade betalningar med betalkort", "avancerat kredit- och betalkort"), "advanced_card"),
+    (
+        (
+            "advanced credit",
+            "advanced debit",
+            "carte bancaire avancés",
+            "carte bancaire avancée",
+            "cartes bancaires avancées",
+            "pagamenti avanzati con carta",
+            "avancerade betalningar med betalkort",
+            "avancerat kredit- och betalkort",
+        ),
+        "advanced_card",
+    ),
     (("payments advanced", "advanced payments", "payment advanced"), "payments_advanced"),
-    (("payments pro", "payment pro", "solution hébergée", "solution hébergée paypal", "hosted solution", "paypal pro", "pagamenti con paypal pro"), "payments_pro"),
+    (
+        (
+            "payments pro",
+            "payment pro",
+            "solution hébergée",
+            "solution hébergée paypal",
+            "hosted solution",
+            "paypal pro",
+            "pagamenti con paypal pro",
+        ),
+        "payments_pro",
+    ),
     (("ach", "automated clearing", "addebito diretto", "sepa", "direktdebitering"), "ach"),
     (("additional risk", "risk factors", "risk factor", "chargeback protection", "fraud protection"), "risk_factors"),
     (("failure to implement", "express checkout", "checkout requis"), "express_checkout"),
     (("foreign exchange", "currency conversion", "devise", "fx as a service"), "fx_service"),
-    (("regroup", "flat rate", "forfait", "regroupée", "blended", "blandad prissättning", "piano tariffario misto", "combinada", "combinado", "tarifa combinada", "gecombineerde", "gecombineerd tarief", "kombinovanými sazbami", "kombinovanými sadzbami"), "flat_rate"),
+    (
+        (
+            "regroup",
+            "flat rate",
+            "forfait",
+            "regroupée",
+            "blended",
+            "blandad prissättning",
+            "piano tariffario misto",
+            "combinada",
+            "combinado",
+            "tarifa combinada",
+            "gecombineerde",
+            "gecombineerd tarief",
+            "kombinovanými sazbami",
+            "kombinovanými sadzbami",
+        ),
+        "flat_rate",
+    ),
     (("interchange plus plus", "interchange++"), "interchange_plus_plus"),
     (("interchange plus", "interchange+", "piano tariffario interchange plus"), "interchange_plus"),
 ]
@@ -2542,14 +2610,81 @@ _OTHER_COMMERCIAL_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("campaign", "store cash", "campagne"), "campaign_fee"),
     (("pyusd",), "pyusd"),
     (("ach", "pay by bank", "virement bancaire"), "ach"),
-    (("card funded", "approvisionné par carte", "financiada", "financiado por cartão", "card-funded", "kortfinansierad", "kortilla rahoitettu", "kártyás kifizetések", "pagamento con carta", "kaartbetaling", "betaald met kaart", "kartou hrazená", "platba kartou", "płatność kartą", "płatności kartą"), "card_funded"),
+    (
+        (
+            "card funded",
+            "approvisionné par carte",
+            "financiada",
+            "financiado por cartão",
+            "card-funded",
+            "kortfinansierad",
+            "kortilla rahoitettu",
+            "kártyás kifizetések",
+            "pagamento con carta",
+            "kaartbetaling",
+            "betaald met kaart",
+            "kartou hrazená",
+            "platba kartou",
+            "płatność kartą",
+            "płatności kartą",
+        ),
+        "card_funded",
+    ),
 )
 
 _POS_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("qr code", "qr-code", "qr-kode", "qr kod"), "qr_code"),
-    (("manual", "manuelle", "manuale", "manual entry", "saisie manuelle", "saisie", "manuell inmatning", "manuel indtastning", "manuelle eingabe", "handmatig", "handmatig ingevoerd"), "manual_entry"),
-    (("card present", "present", "präsent", "présente", "presente", "transactions par carte", "transaktionen mit präsenter karte", "aktuella korttransaktioner", "korttransaktioner", "kortforevisning", "carta presente", "kaart aanwezig", "tilstedeværende kort"), "card_present"),
-    (("payment link", "zahlungslink", "zahlungslinks", "liens de paiement", "payment links", "betalningslänkar", "betalingslinks", "link di pagamento", "links de pagamento", "betaallinks", "betalingslink", "betalingslenker"), "payment_links"),
+    (
+        (
+            "manual",
+            "manuelle",
+            "manuale",
+            "manual entry",
+            "saisie manuelle",
+            "saisie",
+            "manuell inmatning",
+            "manuel indtastning",
+            "manuelle eingabe",
+            "handmatig",
+            "handmatig ingevoerd",
+        ),
+        "manual_entry",
+    ),
+    (
+        (
+            "card present",
+            "present",
+            "präsent",
+            "présente",
+            "presente",
+            "transactions par carte",
+            "transaktionen mit präsenter karte",
+            "aktuella korttransaktioner",
+            "korttransaktioner",
+            "kortforevisning",
+            "carta presente",
+            "kaart aanwezig",
+            "tilstedeværende kort",
+        ),
+        "card_present",
+    ),
+    (
+        (
+            "payment link",
+            "zahlungslink",
+            "zahlungslinks",
+            "liens de paiement",
+            "payment links",
+            "betalningslänkar",
+            "betalingslinks",
+            "link di pagamento",
+            "links de pagamento",
+            "betaallinks",
+            "betalingslink",
+            "betalingslenker",
+        ),
+        "payment_links",
+    ),
 )
 
 _DONATIONS_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
@@ -3001,7 +3136,27 @@ def _pricing_plan_for_label(label: str) -> str | None:
         return "interchange_plus_plus"
     if "interchange plus" in text:
         return "interchange_plus"
-    if any(kw in text for kw in ("blended", "regroupée", "regroup", "flat rate", "forfait", "misto", "tariffario misto", "piano tariffario misto", "blandad prissättning", "combinada", "combinado", "tarifa combinada", "gecombineerde", "gecombineerd tarief", "kombinovanými sazbami", "kombinovanými sadzbami")):
+    if any(
+        kw in text
+        for kw in (
+            "blended",
+            "regroupée",
+            "regroup",
+            "flat rate",
+            "forfait",
+            "misto",
+            "tariffario misto",
+            "piano tariffario misto",
+            "blandad prissättning",
+            "combinada",
+            "combinado",
+            "tarifa combinada",
+            "gecombineerde",
+            "gecombineerd tarief",
+            "kombinovanými sazbami",
+            "kombinovanými sadzbami",
+        )
+    ):
         return "blended"
     if "standard paypal payment" in text:
         return "standard"
@@ -3029,9 +3184,8 @@ def _card_payment_methods_from_label(label: str) -> list[str] | None:
         ("credit card", "credit_card"),
         ("other card", "other_card"),
     ):
-        if _keyword_in_text(text, keyword):
-            if method_id not in methods:
-                methods.append(method_id)
+        if _keyword_in_text(text, keyword) and method_id not in methods:
+            methods.append(method_id)
     return methods if methods else None
 
 
@@ -3059,11 +3213,35 @@ def _conditions_for_row(
         conditions["transaction_purpose"] = "donation"
         if product_id in ("advanced_card_payments", "nonprofit"):
             text = _norm(label)
-            if any(kw in text for kw in ("website payments pro", "payments pro", "solution hébergée", "paypal pro", "pagamenti con paypal pro", "hosted solution")):
+            if any(
+                kw in text
+                for kw in (
+                    "website payments pro",
+                    "payments pro",
+                    "solution hébergée",
+                    "paypal pro",
+                    "pagamenti con paypal pro",
+                    "hosted solution",
+                )
+            ):
                 conditions["service"] = "website_payments_pro"
-            elif any(kw in text for kw in ("virtual terminal", "eterminal", "e-terminal", "pagamenti telefonici", "telefonici")):
+            elif any(
+                kw in text
+                for kw in ("virtual terminal", "eterminal", "e-terminal", "pagamenti telefonici", "telefonici")
+            ):
                 conditions["service"] = "virtual_terminal"
-            elif any(kw in text for kw in ("advanced credit", "advanced debit", "avancerat kredit", "carte bancaire avancés", "pagamenti avanzati con carta", "avancerade betalningar med betalkort", "avancerat kredit- och betalkort")):
+            elif any(
+                kw in text
+                for kw in (
+                    "advanced credit",
+                    "advanced debit",
+                    "avancerat kredit",
+                    "carte bancaire avancés",
+                    "pagamenti avanzati con carta",
+                    "avancerade betalningar med betalkort",
+                    "avancerat kredit- och betalkort",
+                )
+            ):
                 conditions["service"] = "advanced_card"
     if product_id in ("advanced_card_payments", "nonprofit") and variant_id:
         if variant_id == "eterminal":
@@ -3102,7 +3280,10 @@ def _conditions_for_row(
             text = _norm(label)
             if any(kw in text for kw in ("paypal checkout", "venmo", "pay later", "guest checkout")):
                 conditions["payment_methods"] = sorted(["paypal_checkout", "venmo", "pay_later", "guest_checkout"])
-            elif any(kw in text for kw in ("standard credit", "debit card", "apple pay", "third-party wallets", "third party wallets")):
+            elif any(
+                kw in text
+                for kw in ("standard credit", "debit card", "apple pay", "third-party wallets", "third party wallets")
+            ):
                 conditions["payment_methods"] = sorted(["card", "apple_pay", "third_party_wallet"])
     if product_id == "paypal_checkout" and variant_id:
         if variant_id == "venmo":
@@ -3711,7 +3892,6 @@ def _schedule_signature_for_row(
     rows (``use_row_label=True``) may encode applicability in the label itself.
     """
     label = _row_label(row) if use_row_label else ""
-    norm_label = _norm(label)
     combined_text = f"{label} {table_text}".strip()
     sig: dict[str, Any] = {}
     market_condition = _extract_country_group_condition(label) or _extract_country_group_condition(table_text)
@@ -3824,11 +4004,7 @@ def _conditions_from_schedule_id(schedule_id: str) -> dict[str, Any]:
                 conditions[key] = ["all_other_markets"]
             else:
                 conditions[key] = sorted(value.split("_"))
-        elif key == "amount_tier":
-            conditions[key] = value
-        elif key == "pricing_plan":
-            conditions[key] = value
-        elif key == "transaction_region":
+        elif key == "amount_tier" or key == "pricing_plan" or key == "transaction_region":
             conditions[key] = value
     return conditions
 
@@ -3838,7 +4014,9 @@ def _conditions_from_schedule_id(schedule_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _extract_fixed_fee_schedule(table: Table, base_name: str, source: Source | None = None) -> dict[str, FixedFeeSchedule]:
+def _extract_fixed_fee_schedule(
+    table: Table, base_name: str, source: Source | None = None
+) -> dict[str, FixedFeeSchedule]:
     """Extract fixed-fee schedules grouped by row applicability signature."""
     table_text = _table_context_original(table)
     groups: dict[frozenset[tuple[str, Any]], dict[str, str]] = {}
@@ -3859,10 +4037,7 @@ def _extract_fixed_fee_schedule(table: Table, base_name: str, source: Source | N
         group_keys.setdefault(key, signature)
         amounts = groups.setdefault(key, {})
         cells = row.cells
-        if charge_indices:
-            iterable = (cells[i] for i in charge_indices if i < len(cells))
-        else:
-            iterable = cells[1:]  # skip the label cell
+        iterable = (cells[i] for i in charge_indices if i < len(cells)) if charge_indices else cells[1:]  # skip the label cell
         for cell in iterable:
             if not cell.text.strip():
                 continue
@@ -3990,7 +4165,6 @@ def _extract_maximum_fee_schedule(table: Table, source: Source | None = None) ->
         for key, entries in groups.items():
             if not entries:
                 continue
-            suffix = _schedule_suffix_from_signature(group_keys[key])
             schedule_id = _schedule_id(base_id, group_keys[key])
             existing = schedules.get(schedule_id)
             if existing:
@@ -4468,7 +4642,9 @@ def _resolve_reference(
     if not candidates:
         # Fallback: find a rule whose label matches the reference product aliases.
         aliases = _PRODUCT_ALIASES.get(target_id, ())
-        candidates = [r for r in rules if r is not None and r.label and any(_norm(a) in _norm(r.label) for a in aliases)]
+        candidates = [
+            r for r in rules if r is not None and r.label and any(_norm(a) in _norm(r.label) for a in aliases)
+        ]
 
     if not candidates:
         return None, False
@@ -4483,10 +4659,7 @@ def _resolve_reference(
     resolved_source_conditions = dict(source_conditions or {})
     if "applies_to_markets" not in resolved_source_conditions and source:
         market = _market_code_from_url(source.requested_url)
-        if market and any(
-            market in _as_list((r.conditions or {}).get("applies_to_markets"))
-            for r in candidates
-        ):
+        if market and any(market in _as_list((r.conditions or {}).get("applies_to_markets")) for r in candidates):
             resolved_source_conditions["applies_to_markets"] = [market]
 
     # Multiple candidates: prefer targets whose conditions are compatible with
@@ -4494,8 +4667,7 @@ def _resolve_reference(
     # rule and a generic APM row can fall back to the default APM rule.
     if resolved_source_conditions:
         matched = [
-            r for r in candidates
-            if _conditions_match_for_reference(r.conditions or {}, resolved_source_conditions)
+            r for r in candidates if _conditions_match_for_reference(r.conditions or {}, resolved_source_conditions)
         ]
         if matched and len(matched) > 1:
             max_score = max(_condition_score(r, resolved_source_conditions) for r in matched)

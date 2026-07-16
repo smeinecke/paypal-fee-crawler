@@ -173,7 +173,7 @@ def _strict_publication_errors(derived: Any, label: str) -> list[str]:
         errors.append(f"{label} is not complete (status={status})")
     diagnostics = getattr(derived, "diagnostics", None) or []
     if diagnostics:
-        types = sorted(set(d.type for d in diagnostics))
+        types = sorted({d.type for d in diagnostics})
         errors.append(f"{label} has {len(diagnostics)} diagnostic(s): {', '.join(types)}")
     unclassified = getattr(derived, "unclassified_fee_rows", None) or []
     if unclassified:
@@ -256,9 +256,7 @@ def validate_country_output(data: dict[str, Any], schema_only: bool = False, str
     return errors
 
 
-def validate_public_country_output(
-    data: dict[str, Any], schema_only: bool = False, strict: bool = False
-) -> list[str]:
+def validate_public_country_output(data: dict[str, Any], schema_only: bool = False, strict: bool = False) -> list[str]:
     """Validate a public per-country JSON object (rejects internal fields)."""
     errors: list[str] = []
     try:
@@ -311,9 +309,7 @@ def validate_country_manifest(data: dict[str, Any]) -> list[str]:
     return errors
 
 
-def validate_file(
-    path: Path | str, schema_type: str, schema_only: bool = False, strict: bool = False
-) -> list[str]:
+def validate_file(path: Path | str, schema_type: str, schema_only: bool = False, strict: bool = False) -> list[str]:
     """Validate a JSON file on disk.
 
     ``schema_type`` is one of ``country``, ``index``, ``core_fees``, ``manifest``.
