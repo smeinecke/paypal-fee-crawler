@@ -4098,14 +4098,10 @@ def _collect_fixed_fee_table(
     applicable_variants = _applicable_variants_for_table(table, base_name)
     product_is_direct = base_name in direct_products
     diagnostics: list[Diagnostic] = []
-    for name in _schedule_ids_for_table(
-        base_name, applicable_variants, set(fixed.keys()), product_is_direct
-    ):
+    for name in _schedule_ids_for_table(base_name, applicable_variants, set(fixed.keys()), product_is_direct):
         existing = fixed.get(name)
         if existing:
-            merged, new_diagnostics = _merge_fixed_like_schedules(
-                existing, schedule, name, "fixed_fee"
-            )
+            merged, new_diagnostics = _merge_fixed_like_schedules(existing, schedule, name, "fixed_fee")
             diagnostics.extend(new_diagnostics)
             fixed[name] = merged
         else:
@@ -4146,9 +4142,7 @@ def _collect_maximum_fee_table(
     for name, schedule in _extract_maximum_fee_schedule(table, source=source).items():
         existing = maximum.get(name)
         if existing:
-            merged, new_diagnostics = _merge_fixed_like_schedules(
-                existing, schedule, name, "maximum_fee"
-            )
+            merged, new_diagnostics = _merge_fixed_like_schedules(existing, schedule, name, "maximum_fee")
             diagnostics.extend(new_diagnostics)
             maximum[name] = merged
         else:
