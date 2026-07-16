@@ -908,8 +908,25 @@ _TABLE_NEGATIVE_SIGNALS: dict[str, tuple[str, ...]] = {
     "commercial_rate_table": (
         "spende",
         "donation",
+        "donativos",
+        "donativas",
+        "donaciones",
+        "donazione",
+        "donazioni",
+        "doações",
         "gemeinnützig",
         "nonprofit",
+        "non-profit",
+        "organizaciones benéficas",
+        "organizaciones sin fines de lucro",
+        "organizacion benéfica",
+        "organizzazioni senza scopo di lucro",
+        "organizzazione senza scopo di lucro",
+        "enti benefici",
+        "ente benefico",
+        "organizações beneficentes",
+        "organização beneficente",
+        "sem fins lucrativos",
         "mikrozahlung",
         "micropayment",
         "alternative zahlungsmethode",
@@ -1657,6 +1674,32 @@ _APM_METHOD_ALIASES: dict[str, tuple[str, ...]] = {
         "litewskim",
         "lithuanian",
     ),
+    "estonian_online_bank_transfer": (
+        "estonian online bank transfer",
+        "estonian online bank",
+        "estonia online bank transfer",
+        "estonia online bank",
+        "estonia banks",
+        "estonian banks",
+        "estonian bank transfer",
+        "estnische online banküberweisung",
+        "estnische online bank",
+        "online bankovní převod v estonsku",
+        "online bankový prevod v estónsku",
+        "online banki átutalás észtország",
+        "virement bancaire en ligne estonien",
+        "bonifico bancario online estone",
+        "transferencia bancaria online de estonia",
+        "transferência bancária online da estónia",
+        "estnisk",
+        "estnische",
+        "esti",
+        "estonia",
+        "estonian",
+        "estonsku",
+        "estónsku",
+        "estnischen",
+    ),
     "online_bank_transfer": (
         "online bank transfer",
         "online bankoverførsel",
@@ -1734,6 +1777,7 @@ _APM_SPECIAL_METHOD_IDS: frozenset[str] = frozenset(
         "thai_online_bank_transfer",
         "latvian_online_bank_transfer",
         "lithuanian_online_bank_transfer",
+        "estonian_online_bank_transfer",
         "online_bank_transfer",
         "skrill",
         "ovo_premium",
@@ -1804,9 +1848,16 @@ _APM_HEADER_PHRASES: set[str] = {
     "alternative zahlungsmethoden",
     "alternative payment method",
     "alternative payment methods",
+    "alternative payment methods (apms) through pay links and buttons",
     "all other alternative payment methods",
     "all other alternative payment method",
     "all other apm",
+    "standard credit and debit card payments",
+    "credit and debit card payments",
+    "other third-party wallets",
+    "third-party wallets",
+    "third party digital wallet",
+    "third-party digital wallet",
     "autres moyens de paiement alternatifs",
     "autres moyens de paiement",
     "altre modalità di pagamento alternative",
@@ -1821,6 +1872,10 @@ _APM_HEADER_PHRASES: set[str] = {
     "andere alternative zahlungsmethode",
     "andre alternative betalingsmetoder",
     "pozostałe metody płatności",
+    "inne płatności z użyciem alternatywnych form płatności",
+    "wszystkie inne alternatywne formy płatności",
+    "άλλες εναλλακτικές μέθοδοι πληρωμής",
+    "εναλλακτικές μέθοδοι πληρωμής",
     "övriga alternativa betalningsmetoder",
     "muut vaihtoehtoiset maksutavat",
     "más alternatív fizetési módok",
@@ -1883,6 +1938,10 @@ _APM_HEADER_PHRASES: set[str] = {
     "wire transfer",
     "transfer to debit card",
     "cash a check",
+    "standard credit",
+    "debit card payments",
+    "credit card payments",
+    "standard debit",
 }
 
 # Tokens that indicate a label part is a generic APM header, not a method list.
@@ -1920,6 +1979,9 @@ _APM_HEADER_TOKENS: set[str] = {
     "crédito",
     "debit",
     "credit",
+    "card",
+    "cards",
+    "standard",
 }
 
 # Token sets for the individual payment methods we can extract from APM labels.
@@ -1980,6 +2042,20 @@ _LITHUANIAN_TOKENS = {
     "litouwen",
     "litauen",
 }
+_ESTONIAN_TOKENS = {
+    "estonian",
+    "estnische",
+    "estnisk",
+    "estniska",
+    "estlandsk",
+    "esztorszagi",
+    "esti",
+    "estonia",
+    "estonsku",
+    "estónsku",
+    "estnischen",
+    "estnische",
+}
 _BANK_TOKENS = {
     "bank",
     "banküberweisung",
@@ -1997,6 +2073,9 @@ _BANK_TOKENS = {
     "transferência",
     "bancaire",
     "bancaria",
+    "banco",
+    "bancos",
+    "banks",
     "banköverföring",
     "verkkopankki",
     "verkkopankkisiirto",
@@ -2036,10 +2115,11 @@ _APM_METHOD_MATCHERS: list[tuple[str, list[set[str]], set[str]]] = [
     ("thai_online_bank_transfer", [_THAI_TOKENS, _ONLINE_TOKENS, _BANK_TOKENS], set()),
     ("latvian_online_bank_transfer", [_LATVIAN_TOKENS, _ONLINE_TOKENS, _BANK_TOKENS], set()),
     ("lithuanian_online_bank_transfer", [_LITHUANIAN_TOKENS, _ONLINE_TOKENS, _BANK_TOKENS], set()),
-    ("online_bank_transfer", [_ONLINE_TOKENS, _BANK_TOKENS], _THAI_TOKENS | _LATVIAN_TOKENS | _LITHUANIAN_TOKENS),
+    ("estonian_online_bank_transfer", [_ESTONIAN_TOKENS, _BANK_TOKENS], set()),
+    ("online_bank_transfer", [_ONLINE_TOKENS, _BANK_TOKENS], _THAI_TOKENS | _LATVIAN_TOKENS | _LITHUANIAN_TOKENS | _ESTONIAN_TOKENS),
     ("skrill", [{"skrill"}], set()),
-    ("ovo_premium", [{"ovopremium", "ovo"}], set()),
-    ("gopay", [{"gopay", "go"}], set()),
+    ("ovo_premium", [{"ovopremium", "ovo", "ovos"}], set()),
+    ("gopay", [{"gopay", "go", "gopa"}], set()),
     ("blik_pay_later", [{"blikpaylater", "blik"}], set()),
     ("kredivo", [{"kredivo"}], set()),
     ("floa_pay", [{"floapay", "floa"}], set()),
@@ -2054,7 +2134,7 @@ _APM_METHOD_MATCHERS: list[tuple[str, list[set[str]], set[str]]] = [
     ("pesa", [{"pesa", "mpesa"}], set()),
     ("shopee_pay", [{"shopeepay", "shopee"}], set()),
     ("twint", [{"twint"}], set()),
-    ("doku_wallet", [{"dokuwallet"}], set()),
+    ("doku_wallet", [{"dokuwallet", "doku"}], set()),
     ("linkaja", [{"linkaja"}], set()),
     ("jenius_pay", [{"jeniuspay"}], set()),
     ("paysera", [{"paysera"}], set()),
@@ -2067,7 +2147,7 @@ _APM_METHOD_MATCHERS: list[tuple[str, list[set[str]], set[str]]] = [
     ("promptpay_qr", [{"promptpayqr"}], set()),
     ("pse", [{"pse"}], set()),
     ("bre_b", [{"breb"}], set()),
-    ("nibss_bank_transfer", [{"nibbs", "nigerian"}, {"bank", "bancaire", "transfer", "virement"}], set()),
+    ("nibss_bank_transfer", [{"nibbs", "nigerian", "nibss"}], set()),
     ("nequi", [{"nequi"}], set()),
     ("vietqr", [{"vietqr"}], set()),
     ("coins", [{"coins"}], set()),
@@ -2082,7 +2162,6 @@ _APM_METHOD_MATCHERS: list[tuple[str, list[set[str]], set[str]]] = [
     ("spei", [{"spei"}], set()),
     ("swish", [{"swish"}], set()),
     ("dimo", [{"dimo"}], set()),
-    ("gopay", [{"gopa"}], set()),
 ]
 
 
@@ -2477,8 +2556,21 @@ _DONATIONS_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (
         (
             "aufgeführte",
+            "aufgelistet",
             "listed",
             "listed campaigns",
+            "in elenco",
+            "presenti in elenco",
+            "indicadas",
+            "indicada",
+            "indicados",
+            "indicado",
+            "indiquées",
+            "listées",
+            "listado",
+            "listados",
+            "listada",
+            "listadas",
         ),
         "campaign_listed",
     ),
@@ -2503,6 +2595,14 @@ _DONATIONS_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
             "dons collectifs",
             "fundraiser",
             "fundraisers",
+            "fundraising",
+            "recaudación",
+            "recaudacion",
+            "recaudación de fondos",
+            "raccolta",
+            "raccolta fondi",
+            "collecte de fonds",
+            "fundraising-kampagne",
         ),
         "campaign",
     ),
@@ -2955,7 +3055,7 @@ def _conditions_for_row(
             conditions["payment_methods"] = ["third_party_wallet"]
         if variant_id == "fx_service":
             conditions["service"] = "foreign_exchange"
-    if variant_id == "donations":
+    if product_id == "donations" or variant_id == "donations":
         conditions["transaction_purpose"] = "donation"
         if product_id in ("advanced_card_payments", "nonprofit"):
             text = _norm(label)
@@ -4204,8 +4304,14 @@ def _detect_reference(row: Row, product_id: str | None) -> str | None:
     """Detect when a row does not contain a numeric rate but refers to another schedule."""
     if _row_has_percentage(row):
         return None
+    label_text = _norm(_row_label(row))
     fee_text = _norm(_row_fee_cell(row))
     if not fee_text or "{{" in fee_text:
+        return None
+    # A single-cell row with a reference-looking label is usually a section
+    # header, not a textual schedule reference.
+    non_empty_cells = [c for c in row.cells if c.text.strip()]
+    if len(non_empty_cells) == 1 and fee_text == label_text:
         return None
     # A reference is a textual pointer; if it already contains money, it is
     # likely a flat-fee rule, not a reference.
@@ -4229,19 +4335,124 @@ def _reference_product_id(reference: str) -> str | None:
     return reference
 
 
+def _as_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _market_code_from_url(url: str | None) -> str | None:
+    """Return the 2-letter market code from a PayPal URL path, if present."""
+    if not url:
+        return None
+    match = re.search(r"paypal\.com/([a-zA-Z0-9]+)/", url)
+    if match:
+        return match.group(1).upper()
+    return None
+
+
+def _condition_score(rule: TransactionFeeRule, source_conditions: dict[str, Any]) -> int:
+    """Score how specific a rule's conditions are relative to the source context.
+
+    Higher scores mean the rule is a better match. Keys that are present in the
+    source and match the rule are rewarded; extra, unrequested constraints in
+    the rule are penalised. List-valued keys are also penalised by length (shorter
+    lists are more specific), and the generic ``all_other_markets`` fallback is
+    heavily penalised.
+    """
+    score = 0
+    for key, rule_value in (rule.conditions or {}).items():
+        if key in source_conditions:
+            # A matching key is strong evidence that this rule is the right one.
+            if key in ("applies_to_markets", "payment_methods"):
+                if key == "applies_to_markets" and isinstance(rule_value, list) and "all_other_markets" in rule_value:
+                    score -= 1000
+                elif isinstance(rule_value, list):
+                    score += 100 - len(rule_value)
+                else:
+                    score += 100
+            else:
+                score += 100
+        else:
+            # An extra, unrequested condition makes the rule too specific for a
+            # generic source row.
+            if key in ("applies_to_markets", "payment_methods"):
+                penalty = 50
+                if isinstance(rule_value, list):
+                    penalty += len(rule_value)
+                score -= penalty
+            else:
+                score -= 10
+    return score
+
+
+def _conditions_match_for_reference(
+    rule_conditions: dict[str, Any],
+    source_conditions: dict[str, Any],
+) -> bool:
+    """Return True when rule conditions are compatible with the source context.
+
+    For ``applies_to_markets`` the source values must be included in the rule's
+    list (the rule applies to the source market). For ``payment_methods`` the
+    rule's methods must be a subset of the source's methods.  Scalar keys must
+    match exactly.  When the source does not constrain a list key, the rule must
+    not either (or use the generic ``all_other_markets`` fallback) so that a
+    generic APM row does not resolve to a method-specific rule.
+    """
+    for key, rule_value in rule_conditions.items():
+        source_value = source_conditions.get(key)
+        if key == "applies_to_markets":
+            if source_value is None or source_value == []:
+                if _as_list(rule_value) == ["all_other_markets"]:
+                    continue
+                return False
+            rule_markets = _as_list(rule_value)
+            if not all(m in rule_markets for m in _as_list(source_value)):
+                return False
+        elif key == "payment_methods":
+            if source_value is None or source_value == []:
+                return False
+            source_methods = _as_list(source_value)
+            if not all(m in source_methods for m in _as_list(rule_value)):
+                return False
+        elif source_value is None:
+            # The source has no constraint for this scalar key; only accept the
+            # rule if its scalar value is the generic/default value, i.e. the
+            # key is not actually narrowing the rule.
+            continue
+        elif rule_value != source_value:
+            return False
+    return True
+
+
 def _resolve_reference(
     reference: str,
     rules: list[TransactionFeeRule],
     source_variant_id: str | None = None,
     source_conditions: dict[str, Any] | None = None,
+    source: Source | None = None,
 ) -> tuple[ResolvedRate | None, bool]:
     """Resolve a textual reference to a concrete percentage and schedule names.
 
     A reference resolves only unambiguously. If more than one target rule
     matches, the reference is reported as ambiguous and ``(None, True)`` is
-    returned. The source variant and source conditions are used to
-    disambiguate when the reference is tied to a specific variant or context.
+    returned. The source variant, source conditions and source provenance are
+    used to disambiguate when the reference is tied to a specific variant or
+    context.
     """
+
+    def _build_resolved_rate(rule: TransactionFeeRule) -> ResolvedRate:
+        return ResolvedRate(
+            percentage=rule.percentage,
+            fixed_fee_schedule=rule.fixed_fee_schedule,
+            international_surcharge_schedule=rule.international_surcharge_schedule,
+            maximum_fee_schedule=rule.maximum_fee_schedule,
+            source=rule.source,
+            rule_id=rule.id,
+        )
+
     # References may be qualified with a product suffix, e.g. "online_card_payments.advanced".
     target_id: str
     if "." in reference:
@@ -4263,35 +4474,51 @@ def _resolve_reference(
         return None, False
 
     if len(candidates) == 1:
-        rule = candidates[0]
-        return ResolvedRate(
-            percentage=rule.percentage,
-            fixed_fee_schedule=rule.fixed_fee_schedule,
-            international_surcharge_schedule=rule.international_surcharge_schedule,
-            maximum_fee_schedule=rule.maximum_fee_schedule,
-            source=rule.source,
-            rule_id=rule.id,
-        ), False
+        return _build_resolved_rate(candidates[0]), False
 
-    # Multiple candidates: prefer targets whose conditions are a subset of the
-    # source context so a domestic/SG row references the matching domestic/SG rule.
-    if source_conditions:
+    # Build a source context that includes the page's market when no explicit
+    # applies_to_markets is present on the source row and a candidate actually
+    # targets that market. Injecting the market when no such candidate exists
+    # would prevent generic target rules from matching.
+    resolved_source_conditions = dict(source_conditions or {})
+    if "applies_to_markets" not in resolved_source_conditions and source:
+        market = _market_code_from_url(source.requested_url)
+        if market and any(
+            market in _as_list((r.conditions or {}).get("applies_to_markets"))
+            for r in candidates
+        ):
+            resolved_source_conditions["applies_to_markets"] = [market]
+
+    # Multiple candidates: prefer targets whose conditions are compatible with
+    # the source context so a domestic/SG row references the matching domestic/SG
+    # rule and a generic APM row can fall back to the default APM rule.
+    if resolved_source_conditions:
         matched = [
             r for r in candidates
-            if all(r.conditions.get(k) == source_conditions.get(k) for k in (r.conditions or {}))
+            if _conditions_match_for_reference(r.conditions or {}, resolved_source_conditions)
         ]
+        if matched and len(matched) > 1:
+            max_score = max(_condition_score(r, resolved_source_conditions) for r in matched)
+            matched = [r for r in matched if _condition_score(r, resolved_source_conditions) == max_score]
         if len(matched) == 1:
-            rule = matched[0]
-            return ResolvedRate(
-                percentage=rule.percentage,
-                fixed_fee_schedule=rule.fixed_fee_schedule,
-                international_surcharge_schedule=rule.international_surcharge_schedule,
-                maximum_fee_schedule=rule.maximum_fee_schedule,
-                source=rule.source,
-                rule_id=rule.id,
-            ), False
+            return _build_resolved_rate(matched[0]), False
         if matched:
             candidates = matched
+
+    # If no condition-compatible rule exists and the source specifies a region,
+    # try relaxing the region constraint. This resolves references such as
+    # Canadian Advanced Card AMEX rows that point to the domestic AMEX rule.
+    if resolved_source_conditions and "transaction_region" in resolved_source_conditions and not matched:
+        relaxed_conditions = {k: v for k, v in resolved_source_conditions.items() if k != "transaction_region"}
+        if relaxed_conditions:
+            relaxed = [r for r in candidates if _conditions_match_for_reference(r.conditions or {}, relaxed_conditions)]
+            if relaxed and len(relaxed) > 1:
+                max_score = max(_condition_score(r, relaxed_conditions) for r in relaxed)
+                relaxed = [r for r in relaxed if _condition_score(r, relaxed_conditions) == max_score]
+            if len(relaxed) == 1:
+                return _build_resolved_rate(relaxed[0]), False
+            if relaxed:
+                candidates = relaxed
 
     # Multiple candidates: try to disambiguate by source variant.
     if source_variant_id is not None:
@@ -4615,6 +4842,20 @@ def _extract_rules_from_rate_table(
         variant_id = _variant_id_for_row(product_id, label, methods, table)
         if variant_id is None:
             variant_id = "standard"
+
+        # Variant-specific APM rows (e.g. "Third-party Digital Wallet Transfer")
+        # are not method lists, so unknown tokens from their labels are noise.
+        if product_id == "alternative_payment_methods" and variant_id in {
+            "payment_links",
+            "cash_a_check",
+            "wire_transfer",
+            "spendback_transfer",
+            "debit_card_transfer",
+            "bank_transfer",
+            "third_party_wallet",
+            "fx_service",
+        }:
+            unknown_methods = []
 
         conditions = _conditions_for_row(product_id, variant_id, label, methods=methods, table=table)
 
@@ -5291,13 +5532,16 @@ def _derive_calculation_status(rule: TransactionFeeRule) -> str:
 def _rule_fee_signature(rule: TransactionFeeRule) -> str:
     """Return a canonical signature of the fee values carried by a rule.
 
-    The resolved reference object is intentionally ignored: a reference row
-    and the row it points to are equivalent when the resulting percentage and
-    schedule references are the same.
+    A reference row and the row it points to are equivalent when the resolved
+    percentage and schedule references are the same, so the resolved reference
+    percentage is included in the signature.
     """
+    resolved_percentage = rule.percentage
+    if resolved_percentage is None and rule.rate_reference and rule.rate_reference.resolved_rate:
+        resolved_percentage = rule.rate_reference.resolved_rate.percentage
     return json.dumps(
         {
-            "percentage": str(rule.percentage) if rule.percentage is not None else None,
+            "percentage": str(resolved_percentage) if resolved_percentage is not None else None,
             "fixed_fee_schedule": rule.fixed_fee_schedule,
             "international_surcharge_schedule": rule.international_surcharge_schedule,
         },
@@ -5404,6 +5648,7 @@ def _resolve_rate_references(
             unresolved_rules,
             source_variant_id=rule.variant_id,
             source_conditions=rule.conditions,
+            source=rule.source,
         )
         if resolved:
             percentage = rule.percentage
