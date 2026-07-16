@@ -3189,6 +3189,201 @@ def _card_payment_methods_from_label(label: str) -> list[str] | None:
     return methods if methods else None
 
 
+def _service_for_donation_label(label: str) -> str | None:
+    """Map a donation row label to its underlying service, if any."""
+    text = _norm(label)
+    if any(
+        kw in text
+        for kw in (
+            "website payments pro",
+            "payments pro",
+            "solution hébergée",
+            "paypal pro",
+            "pagamenti con paypal pro",
+            "hosted solution",
+        )
+    ):
+        return "website_payments_pro"
+    if any(kw in text for kw in ("virtual terminal", "eterminal", "e-terminal", "pagamenti telefonici", "telefonici")):
+        return "virtual_terminal"
+    if any(
+        kw in text
+        for kw in (
+            "advanced credit",
+            "advanced debit",
+            "avancerat kredit",
+            "carte bancaire avancés",
+            "pagamenti avanzati con carta",
+            "avancerade betalningar med betalkort",
+            "avancerat kredit- och betalkort",
+        )
+    ):
+        return "advanced_card"
+    return None
+
+
+def _conditions_for_apm(
+    conditions: dict[str, Any],
+    label: str,
+    methods: list[str] | None,
+    variant_id: str | None,
+) -> None:
+    """Populate conditions for an alternative payment methods row."""
+    if methods is None:
+        methods, _ = _extract_apm_methods(label)
+    if methods:
+        conditions["payment_methods"] = sorted(methods)
+    if variant_id == "third_party_wallet":
+        conditions["payment_methods"] = ["third_party_wallet"]
+    if variant_id == "fx_service":
+        conditions["service"] = "foreign_exchange"
+
+
+def _conditions_for_donations(
+    conditions: dict[str, Any],
+    product_id: str,
+    label: str,
+) -> None:
+    """Populate conditions for a donations-related row."""
+    conditions["transaction_purpose"] = "donation"
+    if product_id in ("advanced_card_payments", "nonprofit"):
+        service = _service_for_donation_label(label)
+        if service:
+            conditions["service"] = service
+
+
+def _service_for_advanced_card(label: str, variant_id: str) -> str | None:
+    """Return the service condition for advanced-card rows, if any."""
+    if variant_id == "fx_service":
+        text = _norm(label)
+        if "spread" in text:
+            return "fx_spread"
+        if "as a service" in text:
+            return "fx_as_a_service"
+    return None
+
+
+def _conditions_for_advanced_card(
+    conditions: dict[str, Any],
+    label: str,
+    variant_id: str,
+) -> None:
+    """Populate conditions for an advanced card or nonprofit card row."""
+    if variant_id == "eterminal":
+        conditions["authorization_channel"] = "terminal"
+        conditions["point_of_sale"] = True
+    if variant_id.startswith("interchange_plus"):
+        conditions["pricing_plan"] = variant_id
+    else:
+        plan = _pricing_plan_for_label(label)
+        if plan:
+            conditions["pricing_plan"] = plan
+    service = _service_for_advanced_card(label, variant_id)
+    if service:
+        conditions["service"] = service
+    if variant_id == "american_express":
+        conditions["payment_methods"] = ["american_express"]
+    else:
+        card_methods = _card_payment_methods_from_label(label)
+        if card_methods:
+            conditions["payment_methods"] = card_methods
+
+
+def _conditions_for_pos(
+    conditions: dict[str, Any],
+    label: str,
+    variant_id: str,
+) -> None:
+    """Populate conditions for a POS transaction row."""
+    if variant_id == "card_present":
+        conditions["card_present"] = True
+        conditions["point_of_sale"] = True
+        conditions["authorization_channel"] = "terminal"
+    elif variant_id == "manual_entry":
+        conditions["card_present"] = False
+        conditions["authorization_channel"] = "manual"
+    elif variant_id == "qr_code":
+        conditions["payment_methods"] = ["qr_code"]
+        conditions["point_of_sale"] = True
+    elif variant_id == "payment_links":
+        text = _norm(label)
+        if any(kw in text for kw in ("paypal checkout", "venmo", "pay later", "guest checkout")):
+            conditions["payment_methods"] = sorted(["paypal_checkout", "venmo", "pay_later", "guest_checkout"])
+        elif any(
+            kw in text
+            for kw in ("standard credit", "debit card", "apple pay", "third-party wallets", "third party wallets")
+        ):
+            conditions["payment_methods"] = sorted(["card", "apple_pay", "third_party_wallet"])
+
+
+def _conditions_for_paypal_checkout(
+    conditions: dict[str, Any],
+    variant_id: str,
+) -> None:
+    """Populate conditions for a PayPal Checkout row."""
+    if variant_id == "venmo":
+        conditions["payment_methods"] = ["venmo"]
+    elif variant_id == "crypto":
+        conditions["payment_methods"] = ["cryptocurrency"]
+
+
+def _service_for_other_commercial_ach(table: Table | None) -> str | None:
+    """Return the service indicated by an other-commercial ACH table heading."""
+    if not table:
+        return None
+    table_text = _norm(_table_text(table))
+    if "invoic" in table_text:
+        return "invoicing"
+    if "online" in table_text and ("card" in table_text or "payment" in table_text):
+        return "online_payments"
+    return None
+
+
+def _conditions_for_other_commercial(
+    conditions: dict[str, Any],
+    label: str,
+    variant_id: str,
+    table: Table | None,
+) -> None:
+    """Populate conditions for an other-commercial row."""
+    if variant_id == "pyusd":
+        conditions["pricing_plan"] = "pyusd"
+    elif variant_id == "ach":
+        conditions["payment_methods"] = ["ach"]
+        service = _service_for_other_commercial_ach(table)
+        if service:
+            conditions["service"] = service
+    elif variant_id == "card_funded":
+        conditions["funding_source"] = "card"
+
+
+def _transaction_region_for_variant(
+    label: str,
+    variant_id: str | None,
+    table: Table | None,
+) -> str | None:
+    """Infer a transaction_region from the variant, row label, or table caption."""
+    if variant_id in ("domestic", "international"):
+        return variant_id
+    if variant_id in ("crypto", "digital_goods"):
+        if _is_international_label(label):
+            return "international"
+        if _is_domestic_label(label):
+            return "domestic"
+        return None
+    if _is_international_label(label) and not _is_domestic_label(label):
+        return "international"
+    if _is_domestic_label(label) and not _is_international_label(label):
+        return "domestic"
+    if table:
+        table_text = _table_text(table)
+        if _is_international_label(table_text) and not _is_domestic_label(table_text):
+            return "international"
+        if _is_domestic_label(table_text) and not _is_international_label(table_text):
+            return "domestic"
+    return None
+
+
 def _conditions_for_row(
     product_id: str,
     variant_id: str | None,
@@ -3201,129 +3396,22 @@ def _conditions_for_row(
     if product_id == "nonprofit":
         conditions["merchant_approval_required"] = True
     if product_id == "alternative_payment_methods":
-        if methods is None:
-            methods, _ = _extract_apm_methods(label)
-        if methods:
-            conditions["payment_methods"] = sorted(methods)
-        if variant_id == "third_party_wallet":
-            conditions["payment_methods"] = ["third_party_wallet"]
-        if variant_id == "fx_service":
-            conditions["service"] = "foreign_exchange"
+        _conditions_for_apm(conditions, label, methods, variant_id)
     if product_id == "donations" or variant_id == "donations":
-        conditions["transaction_purpose"] = "donation"
-        if product_id in ("advanced_card_payments", "nonprofit"):
-            text = _norm(label)
-            if any(
-                kw in text
-                for kw in (
-                    "website payments pro",
-                    "payments pro",
-                    "solution hébergée",
-                    "paypal pro",
-                    "pagamenti con paypal pro",
-                    "hosted solution",
-                )
-            ):
-                conditions["service"] = "website_payments_pro"
-            elif any(
-                kw in text
-                for kw in ("virtual terminal", "eterminal", "e-terminal", "pagamenti telefonici", "telefonici")
-            ):
-                conditions["service"] = "virtual_terminal"
-            elif any(
-                kw in text
-                for kw in (
-                    "advanced credit",
-                    "advanced debit",
-                    "avancerat kredit",
-                    "carte bancaire avancés",
-                    "pagamenti avanzati con carta",
-                    "avancerade betalningar med betalkort",
-                    "avancerat kredit- och betalkort",
-                )
-            ):
-                conditions["service"] = "advanced_card"
+        _conditions_for_donations(conditions, product_id, label)
     if product_id in ("advanced_card_payments", "nonprofit") and variant_id:
-        if variant_id == "eterminal":
-            conditions["authorization_channel"] = "terminal"
-            conditions["point_of_sale"] = True
-        if variant_id.startswith("interchange_plus"):
-            conditions["pricing_plan"] = variant_id
-        else:
-            plan = _pricing_plan_for_label(label)
-            if plan:
-                conditions["pricing_plan"] = plan
-        if variant_id == "fx_service":
-            text = _norm(label)
-            if "spread" in text:
-                conditions["service"] = "fx_spread"
-            elif "as a service" in text:
-                conditions["service"] = "fx_as_a_service"
-        if variant_id == "american_express":
-            conditions["payment_methods"] = ["american_express"]
-        else:
-            card_methods = _card_payment_methods_from_label(label)
-            if card_methods:
-                conditions["payment_methods"] = card_methods
+        _conditions_for_advanced_card(conditions, label, variant_id)
     if product_id == "pos_transactions" and variant_id:
-        if variant_id == "card_present":
-            conditions["card_present"] = True
-            conditions["point_of_sale"] = True
-            conditions["authorization_channel"] = "terminal"
-        elif variant_id == "manual_entry":
-            conditions["card_present"] = False
-            conditions["authorization_channel"] = "manual"
-        elif variant_id == "qr_code":
-            conditions["payment_methods"] = ["qr_code"]
-            conditions["point_of_sale"] = True
-        elif variant_id == "payment_links":
-            text = _norm(label)
-            if any(kw in text for kw in ("paypal checkout", "venmo", "pay later", "guest checkout")):
-                conditions["payment_methods"] = sorted(["paypal_checkout", "venmo", "pay_later", "guest_checkout"])
-            elif any(
-                kw in text
-                for kw in ("standard credit", "debit card", "apple pay", "third-party wallets", "third party wallets")
-            ):
-                conditions["payment_methods"] = sorted(["card", "apple_pay", "third_party_wallet"])
+        _conditions_for_pos(conditions, label, variant_id)
     if product_id == "paypal_checkout" and variant_id:
-        if variant_id == "venmo":
-            conditions["payment_methods"] = ["venmo"]
-        elif variant_id == "crypto":
-            conditions["payment_methods"] = ["cryptocurrency"]
+        _conditions_for_paypal_checkout(conditions, variant_id)
     if product_id == "other_commercial" and variant_id:
-        if variant_id == "pyusd":
-            conditions["pricing_plan"] = "pyusd"
-        elif variant_id == "ach":
-            conditions["payment_methods"] = ["ach"]
-            if table:
-                table_text = _norm(_table_text(table))
-                if "invoic" in table_text:
-                    conditions["service"] = "invoicing"
-                elif "online" in table_text and ("card" in table_text or "payment" in table_text):
-                    conditions["service"] = "online_payments"
-        elif variant_id == "card_funded":
-            conditions["funding_source"] = "card"
+        _conditions_for_other_commercial(conditions, label, variant_id, table)
     if product_id == "withdrawals" and variant_id and variant_id != "standard":
         conditions["withdrawal_method"] = variant_id
-    if variant_id in ("domestic", "international"):
-        conditions["transaction_region"] = variant_id
-    if variant_id in ("crypto", "digital_goods"):
-        if _is_international_label(label):
-            conditions["transaction_region"] = "international"
-        elif _is_domestic_label(label):
-            conditions["transaction_region"] = "domestic"
-    # Row labels and table captions sometimes indicate domestic/international scope.
-    if "transaction_region" not in conditions:
-        if _is_international_label(label) and not _is_domestic_label(label):
-            conditions["transaction_region"] = "international"
-        elif _is_domestic_label(label) and not _is_international_label(label):
-            conditions["transaction_region"] = "domestic"
-    if "transaction_region" not in conditions and table:
-        table_text = _table_text(table)
-        if _is_international_label(table_text) and not _is_domestic_label(table_text):
-            conditions["transaction_region"] = "international"
-        elif _is_domestic_label(table_text) and not _is_international_label(table_text):
-            conditions["transaction_region"] = "domestic"
+    region = _transaction_region_for_variant(label, variant_id, table)
+    if region:
+        conditions["transaction_region"] = region
     market_condition = _extract_country_group_condition(label)
     if market_condition:
         conditions.update(market_condition)
@@ -4037,7 +4125,9 @@ def _extract_fixed_fee_schedule(
         group_keys.setdefault(key, signature)
         amounts = groups.setdefault(key, {})
         cells = row.cells
-        iterable = (cells[i] for i in charge_indices if i < len(cells)) if charge_indices else cells[1:]  # skip the label cell
+        iterable = (
+            (cells[i] for i in charge_indices if i < len(cells)) if charge_indices else cells[1:]
+        )  # skip the label cell
         for cell in iterable:
             if not cell.text.strip():
                 continue
@@ -4095,19 +4185,9 @@ def _extract_maximum_fee_schedule(table: Table, source: Source | None = None) ->
         return schedules
 
     table_text = _table_context_original(table)
-    # First header is the currency column.
     for col_idx in range(1, len(table.headers)):
-        header = table.headers[col_idx].text
-        header_norm = _norm(header)
-        if "maximum fee cap" not in header_norm and "max fee cap" not in header_norm:
-            continue
-        if "us" in header_norm:
-            base_id = "payouts_us"
-        elif "domestic" in header_norm:
-            base_id = "payouts_domestic"
-        elif "international" in header_norm:
-            base_id = "payouts_international"
-        else:
+        base_id = _max_fee_base_id(table.headers[col_idx].text)
+        if not base_id:
             continue
 
         groups: dict[frozenset[tuple[str, Any]], dict[str, str]] = {}
@@ -4116,28 +4196,10 @@ def _extract_maximum_fee_schedule(table: Table, source: Source | None = None) ->
             cells = [c for c in row.cells if c.text.strip()]
             if col_idx >= len(cells):
                 continue
-            currency_cell = cells[0]
-            amount_cell = cells[col_idx]
-            money = _cell_money(amount_cell)
-            if not money:
-                # Fallback: parse explicit "amount CUR" text.
-                parts = amount_cell.text.strip().split()
-                if len(parts) >= 2 and parts[-1].upper() in CURRENCY_CODES:
-                    with contextlib.suppress(ValueError):
-                        money = (parts[-1].upper(), normalize_decimal_string(parts[0]))
-                else:
-                    continue
+            money = _max_fee_money(cells[0], cells[col_idx])
             if not money:
                 continue
-            currency = _cell_money(currency_cell)
-            if currency:
-                amount = money[1]
-                currency_code = currency[0]
-            else:
-                # Fallback: use the currency code from the amount cell.
-                currency_code = money[0]
-                amount = money[1]
-
+            currency_code, amount = money
             signature = _schedule_signature_for_row(row, base_id, table_text, use_row_label=False)
             key = _signature_key(signature)
             group_keys.setdefault(key, signature)
@@ -4147,36 +4209,84 @@ def _extract_maximum_fee_schedule(table: Table, source: Source | None = None) ->
         if not groups:
             continue
 
-        sources = []
-        for doc_id in table.source_table_ids or ([table.document_id] if table.document_id else []):
-            sources.append(
-                Provenance(
-                    requested_url=source.requested_url if source else None,
-                    canonical_url=source.canonical_url if source else None,
-                    page_id=source.page_id if source else None,
-                    page_title=source.page_title if source else None,
-                    document_id=doc_id,
-                    component_id=table.component_id,
-                    table_id=table.table_id,
-                    section_heading=table.caption or (table.section_path[-1] if table.section_path else None),
-                    classifier_version=_CLASSIFIER_VERSION,
-                )
-            )
+        sources = _max_fee_schedule_sources(table, source)
         for key, entries in groups.items():
             if not entries:
                 continue
             schedule_id = _schedule_id(base_id, group_keys[key])
-            existing = schedules.get(schedule_id)
-            if existing:
-                merged_entries = dict(existing.entries)
-                for currency, amount in entries.items():
-                    if currency not in merged_entries:
-                        merged_entries[currency] = amount
-                schedules[schedule_id] = FixedFeeSchedule(entries=merged_entries, sources=existing.sources + sources)
-            else:
-                schedules[schedule_id] = FixedFeeSchedule(entries=entries, sources=sources)
+            _merge_max_fee_schedule(schedules, schedule_id, entries, sources)
 
     return schedules
+
+
+def _max_fee_base_id(header: str) -> str | None:
+    """Map a maximum-fee schedule header to its base schedule id."""
+    header_norm = _norm(header)
+    if "maximum fee cap" not in header_norm and "max fee cap" not in header_norm:
+        return None
+    if "us" in header_norm:
+        return "payouts_us"
+    if "domestic" in header_norm:
+        return "payouts_domestic"
+    if "international" in header_norm:
+        return "payouts_international"
+    return None
+
+
+def _max_fee_money(currency_cell: Any, amount_cell: Any) -> tuple[str, str] | None:
+    """Extract (currency_code, amount) from a maximum-fee schedule row."""
+    money = _cell_money(amount_cell)
+    if not money:
+        parts = amount_cell.text.strip().split()
+        if len(parts) >= 2 and parts[-1].upper() in CURRENCY_CODES:
+            with contextlib.suppress(ValueError):
+                money = (parts[-1].upper(), normalize_decimal_string(parts[0]))
+        else:
+            return None
+    if not money:
+        return None
+    currency = _cell_money(currency_cell)
+    if currency:
+        return currency[0], money[1]
+    return money
+
+
+def _max_fee_schedule_sources(table: Table, source: Source | None) -> list[Provenance]:
+    """Build provenance sources for a maximum-fee schedule."""
+    sources = []
+    for doc_id in table.source_table_ids or ([table.document_id] if table.document_id else []):
+        sources.append(
+            Provenance(
+                requested_url=source.requested_url if source else None,
+                canonical_url=source.canonical_url if source else None,
+                page_id=source.page_id if source else None,
+                page_title=source.page_title if source else None,
+                document_id=doc_id,
+                component_id=table.component_id,
+                table_id=table.table_id,
+                section_heading=table.caption or (table.section_path[-1] if table.section_path else None),
+                classifier_version=_CLASSIFIER_VERSION,
+            )
+        )
+    return sources
+
+
+def _merge_max_fee_schedule(
+    schedules: dict[str, FixedFeeSchedule],
+    schedule_id: str,
+    entries: dict[str, str],
+    sources: list[Provenance],
+) -> None:
+    """Merge a group of maximum-fee entries into an existing or new schedule."""
+    existing = schedules.get(schedule_id)
+    if existing:
+        merged_entries = dict(existing.entries)
+        for currency, amount in entries.items():
+            if currency not in merged_entries:
+                merged_entries[currency] = amount
+        schedules[schedule_id] = FixedFeeSchedule(entries=merged_entries, sources=existing.sources + sources)
+    else:
+        schedules[schedule_id] = FixedFeeSchedule(entries=entries, sources=sources)
 
 
 def _extract_international_surcharge_schedule(
@@ -4601,12 +4711,69 @@ def _conditions_match_for_reference(
     return True
 
 
+def _reference_target_id(reference: str) -> str:
+    """Resolve a textual reference to the target rule id it points to."""
+    if "." not in reference:
+        return reference
+    base, suffix = reference.split(".", 1)
+    suffix_product = _REFERENCE_SUFFIX_TO_PRODUCT.get(suffix)
+    return suffix_product or _REFERENCE_SUFFIX_TO_PRODUCT.get(base, base)
+
+
+def _reference_candidates(rules: list[TransactionFeeRule], target_id: str) -> list[TransactionFeeRule]:
+    """Find candidate rules matching a reference target id or label aliases."""
+    candidates = [r for r in rules if r is not None and r.id == target_id and r.percentage is not None]
+    if not candidates:
+        aliases = _PRODUCT_ALIASES.get(target_id, ())
+        candidates = [
+            r for r in rules if r is not None and r.label and any(_norm(a) in _norm(r.label) for a in aliases)
+        ]
+    return candidates
+
+
+def _resolved_source_conditions(
+    candidates: list[TransactionFeeRule],
+    source_conditions: dict[str, Any] | None,
+    source: Provenance | None,
+) -> dict[str, Any]:
+    """Build source conditions, injecting the page market only when useful."""
+    resolved = dict(source_conditions or {})
+    if "applies_to_markets" not in resolved and source:
+        market = _market_code_from_url(source.requested_url)
+        if market and any(market in _as_list((r.conditions or {}).get("applies_to_markets")) for r in candidates):
+            resolved["applies_to_markets"] = [market]
+    return resolved
+
+
+def _condition_matched_candidates(
+    candidates: list[TransactionFeeRule],
+    conditions: dict[str, Any],
+) -> list[TransactionFeeRule]:
+    """Filter candidates by condition compatibility and tie-break by specificity."""
+    matched = [r for r in candidates if _conditions_match_for_reference(r.conditions or {}, conditions)]
+    if matched and len(matched) > 1:
+        max_score = max(_condition_score(r, conditions) for r in matched)
+        matched = [r for r in matched if _condition_score(r, conditions) == max_score]
+    return matched
+
+
+def _build_resolved_rate(rule: TransactionFeeRule) -> ResolvedRate:
+    return ResolvedRate(
+        percentage=rule.percentage,
+        fixed_fee_schedule=rule.fixed_fee_schedule,
+        international_surcharge_schedule=rule.international_surcharge_schedule,
+        maximum_fee_schedule=rule.maximum_fee_schedule,
+        source=rule.source,
+        rule_id=rule.id,
+    )
+
+
 def _resolve_reference(
     reference: str,
     rules: list[TransactionFeeRule],
     source_variant_id: str | None = None,
     source_conditions: dict[str, Any] | None = None,
-    source: Source | None = None,
+    source: Provenance | None = None,
 ) -> tuple[ResolvedRate | None, bool]:
     """Resolve a textual reference to a concrete percentage and schedule names.
 
@@ -4616,110 +4783,40 @@ def _resolve_reference(
     used to disambiguate when the reference is tied to a specific variant or
     context.
     """
-
-    def _build_resolved_rate(rule: TransactionFeeRule) -> ResolvedRate:
-        return ResolvedRate(
-            percentage=rule.percentage,
-            fixed_fee_schedule=rule.fixed_fee_schedule,
-            international_surcharge_schedule=rule.international_surcharge_schedule,
-            maximum_fee_schedule=rule.maximum_fee_schedule,
-            source=rule.source,
-            rule_id=rule.id,
-        )
-
-    # References may be qualified with a product suffix, e.g. "online_card_payments.advanced".
-    target_id: str
-    if "." in reference:
-        base, suffix = reference.split(".", 1)
-        suffix_product = _REFERENCE_SUFFIX_TO_PRODUCT.get(suffix)
-        # A qualified reference like "online_card_payments.advanced" points to the
-        # advanced card product variant, not to a generic online_card_payments rule.
-        target_id = suffix_product or _REFERENCE_SUFFIX_TO_PRODUCT.get(base, base)
-    else:
-        target_id = reference
-
-    candidates = [r for r in rules if r is not None and r.id == target_id and r.percentage is not None]
-    if not candidates:
-        # Fallback: find a rule whose label matches the reference product aliases.
-        aliases = _PRODUCT_ALIASES.get(target_id, ())
-        candidates = [
-            r for r in rules if r is not None and r.label and any(_norm(a) in _norm(r.label) for a in aliases)
-        ]
-
+    target_id = _reference_target_id(reference)
+    candidates = _reference_candidates(rules, target_id)
     if not candidates:
         return None, False
-
     if len(candidates) == 1:
         return _build_resolved_rate(candidates[0]), False
 
-    # Build a source context that includes the page's market when no explicit
-    # applies_to_markets is present on the source row and a candidate actually
-    # targets that market. Injecting the market when no such candidate exists
-    # would prevent generic target rules from matching.
-    resolved_source_conditions = dict(source_conditions or {})
-    if "applies_to_markets" not in resolved_source_conditions and source:
-        market = _market_code_from_url(source.requested_url)
-        if market and any(market in _as_list((r.conditions or {}).get("applies_to_markets")) for r in candidates):
-            resolved_source_conditions["applies_to_markets"] = [market]
+    resolved_source_conditions = _resolved_source_conditions(candidates, source_conditions, source)
 
-    # Multiple candidates: prefer targets whose conditions are compatible with
-    # the source context so a domestic/SG row references the matching domestic/SG
-    # rule and a generic APM row can fall back to the default APM rule.
-    if resolved_source_conditions:
-        matched = [
-            r for r in candidates if _conditions_match_for_reference(r.conditions or {}, resolved_source_conditions)
-        ]
-        if matched and len(matched) > 1:
-            max_score = max(_condition_score(r, resolved_source_conditions) for r in matched)
-            matched = [r for r in matched if _condition_score(r, resolved_source_conditions) == max_score]
+    matched = _condition_matched_candidates(candidates, resolved_source_conditions)
+    if matched:
         if len(matched) == 1:
             return _build_resolved_rate(matched[0]), False
-        if matched:
-            candidates = matched
+        candidates = matched
 
-    # If no condition-compatible rule exists and the source specifies a region,
-    # try relaxing the region constraint. This resolves references such as
-    # Canadian Advanced Card AMEX rows that point to the domestic AMEX rule.
-    if resolved_source_conditions and "transaction_region" in resolved_source_conditions and not matched:
-        relaxed_conditions = {k: v for k, v in resolved_source_conditions.items() if k != "transaction_region"}
-        if relaxed_conditions:
-            relaxed = [r for r in candidates if _conditions_match_for_reference(r.conditions or {}, relaxed_conditions)]
-            if relaxed and len(relaxed) > 1:
-                max_score = max(_condition_score(r, relaxed_conditions) for r in relaxed)
-                relaxed = [r for r in relaxed if _condition_score(r, relaxed_conditions) == max_score]
+    if resolved_source_conditions and "transaction_region" in resolved_source_conditions:
+        relaxed = _condition_matched_candidates(
+            candidates,
+            {k: v for k, v in resolved_source_conditions.items() if k != "transaction_region"},
+        )
+        if relaxed:
             if len(relaxed) == 1:
                 return _build_resolved_rate(relaxed[0]), False
-            if relaxed:
-                candidates = relaxed
+            candidates = relaxed
 
-    # Multiple candidates: try to disambiguate by source variant.
     if source_variant_id is not None:
         matched = [r for r in candidates if r.variant_id == source_variant_id]
         if len(matched) == 1:
-            rule = matched[0]
-            return ResolvedRate(
-                percentage=rule.percentage,
-                fixed_fee_schedule=rule.fixed_fee_schedule,
-                international_surcharge_schedule=rule.international_surcharge_schedule,
-                maximum_fee_schedule=rule.maximum_fee_schedule,
-                source=rule.source,
-                rule_id=rule.id,
-            ), False
-        # If no exact variant match, fall back to a unique default variant.
+            return _build_resolved_rate(matched[0]), False
         if not matched:
             default_candidates = [r for r in candidates if r.variant_id in (None, "default", "standard")]
             if len(default_candidates) == 1:
-                rule = default_candidates[0]
-                return ResolvedRate(
-                    percentage=rule.percentage,
-                    fixed_fee_schedule=rule.fixed_fee_schedule,
-                    international_surcharge_schedule=rule.international_surcharge_schedule,
-                    maximum_fee_schedule=rule.maximum_fee_schedule,
-                    source=rule.source,
-                    rule_id=rule.id,
-                ), False
+                return _build_resolved_rate(default_candidates[0]), False
 
-    # Ambiguous because more than one matching rule exists.
     return None, True
 
 
@@ -5858,7 +5955,7 @@ def _resolve_rate_references(
                 )
             )
             if rule.percentage is None:
-                unresolved_rules[i] = None
+                unresolved_rules[i] = None  # type: ignore[assignment]
 
 
 def _validate_top_level_schedule_references(
