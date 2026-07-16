@@ -380,6 +380,8 @@ class CoverageSummary(PublicModel):
     unknown_apm_methods: int = 0
     unsupported_fee_shapes: int = 0
     ambiguous_identities: int = 0
+    numeric_fee_candidates: int = 0
+    unclassified_fee_candidates: int = 0
 
 
 class DerivedFeeResult(PublicModel):

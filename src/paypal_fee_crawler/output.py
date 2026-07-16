@@ -442,18 +442,22 @@ class OutputPublisher:
                     },
                 )
 
-        # Only write a change report when it has content.  If the live output
-        # already has one, carry it forward to avoid treating it as a removal.
+        # Write the change report when there are new changes, or when the live
+        # report still contains stale changes/regressions that need to be
+        # replaced with the current (possibly empty) report.
         if change_report is not None:
-            if change_report.changes:
+            write_change_report = bool(change_report.changes)
+            if not write_change_report and (self.output_dir / "change-report.json").exists():
+                try:
+                    old_report = ChangeReport.model_validate_json(
+                        (self.output_dir / "change-report.json").read_text(encoding="utf-8")
+                    )
+                    write_change_report = bool(old_report.changes or old_report.has_regression)
+                except Exception:
+                    write_change_report = True
+            if write_change_report:
                 change_report = change_report.model_copy(update={"generated_at": run_generated_at})
                 _write_json(staging / "change-report.json", change_report.model_dump(mode="json"))
-            elif (self.output_dir / "change-report.json").exists():
-                old_report = ChangeReport.model_validate_json(
-                    (self.output_dir / "change-report.json").read_text(encoding="utf-8")
-                )
-                updated_report = old_report.model_copy(update={"generated_at": run_generated_at})
-                _write_json(staging / "change-report.json", updated_report.model_dump(mode="json"))
 
         if shadow_runs:
             _write_json(
@@ -538,7 +542,11 @@ class OutputPublisher:
 
             self._cleanup_backups_best_effort(journal)
             self.rollback(staging)
-            return bool(changed_files), changed_files
+            # The change-report is a generated summary, not a data change;
+            # a crawl that only updates the report (e.g. clearing a stale
+            # regression) should still be considered unchanged for determinism.
+            data_changed = any(f != "change-report.json" for f in changed_files)
+            return data_changed, changed_files
 
         except Exception as exc:
             if not finalized:
