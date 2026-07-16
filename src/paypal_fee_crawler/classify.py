@@ -1957,11 +1957,11 @@ def _is_international_label(label: str) -> bool:
     return any(
         kw in text
         for kw in (
-                "internationaux",
+            "internationaux",
             "internacionais",
             "internacional",
             "internazionali",
-                "foreign",
+            "foreign",
             "outside",
             "ausland",
             "ausländ",
@@ -1989,7 +1989,7 @@ def _is_international_label(label: str) -> bool:
             "mednarodni",
             "kansainvälinen",
             "kansainvalinen",
-            )
+        )
     )
 
 
@@ -2189,7 +2189,17 @@ _VARIANT_RULES_BY_PRODUCT: dict[str, tuple[tuple[tuple[str, ...], str], ...]] = 
 # schedule.
 _BASE_VARIANTS_BY_PRODUCT: dict[str, frozenset[str]] = {
     "advanced_card_payments": frozenset({"advanced_card", "standard_card", "eterminal", "donations"}),
-    "alternative_payment_methods": frozenset({"default", "special", "bank_transfer", "debit_card_transfer", "spendback_transfer", "cash_a_check", "wire_transfer"}),
+    "alternative_payment_methods": frozenset(
+        {
+            "default",
+            "special",
+            "bank_transfer",
+            "debit_card_transfer",
+            "spendback_transfer",
+            "cash_a_check",
+            "wire_transfer",
+        }
+    ),
     "other_commercial": frozenset({"standard", "campaign_fee", "pyusd", "ach", "card_funded"}),
     "paypal_checkout": frozenset({"standard", "venmo"}),
     "invoice_pay_later": frozenset({"standard", "payment_links"}),
@@ -3033,9 +3043,7 @@ def _extract_fixed_fee_schedule(table: Table, source: Source | None = None) -> F
     return FixedFeeSchedule(entries=amounts, sources=sources)
 
 
-def _extract_maximum_fee_schedule(
-    table: Table, source: Source | None = None
-) -> dict[str, FixedFeeSchedule]:
+def _extract_maximum_fee_schedule(table: Table, source: Source | None = None) -> dict[str, FixedFeeSchedule]:
     """Extract per-region maximum-fee-cap schedules from a maximum-fee table.
 
     Tables such as "Fee and maximum fee cap for PayPal Payouts" contain a
@@ -3574,6 +3582,147 @@ class _ExtractedRule:
     unknown_apm_methods: list[str] = field(default_factory=list)
 
 
+def _classify_product_or_apm(label: str) -> tuple[str | None, list[str]]:
+    """Classify a row label, treating APM special labels as unambiguous APM."""
+    if _is_apm_special_label(label):
+        return "alternative_payment_methods", []
+    return _classify_product(label)
+
+
+def _resolve_ambiguous_product(
+    label: str,
+    row: Row,
+    idx: int,
+    table: Table,
+    source: Source | None,
+    ambiguous_candidates: list[str],
+    default_product: str | None,
+    force_default_product: bool,
+    ambiguous: list[AmbiguousFeeRow],
+    ignored: list[UnclassifiedFeeRow],
+) -> str | None:
+    """Decide how to handle a row with ambiguous product candidates.
+
+    Returns the resolved product id, or None if the row is queued for
+    ``ambiguous`` / ``ignored``.
+    """
+    if force_default_product and default_product:
+        return default_product
+    if _row_has_percentage(row) or _first_money(row):
+        ambiguous.append(
+            AmbiguousFeeRow(
+                normalized_cells=_row_cells_text(row),
+                original_label=label,
+                source=_provenance(table, row, idx, source, original_label=label),
+                candidates=ambiguous_candidates,
+            )
+        )
+        return None
+    # A row with no determinable rate is informational, not a genuine ambiguity.
+    ignored.append(
+        UnclassifiedFeeRow(
+            normalized_cells=_row_cells_text(row),
+            original_label=label,
+            source=_provenance(table, row, idx, source, original_label=label),
+            reason="ambiguous product without fee",
+        )
+    )
+    return None
+
+
+def _resolve_missing_product(
+    label: str,
+    row: Row,
+    idx: int,
+    table: Table,
+    source: Source | None,
+    reference: str | None,
+    default_product: str | None,
+    force_default_product: bool,
+    unclassified: list[UnclassifiedFeeRow],
+    ignored: list[UnclassifiedFeeRow],
+) -> str | None:
+    """Resolve a product id for rows that did not match any product alias."""
+    if default_product and force_default_product and (_row_has_percentage(row) or reference):
+        return default_product
+    if reference:
+        ref_product = _reference_product_id(reference)
+        if ref_product:
+            # A reference row that carries no product alias should be tagged
+            # with the product it points to rather than the table's default.
+            return ref_product
+    if len(label) > 3 and _row_has_percentage(row):
+        unclassified.append(
+            UnclassifiedFeeRow(
+                normalized_cells=_row_cells_text(row),
+                original_label=label,
+                source=_provenance(table, row, idx, source, original_label=label),
+                reason="no product alias matched",
+            )
+        )
+        return None
+    ignored.append(
+        UnclassifiedFeeRow(
+            normalized_cells=_row_cells_text(row),
+            original_label=label,
+            source=_provenance(table, row, idx, source, original_label=label),
+            reason="no product alias and no rate",
+        )
+    )
+    return None
+
+
+def _resolve_product_id(
+    label: str,
+    row: Row,
+    idx: int,
+    table: Table,
+    source: Source | None,
+    default_product: str | None,
+    force_default_product: bool,
+    unclassified: list[UnclassifiedFeeRow],
+    ambiguous: list[AmbiguousFeeRow],
+    ignored: list[UnclassifiedFeeRow],
+) -> tuple[str | None, str | None]:
+    """Determine the product id and textual reference for a single table row."""
+    product_id, ambiguous_candidates = _classify_product_or_apm(label)
+    if ambiguous_candidates:
+        product_id = _resolve_ambiguous_product(
+            label,
+            row,
+            idx,
+            table,
+            source,
+            ambiguous_candidates,
+            default_product,
+            force_default_product,
+            ambiguous,
+            ignored,
+        )
+        if product_id is None:
+            return None, None
+    if force_default_product and default_product:
+        product_id = default_product
+
+    reference = _detect_reference(row, product_id)
+    if product_id is None:
+        product_id = _resolve_missing_product(
+            label,
+            row,
+            idx,
+            table,
+            source,
+            reference,
+            default_product,
+            force_default_product,
+            unclassified,
+            ignored,
+        )
+        if product_id is None:
+            return None, None
+    return product_id, reference
+
+
 def _extract_rules_from_rate_table(
     table: Table,
     table_category: str,
@@ -3611,76 +3760,23 @@ def _extract_rules_from_rate_table(
                 )
             )
             continue
-        # Pre-check: APM special method labels (Thai/Latvian/Lithuanian bank
-        # transfer, Skrill, BLIK, Kredivo, etc.) are unambiguously APM even
-        # though they contain "pay later" substrings.
-        if _is_apm_special_label(label):
-            product_id = "alternative_payment_methods"
-            ambiguous_candidates = []
-        else:
-            product_id, ambiguous_candidates = _classify_product(label)
-        if ambiguous_candidates:
-            if force_default_product and default_product:
-                product_id = default_product
-            elif _row_has_percentage(row) or _first_money(row):
-                ambiguous.append(
-                    AmbiguousFeeRow(
-                        normalized_cells=_row_cells_text(row),
-                        original_label=label,
-                        source=_provenance(table, row, idx, source, original_label=label),
-                        candidates=ambiguous_candidates,
-                    )
-                )
-                continue
-            else:
-                # A row with no determinable rate is informational, not a genuine
-                # ambiguity.
-                ignored.append(
-                    UnclassifiedFeeRow(
-                        normalized_cells=_row_cells_text(row),
-                        original_label=label,
-                        source=_provenance(table, row, idx, source, original_label=label),
-                        reason="ambiguous product without fee",
-                    )
-                )
-                continue
-        if force_default_product and default_product:
-            product_id = default_product
 
-        fee_text = _row_fee_cell(row)
-        reference = _detect_reference(row, product_id)
-
-        if product_id is None:
-            # Use the table category as a fallback for rows that do not match any
-            # product alias (e.g. "Deutschland" in the nonprofit table).
-            if default_product and force_default_product and (_row_has_percentage(row) or reference):
-                product_id = default_product
-            elif reference and _reference_product_id(reference):
-                # A reference row that carries no product alias should be tagged
-                # with the product it points to rather than the table's default.
-                product_id = _reference_product_id(reference)
-            elif len(label) > 3 and _row_has_percentage(row):
-                unclassified.append(
-                    UnclassifiedFeeRow(
-                        normalized_cells=_row_cells_text(row),
-                        original_label=label,
-                        source=_provenance(table, row, idx, source, original_label=label),
-                        reason="no product alias matched",
-                    )
-                )
-                continue
-            else:
-                ignored.append(
-                    UnclassifiedFeeRow(
-                        normalized_cells=_row_cells_text(row),
-                        original_label=label,
-                        source=_provenance(table, row, idx, source, original_label=label),
-                        reason="no product alias and no rate",
-                    )
-                )
-                continue
+        product_id, reference = _resolve_product_id(
+            label,
+            row,
+            idx,
+            table,
+            source,
+            default_product,
+            force_default_product,
+            unclassified,
+            ambiguous,
+            ignored,
+        )
         if product_id is None:
             continue
+
+        fee_text = _row_fee_cell(row)
         if _is_limit_or_cap_row(label, fee_text):
             ignored.append(
                 UnclassifiedFeeRow(
@@ -3691,6 +3787,7 @@ def _extract_rules_from_rate_table(
                 )
             )
             continue
+
         pct, _fixed = _parse_rate_expression(fee_text)
         methods, unknown_methods = _extract_apm_methods(label)
         variant_id = _variant_id_for_row(product_id, label, methods, table)
@@ -3698,7 +3795,9 @@ def _extract_rules_from_rate_table(
             variant_id = "standard"
         # Withdrawal/payout rows are percentage-based with a max fee cap; the
         # "+" in a withdrawal cell is not a fixed fee schedule.
-        fixed_schedule = _fixed_fee_schedule_for(product_id, variant_id) if _fixed and product_id != "withdrawals" else None
+        fixed_schedule = (
+            _fixed_fee_schedule_for(product_id, variant_id) if _fixed and product_id != "withdrawals" else None
+        )
         intl_schedule = _international_surcharge_schedule_for(product_id, variant_id)
 
         # Withdrawal/payout rows that are percentage-based with a max fee cap
@@ -3917,10 +4016,155 @@ def _schedule_ids_for_table(
     return [f"{base_name}_{variant}" for variant in applicable_variants]
 
 
+def _merge_fixed_like_schedules(
+    existing: FixedFeeSchedule,
+    schedule: FixedFeeSchedule,
+    name: str,
+    schedule_type: str,
+) -> tuple[FixedFeeSchedule, list[Diagnostic]]:
+    """Merge a fixed-like schedule into an existing one, reporting conflicts."""
+    merged_entries = dict(existing.entries)
+    merged_sources = list(existing.sources)
+    diagnostics: list[Diagnostic] = []
+    for s in schedule.sources:
+        if s not in merged_sources:
+            merged_sources.append(s)
+    for currency, amount in schedule.entries.items():
+        if currency in merged_entries:
+            if merged_entries[currency] != amount:
+                diagnostics.append(
+                    Diagnostic(
+                        type="conflicting_schedule_entry",
+                        schedule_type=schedule_type,
+                        schedule_id=name,
+                        normalized_key=currency,
+                        values=[merged_entries[currency], amount],
+                        sources=_merge_provenance_sources(existing.sources, schedule.sources),
+                    )
+                )
+            # Keep first value; do not overwrite.
+        else:
+            merged_entries[currency] = amount
+    return FixedFeeSchedule(entries=merged_entries, sources=merged_sources), diagnostics
+
+
+def _merge_international_surcharge_schedules(
+    existing: InternationalSurchargeSchedule,
+    schedule: InternationalSurchargeSchedule,
+    name: str,
+) -> tuple[InternationalSurchargeSchedule, list[Diagnostic]]:
+    """Merge an international surcharge schedule into an existing one."""
+    merged_entries = list(existing.entries)
+    seen = {e.payer_region: e for e in merged_entries}
+    merged_sources = list(existing.sources)
+    diagnostics: list[Diagnostic] = []
+    for s in schedule.sources:
+        if s not in merged_sources:
+            merged_sources.append(s)
+    for entry in schedule.entries:
+        if entry.payer_region in seen:
+            if seen[entry.payer_region].percentage_points != entry.percentage_points:
+                diagnostics.append(
+                    Diagnostic(
+                        type="conflicting_schedule_entry",
+                        schedule_type="international_surcharge",
+                        schedule_id=name,
+                        normalized_key=entry.payer_region,
+                        values=[
+                            seen[entry.payer_region].percentage_points or "",
+                            entry.percentage_points or "",
+                        ],
+                        sources=_merge_provenance_sources(existing.sources, schedule.sources),
+                    )
+                )
+            # Keep first value; do not overwrite.
+        else:
+            merged_entries.append(entry)
+            seen[entry.payer_region] = entry
+    return InternationalSurchargeSchedule(entries=merged_entries, sources=merged_sources), diagnostics
+
+
+def _collect_fixed_fee_table(
+    table: Table,
+    source: Source | None,
+    fixed: dict[str, FixedFeeSchedule],
+    direct_products: set[str],
+) -> list[Diagnostic]:
+    """Collect fixed-fee schedules from a single table into ``fixed``."""
+    schedule = _extract_fixed_fee_schedule(table, source=source)
+    if not schedule:
+        return []
+    base_name = _schedule_name_from_table(table, "commercial")
+    applicable_variants = _applicable_variants_for_table(table, base_name)
+    product_is_direct = base_name in direct_products
+    diagnostics: list[Diagnostic] = []
+    for name in _schedule_ids_for_table(
+        base_name, applicable_variants, set(fixed.keys()), product_is_direct
+    ):
+        existing = fixed.get(name)
+        if existing:
+            merged, new_diagnostics = _merge_fixed_like_schedules(
+                existing, schedule, name, "fixed_fee"
+            )
+            diagnostics.extend(new_diagnostics)
+            fixed[name] = merged
+        else:
+            fixed[name] = schedule
+    return diagnostics
+
+
+def _collect_international_surcharge_table(
+    table: Table,
+    source: Source | None,
+    international: dict[str, InternationalSurchargeSchedule],
+) -> list[Diagnostic]:
+    """Collect international-surcharge schedules from a single table."""
+    schedule = _extract_international_surcharge_schedule(table, source=source)
+    if not schedule:
+        return []
+    base_name = _schedule_name_from_table(table, "commercial")
+    applicable_variants = _applicable_variants_for_table(table, base_name)
+    diagnostics: list[Diagnostic] = []
+    for name in _schedule_ids_for_table(base_name, applicable_variants, set(international.keys())):
+        existing = international.get(name)
+        if existing:
+            merged, new_diagnostics = _merge_international_surcharge_schedules(existing, schedule, name)
+            diagnostics.extend(new_diagnostics)
+            international[name] = merged
+        else:
+            international[name] = schedule
+    return diagnostics
+
+
+def _collect_maximum_fee_table(
+    table: Table,
+    source: Source | None,
+    maximum: dict[str, FixedFeeSchedule],
+) -> list[Diagnostic]:
+    """Collect maximum-fee schedules from a single table."""
+    diagnostics: list[Diagnostic] = []
+    for name, schedule in _extract_maximum_fee_schedule(table, source=source).items():
+        existing = maximum.get(name)
+        if existing:
+            merged, new_diagnostics = _merge_fixed_like_schedules(
+                existing, schedule, name, "maximum_fee"
+            )
+            diagnostics.extend(new_diagnostics)
+            maximum[name] = merged
+        else:
+            maximum[name] = schedule
+    return diagnostics
+
+
 def _collect_schedules(
     tables: list[Table],
     source: Source | None = None,
-) -> tuple[dict[str, FixedFeeSchedule], dict[str, InternationalSurchargeSchedule], dict[str, FixedFeeSchedule], list[Diagnostic]]:
+) -> tuple[
+    dict[str, FixedFeeSchedule],
+    dict[str, InternationalSurchargeSchedule],
+    dict[str, FixedFeeSchedule],
+    list[Diagnostic],
+]:
     """Extract fixed-fee, international-surcharge and maximum-fee schedules.
 
     Schedules are keyed by product name. If two tables map to the same product
@@ -3939,103 +4183,12 @@ def _collect_schedules(
     for table in tables:
         category = _classify_table_category(table)
         if category == "fixed_fee_table":
-            schedule = _extract_fixed_fee_schedule(table, source=source)
-            if schedule:
-                base_name = _schedule_name_from_table(table, "commercial")
-                applicable_variants = _applicable_variants_for_table(table, base_name)
-                product_is_direct = base_name in direct_products
-                for name in _schedule_ids_for_table(base_name, applicable_variants, set(fixed.keys()), product_is_direct):
-                    existing = fixed.get(name)
-                    if existing:
-                        merged_entries = dict(existing.entries)
-                        merged_sources = list(existing.sources)
-                        for s in schedule.sources:
-                            if s not in merged_sources:
-                                merged_sources.append(s)
-                        for currency, amount in schedule.entries.items():
-                            if currency in merged_entries:
-                                if merged_entries[currency] != amount:
-                                    diagnostics.append(
-                                        Diagnostic(
-                                            type="conflicting_schedule_entry",
-                                            schedule_type="fixed_fee",
-                                            schedule_id=name,
-                                            normalized_key=currency,
-                                            values=[merged_entries[currency], amount],
-                                            sources=_merge_provenance_sources(existing.sources, schedule.sources),
-                                        )
-                                    )
-                                # Keep first value; do not overwrite.
-                            else:
-                                merged_entries[currency] = amount
-                        fixed[name] = FixedFeeSchedule(entries=merged_entries, sources=merged_sources)
-                    else:
-                        fixed[name] = schedule
+            diagnostics.extend(_collect_fixed_fee_table(table, source, fixed, direct_products))
         elif category == "international_surcharge_table":
-            schedule = _extract_international_surcharge_schedule(table, source=source)
-            if schedule:
-                base_name = _schedule_name_from_table(table, "commercial")
-                applicable_variants = _applicable_variants_for_table(table, base_name)
-                for name in _schedule_ids_for_table(base_name, applicable_variants, set(international.keys())):
-                    existing = international.get(name)
-                    if existing:
-                        merged_entries = list(existing.entries)
-                        seen = {e.payer_region: e for e in merged_entries}
-                        merged_sources = list(existing.sources)
-                        for s in schedule.sources:
-                            if s not in merged_sources:
-                                merged_sources.append(s)
-                        for entry in schedule.entries:
-                            if entry.payer_region in seen:
-                                if seen[entry.payer_region].percentage_points != entry.percentage_points:
-                                    diagnostics.append(
-                                        Diagnostic(
-                                            type="conflicting_schedule_entry",
-                                            schedule_type="international_surcharge",
-                                            schedule_id=name,
-                                            normalized_key=entry.payer_region,
-                                            values=[
-                                                seen[entry.payer_region].percentage_points or "",
-                                                entry.percentage_points or "",
-                                            ],
-                                            sources=_merge_provenance_sources(existing.sources, schedule.sources),
-                                        )
-                                    )
-                                # Keep first value; do not overwrite.
-                            else:
-                                merged_entries.append(entry)
-                                seen[entry.payer_region] = entry
-                        international[name] = InternationalSurchargeSchedule(entries=merged_entries, sources=merged_sources)
-                    else:
-                        international[name] = schedule
+            diagnostics.extend(_collect_international_surcharge_table(table, source, international))
         elif category == "maximum_fee_table":
-            max_schedules = _extract_maximum_fee_schedule(table, source=source)
-            for name, schedule in max_schedules.items():
-                existing = maximum.get(name)
-                if existing:
-                    merged_entries = dict(existing.entries)
-                    merged_sources = list(existing.sources)
-                    for s in schedule.sources:
-                        if s not in merged_sources:
-                            merged_sources.append(s)
-                    for currency, amount in schedule.entries.items():
-                        if currency in merged_entries:
-                            if merged_entries[currency] != amount:
-                                diagnostics.append(
-                                    Diagnostic(
-                                        type="conflicting_schedule_entry",
-                                        schedule_type="maximum_fee",
-                                        schedule_id=name,
-                                        normalized_key=currency,
-                                        values=[merged_entries[currency], amount],
-                                        sources=_merge_provenance_sources(existing.sources, schedule.sources),
-                                    )
-                                )
-                        else:
-                            merged_entries[currency] = amount
-                    maximum[name] = FixedFeeSchedule(entries=merged_entries, sources=merged_sources)
-                else:
-                    maximum[name] = schedule
+            diagnostics.extend(_collect_maximum_fee_table(table, source, maximum))
+
     return fixed, international, maximum, diagnostics
 
 
@@ -4123,7 +4276,9 @@ def _ensure_fallback_schedules(
     for schedule_id in referenced_fixed:
         _copy_fallback(schedule_id, fixed_schedules, _FIXED_FEE_SCHEDULE_FALLBACK)
 
-    referenced_intl = sorted({r.international_surcharge_schedule for r in rules if r.international_surcharge_schedule}, key=len)
+    referenced_intl = sorted(
+        {r.international_surcharge_schedule for r in rules if r.international_surcharge_schedule}, key=len
+    )
     for schedule_id in referenced_intl:
         _copy_fallback(schedule_id, international_schedules, _INTERNATIONAL_SURCHARGE_SCHEDULE_FALLBACK)
 
@@ -4526,10 +4681,7 @@ def _validate_nested_schedule_references(
                 )
             )
             new_rate = new_rate.model_copy(update={"international_surcharge_schedule": None})
-        if (
-            resolved.maximum_fee_schedule
-            and resolved.maximum_fee_schedule not in maximum_fee_schedules
-        ):
+        if resolved.maximum_fee_schedule and resolved.maximum_fee_schedule not in maximum_fee_schedules:
             diagnostics.append(
                 Diagnostic(
                     type="unresolved_nested_reference",
@@ -4652,7 +4804,9 @@ def _build_coverage_summary(
 
 def classify_tables(tables: list[Table], source: Source | None = None) -> DerivedFeeResult:
     """Derive product-specific transaction fee rules from normalized tables."""
-    fixed_schedules, international_schedules, maximum_fee_schedules, schedule_diagnostics = _collect_schedules(tables, source=source)
+    fixed_schedules, international_schedules, maximum_fee_schedules, schedule_diagnostics = _collect_schedules(
+        tables, source=source
+    )
     diagnostics: list[Diagnostic] = list(schedule_diagnostics)
 
     extracted_rules: list[_ExtractedRule] = []
@@ -4761,8 +4915,12 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
     # that are not attached to a rate table.
     _resolve_rate_references(extracted_rules, unresolved_rules, diagnostics)
     _ensure_fallback_schedules(unresolved_rules, fixed_schedules, international_schedules, maximum_fee_schedules)
-    _validate_top_level_schedule_references(unresolved_rules, fixed_schedules, international_schedules, maximum_fee_schedules, diagnostics)
-    _validate_nested_schedule_references(unresolved_rules, fixed_schedules, international_schedules, maximum_fee_schedules, diagnostics)
+    _validate_top_level_schedule_references(
+        unresolved_rules, fixed_schedules, international_schedules, maximum_fee_schedules, diagnostics
+    )
+    _validate_nested_schedule_references(
+        unresolved_rules, fixed_schedules, international_schedules, maximum_fee_schedules, diagnostics
+    )
 
     # Merge equivalent rules and preserve legitimate variants.
     transaction_rules = _deduplicate_rules(unresolved_rules, diagnostics)
