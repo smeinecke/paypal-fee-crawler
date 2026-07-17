@@ -164,7 +164,7 @@ async def discover_countries(
     list if discovery fails and a fallback is allowed by the caller.
     """
     try:
-        response = await http_client.get(discovery_url)
+        response = await http_client.get(discovery_url, market="DE")
     except (NetworkError, ParserError) as exc:
         logger.warning("Country discovery request failed: %s", exc)
         raise CountryDiscoveryError(f"Failed to retrieve PayPal discovery page: {exc}") from exc
@@ -290,7 +290,7 @@ async def _try_alias(
     if not alias_url:
         return None
     try:
-        response = await http_client.get(alias_url)
+        response = await http_client.get(alias_url, market=code)
         try:
             page_data = extract_cms_context(response.text)
             if _is_fee_page(page_data, response):
@@ -311,7 +311,7 @@ async def _fetch_with_flags(
     context: str,
 ) -> tuple[HttpResponse | None, bool, bool]:
     try:
-        return await http_client.get(url), False, False
+        return await http_client.get(url, market=code), False, False
     except (AccessChallengeError, ContentSecurityError) as exc:
         logger.debug("Access/security failure on %s for %s: %s", context, code, exc)
     except PermanentHttpError as exc:
@@ -369,7 +369,7 @@ async def _fetch_homepage(
     code: str,
 ) -> HttpResponse:
     try:
-        return await http_client.get(homepage)
+        return await http_client.get(homepage, market=code)
     except (AccessChallengeError, ContentSecurityError) as exc:
         raise FeePageError(f"Homepage access challenge for {code}: {exc}") from exc
     except PermanentHttpError as exc:

@@ -92,12 +92,19 @@ class CachedSource:
 
 
 class HttpClient:
-    """HTTP client with retries, allowlist, and conditional request support."""
+    """HTTP client with retries, allowlist, conditional requests, and response caching."""
 
     def __init__(self, config: CrawlConfiguration | None = None) -> None:
+        from .http_cache import HttpCache
+
         self.config = config or CrawlConfiguration()
         self._semaphore = asyncio.Semaphore(self.config.max_workers)
         self._client: httpx.AsyncClient | None = None
+        self._cache = HttpCache(self.config)
+
+    @property
+    def cache_stats(self) -> Any:
+        return self._cache.stats
 
     def _client_headers(self) -> dict[str, str]:
         return {
@@ -158,7 +165,7 @@ class HttpClient:
         if not self._is_allowed_host(url):
             raise ContentSecurityError(f"Host not in allowlist: {parsed.hostname}")
 
-    def _detect_blocking_page(self, response: HttpResponse) -> None:
+    def _detect_blocking_page(self, response: httpx.Response) -> None:
         """Raise if the response looks like a login, CAPTCHA, or generic error page.
 
         Detection is structural, not a simple substring search. A generic JavaScript
@@ -303,91 +310,99 @@ class HttpClient:
         self,
         method: str,
         url: str,
+        *,
+        market: str | None = None,
+        locale: str | None = None,
         cached: CachedSource | None = None,
         **kwargs: Any,
     ) -> HttpResponse:
         self._validate_url(url)
-        headers: dict[str, str] = {}
-        if cached:
-            if cached.etag:
-                headers["If-None-Match"] = cached.etag
-            if cached.last_modified:
-                headers["If-Modified-Since"] = cached.last_modified
+        request_headers = self._client_headers()
 
         last_error: Exception | None = None
-        for attempt in range(self.config.max_retries + 1):
-            try:
-                async with self._semaphore:
-                    logger.debug("%s %s (attempt %d)", method, _sanitize_url(url), attempt + 1)
-                    if self._client is not None:
-                        response = await self._client.request(
-                            method,
-                            url,
-                            headers=headers,
-                            **kwargs,
-                        )
-                    else:
-                        async with self._create_client() as client:
-                            response = await client.request(
-                                method,
-                                url,
-                                headers=headers,
-                                **kwargs,
+
+        async def _network(req_headers: dict[str, str], reval_headers: dict[str, str]) -> httpx.Response:
+            headers = {**req_headers, **reval_headers}
+            nonlocal last_error
+            for attempt in range(self.config.max_retries + 1):
+                try:
+                    async with self._semaphore:
+                        logger.debug("%s %s (attempt %d)", method, _sanitize_url(url), attempt + 1)
+                        if self._client is not None:
+                            response = await self._client.request(method, url, headers=headers, **kwargs)
+                        else:
+                            async with self._create_client() as client:
+                                response = await client.request(method, url, headers=headers, **kwargs)
+                        # Check final URL after redirects
+                        final_url = str(response.url)
+                        if final_url != url:
+                            self._validate_url(final_url)
+                        if len(response.content) > self.config.max_response_size:
+                            raise ContentSecurityError(
+                                f"Response size {len(response.content)} exceeds limit for {final_url}"
                             )
-                    # Check final URL after redirects
-                    final_url = str(response.url)
-                    if final_url != url:
-                        self._validate_url(final_url)
-                    if len(response.content) > self.config.max_response_size:
-                        raise ContentSecurityError(
-                            f"Response size {len(response.content)} exceeds limit for {final_url}"
-                        )
-                    if response.status_code == 304:
-                        return HttpResponse(
-                            url=final_url,
-                            status_code=304,
-                            content=b"",
-                            text="",
-                            headers=dict(response.headers),
-                            etag=response.headers.get("etag"),
-                            last_modified=response.headers.get("last-modified"),
-                            from_cache=True,
-                        )
-                    # Convert to HttpResponse early so we can inspect headers/text
-                    http_response = HttpResponse(
-                        url=final_url,
-                        status_code=response.status_code,
-                        content=response.content,
-                        text=response.text,
-                        headers=dict(response.headers),
-                        etag=response.headers.get("etag"),
-                        last_modified=response.headers.get("last-modified"),
-                    )
-                    self._detect_blocking_page(http_response)
-                    if self.config.request_delay > 0:
-                        await asyncio.sleep(self.config.request_delay)
-                    return http_response
-            except (TransientNetworkError, httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as exc:
-                last_error = exc
-                if attempt >= self.config.max_retries:
-                    raise NetworkError(f"Failed after {attempt + 1} attempts: {url}") from exc
-                retry_after = 0.0
-                if isinstance(exc, TransientNetworkError) and exc.retry_after is not None:
-                    try:
-                        retry_after = float(exc.retry_after)
-                    except ValueError:
-                        retry_after = 0.0
-                delay = max(retry_after, self._calculate_backoff(attempt))
-                logger.warning("Transient error for %s, retrying in %.2fs: %s", _sanitize_url(url), delay, exc)
-                await asyncio.sleep(delay)
-            except (ContentSecurityError, PermanentNetworkError):
-                raise
-        if last_error:
-            raise NetworkError(f"Failed to request {url}") from last_error
-        raise NetworkError(f"Unexpected end of retries for {url}")
+                        if response.status_code == 304:
+                            return response
+                        self._detect_blocking_page(response)
+                        if self.config.request_delay > 0:
+                            await asyncio.sleep(self.config.request_delay)
+                        return response
+                except (TransientNetworkError, httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as exc:
+                    last_error = exc
+                    if attempt >= self.config.max_retries:
+                        raise NetworkError(f"Failed after {attempt + 1} attempts: {url}") from exc
+                    retry_after = 0.0
+                    if isinstance(exc, TransientNetworkError) and exc.retry_after is not None:
+                        try:
+                            retry_after = float(exc.retry_after)
+                        except ValueError:
+                            retry_after = 0.0
+                    delay = max(retry_after, self._calculate_backoff(attempt))
+                    logger.warning("Transient error for %s, retrying in %.2fs: %s", _sanitize_url(url), delay, exc)
+                    await asyncio.sleep(delay)
+                except (ContentSecurityError, PermanentNetworkError):
+                    raise
+            if last_error:
+                raise NetworkError(f"Failed to request {url}") from last_error
+            raise NetworkError(f"Unexpected end of retries for {url}")
 
-    async def get(self, url: str, cached: CachedSource | None = None) -> HttpResponse:
-        return await self._request("GET", url, cached=cached)
+        response, from_cache = await self._cache.fetch(
+            method,
+            url,
+            request_headers,
+            _network,
+            market=market,
+            locale=locale,
+            cached=cached,
+        )
 
-    async def head(self, url: str) -> HttpResponse:
-        return await self._request("HEAD", url)
+        http_response = HttpResponse(
+            url=str(response.url),
+            status_code=response.status_code,
+            content=response.content,
+            text=response.text,
+            headers=dict(response.headers),
+            etag=response.headers.get("etag"),
+            last_modified=response.headers.get("last-modified"),
+            from_cache=from_cache or response.status_code == 304,
+        )
+        return http_response
+
+    async def get(
+        self,
+        url: str,
+        *,
+        market: str | None = None,
+        locale: str | None = None,
+        cached: CachedSource | None = None,
+    ) -> HttpResponse:
+        return await self._request("GET", url, market=market, locale=locale, cached=cached)
+
+    async def head(
+        self,
+        url: str,
+        *,
+        market: str | None = None,
+        locale: str | None = None,
+    ) -> HttpResponse:
+        return await self._request("HEAD", url, market=market, locale=locale)

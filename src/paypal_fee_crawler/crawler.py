@@ -371,7 +371,7 @@ class Crawler:
         cached: CachedSource | None,
     ) -> HttpResponse | None:
         try:
-            return await self.http_client.get(fee_url, cached=cached)
+            return await self.http_client.get(fee_url, market=code, cached=cached)
         except NetworkError as exc:
             logger.warning("Network error for %s: %s", code, exc)
             return None
@@ -694,6 +694,17 @@ class Crawler:
 
         exit_code = self._determine_exit_code(failed)
         diagnostics_path = self._determine_diagnostics_path(output_dir)
+        cache_stats = self.http_client.cache_stats
+        logger.info(
+            "Cache stats: hits=%s misses=%s revalidations=%s 304s=%s writes=%s errors=%s bytes_avoided=%s",
+            cache_stats.cache_hits,
+            cache_stats.cache_misses,
+            cache_stats.cache_revalidations,
+            cache_stats.cache_304_responses,
+            cache_stats.cache_writes,
+            cache_stats.cache_errors,
+            cache_stats.bytes_avoided,
+        )
         return CrawlReport(
             exit_code=exit_code,
             changed=changed,
@@ -704,4 +715,5 @@ class Crawler:
             warnings=self.warnings,
             change_report_path=str(output_dir / "change-report.json"),
             diagnostics_path=diagnostics_path,
+            cache_stats=cache_stats,
         )

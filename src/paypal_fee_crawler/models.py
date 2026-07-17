@@ -115,6 +115,20 @@ class Source(BaseModel):
     content_sha256: str | None = None
 
 
+class CacheStats(BaseModel):
+    """HTTP cache statistics for a crawl run."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    cache_hits: int = 0
+    cache_misses: int = 0
+    cache_revalidations: int = 0
+    cache_304_responses: int = 0
+    cache_writes: int = 0
+    cache_errors: int = 0
+    bytes_avoided: int = 0
+
+
 class Link(PublicModel):
     """A hyperlink extracted from a rich-text cell."""
 
@@ -901,6 +915,7 @@ class CrawlReport(BaseModel):
     warnings: list[ParserWarning] = Field(default_factory=list)
     change_report_path: str | None = None
     diagnostics_path: str | None = None
+    cache_stats: CacheStats = Field(default_factory=CacheStats)
 
     @model_validator(mode="before")
     @classmethod
@@ -946,6 +961,10 @@ class CrawlConfiguration(BaseModel):
         ]
     )
     country_manifest_path: str | None = None
+    cache_dir: str | None = None
+    cache_ttl_hours: float = 24.0
+    no_cache: bool = False
+    refresh_cache: bool = False
 
     @field_validator("max_workers")
     @classmethod
@@ -959,4 +978,11 @@ class CrawlConfiguration(BaseModel):
     def _timeout_positive(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("timeout must be positive")
+        return value
+
+    @field_validator("cache_ttl_hours")
+    @classmethod
+    def _cache_ttl_positive(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("cache_ttl_hours must be positive")
         return value
