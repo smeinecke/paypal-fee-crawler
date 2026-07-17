@@ -415,7 +415,9 @@ class CoverageSummary(PublicModel):
     ambiguous: int = 0
     conflicts: int = 0
     missing_required_schedules: int = 0
-    inherited_schedules: int = 0
+    inherited_schedules: int = 0  # Deprecated; same as inherited_schedule_references
+    inherited_schedule_objects: int = 0
+    inherited_schedule_references: int = 0
     unresolved_references: int = 0
     unresolved_nested_references: int = 0
     extracted_apm_methods: int = 0

@@ -4437,22 +4437,31 @@ def _select_schedule_id(
     signature: dict[str, Any],
     available: dict[str, Any],
     fallback_bases: tuple[str, ...] = (),
+    product_base: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Return the schedule id a rule should reference and an optional inheritance source.
 
-    The candidate list is ordered from most specific (base id with the full
-    signature suffix) to the base id.  If an existing schedule matches, it is
-    used.  If none exists but a fallback schedule (either with the same suffix
-    or as a base schedule) is available, the intended id is returned so that
-    fallback resolution can copy it.  When neither the intended schedule nor
-    any fallback exists, ``None`` is returned and no schedule reference is
-    emitted.
+    Resolution priority is:
+
+    1. Exact variant-specific schedule (with the full signature suffix).
+    2. Direct product-family base schedule (with the same suffix or as a base).
+    3. Explicitly proven cross-product inheritance from ``fallback_bases``.
+    4. ``None`` if no usable schedule exists.
+
+    The direct product-family base is only consulted when it differs from the
+    variant-specific ``base_id`` so that variant-specific schedules are tried
+    first, but a generic product schedule always wins over cross-product
+    inheritance.
     """
     suffix = _schedule_suffix_from_signature(signature)
     candidates: list[str] = []
     if suffix:
         candidates.append(f"{base_id}__{suffix}")
     candidates.append(base_id)
+    if product_base and product_base != base_id:
+        if suffix:
+            candidates.append(f"{product_base}__{suffix}")
+        candidates.append(product_base)
     intended = candidates[0] if candidates else None
     for candidate in candidates:
         if candidate in available:
@@ -5573,6 +5582,7 @@ def _build_standard_rate_rule(
                 sig,
                 fixed_schedules,
                 _FIXED_FEE_SCHEDULE_FALLBACK.get(product_id, ()),
+                product_base=_FIXED_FEE_SCHEDULE_FOR.get(product_id),
             )
 
     intl_schedule: str | None = None
@@ -5585,6 +5595,7 @@ def _build_standard_rate_rule(
             sig,
             international_schedules,
             _INTERNATIONAL_SURCHARGE_SCHEDULE_FALLBACK.get(product_id, ()),
+            product_base=_INTERNATIONAL_SURCHARGE_SCHEDULE_FOR.get(product_id),
         )
 
     maximum_fee_schedule: str | None = None
@@ -5598,6 +5609,7 @@ def _build_standard_rate_rule(
                 sig,
                 maximum_fee_schedules,
                 _MAXIMUM_FEE_SCHEDULE_FALLBACK.get(max_base, ()),
+                product_base=max_base,
             )
 
     # Listed-campaign donation campaigns are free.
@@ -5788,7 +5800,6 @@ _FIXED_FEE_INHERITANCE: dict[str, str] = {
     "invoice_pay_later": "commercial",
     "pay_later_consumer": "commercial",
     "advanced_card_payments": "online_card_payments",
-    "micropayments": "commercial",
 }
 
 
@@ -5827,7 +5838,6 @@ _FIXED_FEE_SCHEDULE_FALLBACK: dict[str, tuple[str, ...]] = {
     "invoice_pay_later": ("commercial",),
     "pay_later_consumer": ("commercial",),
     "advanced_card_payments": ("online_card_payments",),
-    "micropayments": ("commercial",),
 }
 
 
@@ -6414,6 +6424,92 @@ def _resolve_schedule_inheritance(
             rules[i] = rule.model_copy(update=updates)
 
 
+def _product_family_for_schedule_id(schedule_id: str, schedule_type: str = "fixed_fee") -> str:
+    """Return the product-family base name for a schedule id.
+
+    For fixed-fee and international-surcharge schedules the family is the
+    longest known product base that matches the id's prefix (e.g.
+    ``micropayments_domestic`` -> ``micropayments``).  Maximum-fee schedules
+    have no variant prefix, so the family is the base id before any ``__``
+    applicability suffix.
+    """
+    base = schedule_id.split("__", 1)[0]
+    if schedule_type == "maximum_fee":
+        return base
+    product_bases: set[str] = set()
+    for value in _FIXED_FEE_SCHEDULE_FOR.values():
+        if value:
+            product_bases.add(value)
+    for value in _INTERNATIONAL_SURCHARGE_SCHEDULE_FOR.values():
+        if value:
+            product_bases.add(value)
+    candidates = [pb for pb in product_bases if base == pb or base.startswith(pb + "_")]
+    if candidates:
+        return max(candidates, key=len)
+    return base
+
+
+def _validate_inheritance_priorities(
+    fixed_schedules: dict[str, FixedFeeSchedule],
+    international_schedules: dict[str, InternationalSurchargeSchedule],
+    maximum_fee_schedules: dict[str, FixedFeeSchedule],
+    diagnostics: list[Diagnostic],
+) -> None:
+    """Flag inherited schedules that selected a cross-product fallback while a
+    direct product-family schedule was available.
+
+    The validation mirrors the resolution priority enforced by
+    ``_select_schedule_id``: a variant-specific schedule may fall back to its
+    own product base, but it must never fall back to a different product family
+    when its own product base exists.
+    """
+    schedule_groups: list[tuple[str, dict[str, Any]]] = [
+        ("fixed_fee", fixed_schedules),
+        ("international_surcharge", international_schedules),
+        ("maximum_fee", maximum_fee_schedules),
+    ]
+    for schedule_type, schedules in schedule_groups:
+        invalid: list[str] = []
+        for schedule_id, schedule in schedules.items():
+            if schedule.origin != "inherited":
+                continue
+            target_family = _product_family_for_schedule_id(schedule_id, schedule_type)
+            source_id = schedule.inherited_from or ""
+            source_family = _product_family_for_schedule_id(source_id, schedule_type)
+            if target_family == source_family:
+                continue
+            # Product-base schedules (possibly with an applicability suffix) may
+            # be explicitly inherited from another product family; only
+            # variant-specific schedules are checked for bypassing their own base.
+            base_part = schedule_id.split("__", 1)[0]
+            if base_part == target_family:
+                continue
+            suffix = ""
+            if "__" in schedule_id:
+                suffix = schedule_id.split("__", 1)[1]
+            direct_candidates: list[str] = []
+            if suffix:
+                direct_candidates.append(f"{target_family}__{suffix}")
+            direct_candidates.append(target_family)
+            for direct in direct_candidates:
+                if direct in schedules:
+                    diagnostics.append(
+                        Diagnostic(
+                            type="inappropriate_inheritance",
+                            rule_id=target_family,
+                            schedule_type=schedule_type,
+                            schedule_id=schedule_id,
+                            inherited_from=source_id,
+                            expected_schedule=direct,
+                            sources=schedule.sources,
+                        )
+                    )
+                    invalid.append(schedule_id)
+                    break
+        for schedule_id in invalid:
+            del schedules[schedule_id]
+
+
 def _merge_provenance_sources(*source_lists: list[Provenance]) -> list[Provenance]:
     """Combine multiple provenance lists without duplicates."""
     merged: list[Provenance] = []
@@ -6439,6 +6535,7 @@ _STATUS_DEFECT_DIAGNOSTICS: set[str] = {
     "unsupported_fee_shape",
     "ambiguous_reference",
     "unknown_apm_method",
+    "inappropriate_inheritance",
 }
 
 
@@ -6460,13 +6557,22 @@ def _derive_status(
         return "partial"
     if any(d.type in _STATUS_DEFECT_DIAGNOSTICS for d in diagnostics):
         return "partial"
-    # A complete result should expose the core commercial rules and all core
-    # rules must be calculable with resolved schedule references.
-    core_ids = {"paypal_checkout", "goods_and_services", "other_commercial"}
+    # A complete result must expose at least one of the core PayPal payment
+    # products (PayPal Checkout or goods and services).  The generic
+    # ``other_commercial`` fallback alone does not imply full product coverage.
+    required_core_ids = {"paypal_checkout", "goods_and_services"}
+    generic_core_id = "other_commercial"
+    core_ids = required_core_ids | {generic_core_id}
     core_rules = [r for r in rules if r.id in core_ids]
-    if core_rules and all(r.calculation_status == "calculable" for r in core_rules) and bool(fixed_schedules):
+    found_required = any(r.id in required_core_ids for r in rules)
+    if (
+        found_required
+        and core_rules
+        and all(r.calculation_status == "calculable" for r in core_rules)
+        and bool(fixed_schedules)
+    ):
         return "complete"
-    if any(r.id in core_ids for r in rules):
+    if any(r.id in required_core_ids for r in rules):
         return "partial"
     # Non-commercial markets may still be partial if any rule is incomplete.
     if any(r.calculation_status != "calculable" for r in rules if r.id not in core_ids):
@@ -6838,23 +6944,40 @@ def _materialize_fee_components(
     ]
 
 
-def _count_inherited_schedules(
+def _count_inherited_schedule_references(
     rules: list[TransactionFeeRule],
     fixed_schedules: dict[str, FixedFeeSchedule],
     international_schedules: dict[str, InternationalSurchargeSchedule],
+    maximum_fee_schedules: dict[str, FixedFeeSchedule],
 ) -> int:
     """Return the number of rule schedule references that point to inherited schedules."""
     inherited = 0
     for rule in rules:
-        if rule.fixed_fee_schedule:
-            schedule = fixed_schedules.get(rule.fixed_fee_schedule)
-            if schedule and schedule.origin == "inherited":
-                inherited += 1
-        if rule.international_surcharge_schedule:
-            schedule = international_schedules.get(rule.international_surcharge_schedule)
-            if schedule and schedule.origin == "inherited":
-                inherited += 1
+        for attr, schedules in (
+            ("fixed_fee_schedule", fixed_schedules),
+            ("international_surcharge_schedule", international_schedules),
+            ("maximum_fee_schedule", maximum_fee_schedules),
+        ):
+            schedule_id = getattr(rule, attr)
+            if schedule_id:
+                schedule = schedules.get(schedule_id)
+                if schedule and schedule.origin == "inherited":
+                    inherited += 1
     return inherited
+
+
+def _count_inherited_schedule_objects(
+    fixed_schedules: dict[str, FixedFeeSchedule],
+    international_schedules: dict[str, InternationalSurchargeSchedule],
+    maximum_fee_schedules: dict[str, FixedFeeSchedule],
+) -> int:
+    """Return the number of schedule objects that are inherited."""
+    return sum(
+        1
+        for schedules in (fixed_schedules, international_schedules, maximum_fee_schedules)
+        for schedule in schedules.values()
+        if schedule.origin == "inherited"
+    )
 
 
 def _count_direct_fixed_fees(rules: list[TransactionFeeRule]) -> int:
@@ -6909,6 +7032,9 @@ def _build_coverage_summary(
         if e.product_id == "alternative_payment_methods"
     )
 
+    inherited_references = _count_inherited_schedule_references(
+        rules, fixed_schedules, international_schedules, maximum_fee_schedules
+    )
     return CoverageSummary(
         transaction_rules=len(rules),
         calculable_rules=sum(1 for r in rules if r.calculation_status == "calculable"),
@@ -6924,7 +7050,11 @@ def _build_coverage_summary(
         ambiguous=len(ambiguous_rows),
         conflicts=counts["conflicts"],
         missing_required_schedules=counts["missing_schedules"],
-        inherited_schedules=_count_inherited_schedules(rules, fixed_schedules, international_schedules),
+        inherited_schedules=inherited_references,
+        inherited_schedule_objects=_count_inherited_schedule_objects(
+            fixed_schedules, international_schedules, maximum_fee_schedules
+        ),
+        inherited_schedule_references=inherited_references,
         unresolved_references=counts["unresolved_references"],
         unresolved_nested_references=counts["unresolved_nested_references"],
         extracted_apm_methods=extracted_apm,
@@ -7068,6 +7198,12 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
     _resolve_schedule_inheritance(
         extracted_rules,
         resolved_rules,
+        fixed_schedules,
+        international_schedules,
+        maximum_fee_schedules,
+        diagnostics,
+    )
+    _validate_inheritance_priorities(
         fixed_schedules,
         international_schedules,
         maximum_fee_schedules,

@@ -179,6 +179,7 @@ def _strict_publication_errors(derived: Any, label: str) -> list[str]:
             "ambiguous_identity",
             "unresolved_reference",
             "unsupported_fee_shape",
+            "inappropriate_inheritance",
         }:
             errors.append(f"{label} has {diagnostic_type} diagnostic(s)")
 

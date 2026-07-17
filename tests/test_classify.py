@@ -237,3 +237,84 @@ def test_comision_porcentual_adicional_classified_as_surcharge() -> None:
         [],
     )
     assert _classify_table_category(table) == "international_surcharge_table"
+
+
+def _micropayment_result(currency: str, fixed_amount: str) -> DerivedFeeResult:
+    rate_table = _table(
+        "Micropayments",
+        [
+            ["Domestic micropayments", f"5% + {fixed_amount} {currency}"],
+            ["International micropayments", f"6% + {fixed_amount} {currency}"],
+        ],
+    )
+    fixed_fee = _table(
+        "Micropayments fixed fee",
+        [
+            [currency, f"{fixed_amount} {currency}"],
+        ],
+    )
+    return classify_tables([rate_table, fixed_fee])
+
+
+def test_micropayments_domestic_and_international_use_direct_base_schedule() -> None:
+    """Variant-specific micropayment rules must use the direct micropayments fixed-fee schedule."""
+    result = _micropayment_result("GBP", "0.05")
+    domestic = next(r for r in result.transaction_fee_rules if r.id == "micropayments" and r.variant_id == "domestic")
+    international = next(
+        r for r in result.transaction_fee_rules if r.id == "micropayments" and r.variant_id == "international"
+    )
+    assert domestic.percentage == "5"
+    assert international.percentage == "6"
+    assert domestic.fixed_fee_schedule == "micropayments"
+    assert international.fixed_fee_schedule == "micropayments"
+    assert result.fixed_fee_schedules["micropayments"].entries["GBP"] == "0.05"
+    assert result.fixed_fee_schedules["micropayments"].origin == "direct"
+    assert "micropayments_domestic" not in result.fixed_fee_schedules
+    assert "micropayments_international" not in result.fixed_fee_schedules
+
+
+def test_micropayments_fall_back_to_product_base_before_commercial() -> None:
+    """A direct micropayments fixed-fee schedule must win over commercial inheritance."""
+    rate_table = _table(
+        "Micropayments",
+        [
+            ["Domestic micropayments", "5% + 0.05 GBP"],
+        ],
+    )
+    micropayments_fee = _table(
+        "Micropayments fixed fee",
+        [
+            ["GBP", "0.05 GBP"],
+        ],
+    )
+    commercial_fee = _table(
+        "Commercial fixed fee",
+        [
+            ["GBP", "0.30 GBP"],
+        ],
+    )
+    result = classify_tables([rate_table, micropayments_fee, commercial_fee])
+    rule = next(r for r in result.transaction_fee_rules if r.id == "micropayments" and r.variant_id == "domestic")
+    assert rule.fixed_fee_schedule == "micropayments"
+    assert result.fixed_fee_schedules["micropayments"].entries["GBP"] == "0.05"
+
+
+def test_micropayments_inr_fixed_fee() -> None:
+    """IN international micropayments use the direct INR micropayments schedule."""
+    rate_table = _table(
+        "Micropayments",
+        [
+            ["International micropayments", "6% + 0.25 INR"],
+        ],
+    )
+    fixed_fee = _table(
+        "Micropayments fixed fee",
+        [
+            ["INR", "0.25 INR"],
+        ],
+    )
+    result = classify_tables([rate_table, fixed_fee])
+    rule = next(r for r in result.transaction_fee_rules if r.id == "micropayments" and r.variant_id == "international")
+    assert rule.percentage == "6"
+    assert rule.fixed_fee_schedule == "micropayments"
+    assert result.fixed_fee_schedules["micropayments"].entries["INR"] == "0.25"
