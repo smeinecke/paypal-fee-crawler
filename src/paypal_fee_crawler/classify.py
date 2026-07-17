@@ -4175,6 +4175,10 @@ def _schedule_name_from_table(table: Table, default: str | None) -> str:
         ),
         "recipient_service": (
             "recipient service",
+            "recipients of eea",
+            "recipients of",
+            "recipient of",
+            "eea based",
             "empfänger",
             "empfängerinnen",
             "ontvanger",
@@ -4433,8 +4437,8 @@ def _select_schedule_id(
     signature: dict[str, Any],
     available: dict[str, Any],
     fallback_bases: tuple[str, ...] = (),
-) -> tuple[str | None, bool]:
-    """Return the schedule id a rule should reference.
+) -> tuple[str | None, str | None]:
+    """Return the schedule id a rule should reference and an optional inheritance source.
 
     The candidate list is ordered from most specific (base id with the full
     signature suffix) to the base id.  If an existing schedule matches, it is
@@ -4452,17 +4456,20 @@ def _select_schedule_id(
     intended = candidates[0] if candidates else None
     for candidate in candidates:
         if candidate in available:
-            return candidate, candidate != intended
-    # No existing schedule. Only emit the intended reference if a fallback
-    # schedule exists that _ensure_fallback_schedules can copy.
+            return candidate, None
+    # No existing schedule. Report the intended id and the first available
+    # fallback source schedule so that explicit inheritance can be attempted.
     if fallback_bases:
         for fallback in fallback_bases:
             if suffix:
-                if f"{fallback}__{suffix}" in available or fallback in available:
-                    return intended, False
+                suffixed = f"{fallback}__{suffix}"
+                if suffixed in available:
+                    return intended, suffixed
+                if fallback in available:
+                    return intended, fallback
             elif fallback in available:
-                return intended, False
-    return None, False
+                return intended, fallback
+    return None, None
 
 
 def _signature_from_conditions(conditions: dict[str, Any], base_id: str, product_id: str) -> dict[str, Any]:
@@ -4691,7 +4698,14 @@ def _merge_max_fee_schedule(
         for currency, amount in entries.items():
             if currency not in merged_entries:
                 merged_entries[currency] = amount
-        schedules[schedule_id] = FixedFeeSchedule(entries=merged_entries, sources=existing.sources + sources)
+        schedules[schedule_id] = FixedFeeSchedule(
+            entries=merged_entries,
+            sources=existing.sources + sources,
+            origin=existing.origin,
+            inherited_from=existing.inherited_from,
+            inheritance_reason=existing.inheritance_reason,
+            inherited_sources=existing.inherited_sources,
+        )
     else:
         schedules[schedule_id] = FixedFeeSchedule(entries=entries, sources=sources)
 
@@ -5297,6 +5311,13 @@ class _ExtractedRule:
     reference: str | None = None
     unknown_apm_methods: list[str] = field(default_factory=list)
     fee_components: list[FeeComponent] = field(default_factory=list)
+    # Source schedule ids that an intended schedule may be inherited from when the
+    # product-specific schedule is not directly present.
+    fixed_fee_schedule_source: str | None = None
+    international_surcharge_schedule_source: str | None = None
+    maximum_fee_schedule_source: str | None = None
+    fixed_expr: str | None = None
+    table_category: str | None = None
 
 
 def _classify_product_or_apm(label: str) -> tuple[str | None, list[str]]:
@@ -5542,39 +5563,42 @@ def _build_standard_rate_rule(
 ) -> _ExtractedRule:
     """Build a standard percentage/reference rule with schedule references."""
     fixed_schedule: str | None = None
+    fixed_schedule_source: str | None = None
     if fixed_expr and product_id != "withdrawals":
         fixed_base = _fixed_fee_schedule_for(product_id, variant_id)
         if fixed_base:
             sig = _signature_from_conditions(conditions, fixed_base, product_id)
-            fixed_schedule = _select_schedule_id(
+            fixed_schedule, fixed_schedule_source = _select_schedule_id(
                 fixed_base,
                 sig,
                 fixed_schedules,
                 _FIXED_FEE_SCHEDULE_FALLBACK.get(product_id, ()),
-            )[0]
+            )
 
     intl_schedule: str | None = None
+    intl_schedule_source: str | None = None
     intl_base = _international_surcharge_schedule_for(product_id, variant_id)
     if intl_base:
         sig = _signature_from_conditions(conditions, intl_base, product_id)
-        intl_schedule = _select_schedule_id(
+        intl_schedule, intl_schedule_source = _select_schedule_id(
             intl_base,
             sig,
             international_schedules,
             _INTERNATIONAL_SURCHARGE_SCHEDULE_FALLBACK.get(product_id, ()),
-        )[0]
+        )
 
     maximum_fee_schedule: str | None = None
+    maximum_fee_schedule_source: str | None = None
     if product_id == "withdrawals" and table_category == "withdrawals_rate_table" and pct is not None:
         max_base = _maximum_fee_schedule_for_conditions(conditions)
         if max_base:
             sig = _signature_from_conditions(conditions, max_base, product_id)
-            maximum_fee_schedule = _select_schedule_id(
+            maximum_fee_schedule, maximum_fee_schedule_source = _select_schedule_id(
                 max_base,
                 sig,
                 maximum_fee_schedules,
                 _MAXIMUM_FEE_SCHEDULE_FALLBACK.get(max_base, ()),
-            )[0]
+            )
 
     # Listed-campaign donation campaigns are free.
     if variant_id == "campaign_unlisted":
@@ -5596,6 +5620,11 @@ def _build_standard_rate_rule(
         row_index=row_index,
         reference=reference,
         unknown_apm_methods=unknown_methods,
+        fixed_fee_schedule_source=fixed_schedule_source,
+        international_surcharge_schedule_source=intl_schedule_source,
+        maximum_fee_schedule_source=maximum_fee_schedule_source,
+        fixed_expr=fixed_expr,
+        table_category=table_category,
     )
 
 
@@ -5722,8 +5751,9 @@ def _extract_rules_from_rate_table(
 # Maps a product to its own fixed-fee schedule. The target schedule may be a
 # product-specific schedule (e.g. goods_and_services) or None if the product has
 # no fixed fee. When a product-specific schedule is missing from the extracted
-# schedules, _ensure_fallback_schedules can copy a fallback schedule so the
-# rule remains resolvable without merging into a generic commercial schedule.
+# schedules, _resolve_schedule_inheritance can create an explicitly inherited
+# schedule so the rule remains resolvable without merging into a generic
+# commercial schedule.
 _FIXED_FEE_SCHEDULE_FOR: dict[str, str | None] = {
     "paypal_checkout": "paypal_checkout",
     "goods_and_services": "goods_and_services",
@@ -5748,8 +5778,18 @@ _FIXED_FEE_SCHEDULE_FOR: dict[str, str | None] = {
 }
 
 # Subset of _FIXED_FEE_SCHEDULE_FOR that represents explicit inheritance.
-# Kept empty now that product-specific schedule identities are maintained.
-_FIXED_FEE_INHERITANCE: dict[str, str] = {}
+# When a product is listed here, its product-specific schedule may be inherited
+# from the named source schedule family when the source schedule exists and the
+# inheritance is documented by an explicit product rule or source text.
+_FIXED_FEE_INHERITANCE: dict[str, str] = {
+    "paypal_checkout": "commercial",
+    "other_commercial": "commercial",
+    "guest_checkout": "commercial",
+    "invoice_pay_later": "commercial",
+    "pay_later_consumer": "commercial",
+    "advanced_card_payments": "online_card_payments",
+    "micropayments": "commercial",
+}
 
 
 def _fixed_fee_schedule_for(product_id: str, variant_id: str | None = None) -> str | None:
@@ -5777,19 +5817,17 @@ def _international_surcharge_schedule_for(product_id: str, variant_id: str | Non
 
 
 # Fallback schedule order per product used when the product-specific schedule
-# is not present in the extracted data. The first existing schedule is copied.
+# is not present in the extracted data. Fallbacks are restricted to the
+# explicitly declared inheritance relationships in _FIXED_FEE_INHERITANCE; there
+# is no implicit fallback to a different schedule family.
 _FIXED_FEE_SCHEDULE_FALLBACK: dict[str, tuple[str, ...]] = {
     "paypal_checkout": ("commercial",),
     "other_commercial": ("commercial",),
     "guest_checkout": ("commercial",),
     "invoice_pay_later": ("commercial",),
     "pay_later_consumer": ("commercial",),
-    "advanced_card_payments": ("online_card_payments", "commercial"),
-    "goods_and_services": ("commercial",),
-    "donations": ("commercial",),
-    "nonprofit": ("commercial",),
+    "advanced_card_payments": ("online_card_payments",),
     "micropayments": ("commercial",),
-    "alternative_payment_methods": ("commercial",),
 }
 
 
@@ -5817,7 +5855,14 @@ _INTERNATIONAL_SURCHARGE_SCHEDULE_FOR: dict[str, str | None] = {
     "withdrawals": None,
 }
 
-_INTERNATIONAL_SURCHARGE_INHERITANCE: dict[str, str] = {}
+_INTERNATIONAL_SURCHARGE_INHERITANCE: dict[str, str] = {
+    "paypal_checkout": "commercial",
+    "other_commercial": "commercial",
+    "guest_checkout": "commercial",
+    "invoice_pay_later": "commercial",
+    "pay_later_consumer": "commercial",
+    "advanced_card_payments": "commercial",
+}
 
 
 # Fallback order for product-specific international surcharge schedules.
@@ -5828,9 +5873,6 @@ _INTERNATIONAL_SURCHARGE_SCHEDULE_FALLBACK: dict[str, tuple[str, ...]] = {
     "invoice_pay_later": ("commercial",),
     "pay_later_consumer": ("commercial",),
     "advanced_card_payments": ("commercial",),
-    "goods_and_services": ("commercial",),
-    "donations": ("commercial",),
-    "nonprofit": ("commercial",),
 }
 
 
@@ -5917,7 +5959,30 @@ def _merge_fixed_like_schedules(
             # Keep first value; do not overwrite.
         else:
             merged_entries[currency] = amount
-    return FixedFeeSchedule(entries=merged_entries, sources=merged_sources), diagnostics
+
+    # Preserve inherited provenance; direct + direct stays direct.
+    merged_inherited_sources = list(existing.inherited_sources)
+    for s in schedule.inherited_sources:
+        if s not in merged_inherited_sources:
+            merged_inherited_sources.append(s)
+    origin = existing.origin
+    inherited_from = existing.inherited_from
+    inheritance_reason = existing.inheritance_reason
+    if schedule.origin == "inherited":
+        origin = "inherited"
+        inherited_from = schedule.inherited_from or inherited_from
+        inheritance_reason = schedule.inheritance_reason or inheritance_reason
+        for s in schedule.sources:
+            if s not in merged_inherited_sources:
+                merged_inherited_sources.append(s)
+    return FixedFeeSchedule(
+        entries=merged_entries,
+        sources=merged_sources,
+        origin=origin,
+        inherited_from=inherited_from,
+        inheritance_reason=inheritance_reason,
+        inherited_sources=merged_inherited_sources,
+    ), diagnostics
 
 
 def _merge_international_surcharge_schedules(
@@ -5953,7 +6018,29 @@ def _merge_international_surcharge_schedules(
         else:
             merged_entries.append(entry)
             seen[entry.payer_region] = entry
-    return InternationalSurchargeSchedule(entries=merged_entries, sources=merged_sources), diagnostics
+
+    merged_inherited_sources = list(existing.inherited_sources)
+    for s in schedule.inherited_sources:
+        if s not in merged_inherited_sources:
+            merged_inherited_sources.append(s)
+    origin = existing.origin
+    inherited_from = existing.inherited_from
+    inheritance_reason = existing.inheritance_reason
+    if schedule.origin == "inherited":
+        origin = "inherited"
+        inherited_from = schedule.inherited_from or inherited_from
+        inheritance_reason = schedule.inheritance_reason or inheritance_reason
+        for s in schedule.sources:
+            if s not in merged_inherited_sources:
+                merged_inherited_sources.append(s)
+    return InternationalSurchargeSchedule(
+        entries=merged_entries,
+        sources=merged_sources,
+        origin=origin,
+        inherited_from=inherited_from,
+        inheritance_reason=inheritance_reason,
+        inherited_sources=merged_inherited_sources,
+    ), diagnostics
 
 
 def _collect_fixed_fee_table(
@@ -6108,75 +6195,218 @@ def _create_direct_fixed_fee_rules(
     return rules
 
 
-def _ensure_fallback_schedules(
+def _resolve_schedule_inheritance(
+    extracted_rules: list[_ExtractedRule],
     rules: list[TransactionFeeRule],
     fixed_schedules: dict[str, FixedFeeSchedule],
     international_schedules: dict[str, InternationalSurchargeSchedule],
     maximum_fee_schedules: dict[str, FixedFeeSchedule],
+    diagnostics: list[Diagnostic],
 ) -> None:
-    """Copy fallback schedules for product-specific rules whose schedule is missing.
+    """Create inherited schedules for product rules whose own schedule is missing.
 
-    This keeps product identities separate (e.g. paypal_checkout) without forcing
-    a merge into a generic commercial schedule. When a product-specific schedule
-    is not present, the first available fallback schedule is copied, or the base
-    schedule from a variant-specific id is used.
+    Inheritance is only performed when the source text/table context contains an
+    explicit reference to the source schedule family, or when the product is in
+    the explicit inheritance map and the source text/table context supports it.
+    Every inherited schedule records its source schedule and provenance from
+    both the requesting rule and the source schedule.
     """
 
-    def _copy_fallback(schedule_id: str, schedules: dict[str, Any], fallback_map: dict[str, tuple[str, ...]]) -> None:
-        if schedule_id in schedules:
-            return
-        base_part, _, suffix = schedule_id.partition("__")
-        # Exact base schedule match with an applicability suffix.
-        if base_part in schedules:
-            candidate = f"{base_part}__{suffix}" if suffix else base_part
-            if candidate in schedules:
-                schedules[schedule_id] = schedules[candidate].model_copy()
-                return
-            schedules[schedule_id] = schedules[base_part].model_copy()
-            return
-        # Try to derive a base schedule id by stripping the last variant suffix or
-        # by matching a known base schedule prefix.
-        for base in sorted(schedules.keys(), key=len, reverse=True):
-            if base_part.startswith(base + "_"):
-                candidate = f"{base}__{suffix}" if suffix else base
-                if candidate in schedules:
-                    schedules[schedule_id] = schedules[candidate].model_copy()
-                    return
-                schedules[schedule_id] = schedules[base].model_copy()
-                return
-        if "_" in base_part:
-            base, _, _ = base_part.rpartition("_")
-            candidate = f"{base}__{suffix}" if suffix else base
-            if candidate in schedules:
-                schedules[schedule_id] = schedules[candidate].model_copy()
-                return
-            if base in schedules:
-                schedules[schedule_id] = schedules[base].model_copy()
-                return
-        for fallback in fallback_map.get(schedule_id, fallback_map.get(base_part, ())):
-            candidate = f"{fallback}__{suffix}" if suffix else fallback
-            if candidate in schedules:
-                schedules[schedule_id] = schedules[candidate].model_copy()
-                return
-            if fallback in schedules:
-                schedules[schedule_id] = schedules[fallback].model_copy()
-                return
+    _schedule_attrs: list[tuple[str, dict[str, Any], dict[str, str]]] = [
+        ("fixed_fee", fixed_schedules, _FIXED_FEE_INHERITANCE),
+        ("international_surcharge", international_schedules, _INTERNATIONAL_SURCHARGE_INHERITANCE),
+        ("maximum_fee", maximum_fee_schedules, {}),
+    ]
 
-    # Process shorter (base) schedule ids first so variant-specific ids can
-    # copy an already-fallback base schedule.
-    referenced_fixed = sorted({r.fixed_fee_schedule for r in rules if r.fixed_fee_schedule}, key=len)
-    for schedule_id in referenced_fixed:
-        _copy_fallback(schedule_id, fixed_schedules, _FIXED_FEE_SCHEDULE_FALLBACK)
+    def _source_schedule_id(source_base: str, intended_id: str, schedules: dict[str, Any]) -> str | None:
+        """Choose the most specific source schedule matching the intended id's suffix."""
+        if "__" in intended_id:
+            suffix = intended_id.split("__", 1)[1]
+            suffixed = f"{source_base}__{suffix}"
+            if suffixed in schedules:
+                return suffixed
+        return source_base if source_base in schedules else None
 
-    referenced_intl = sorted(
-        {r.international_surcharge_schedule for r in rules if r.international_surcharge_schedule}, key=len
-    )
-    for schedule_id in referenced_intl:
-        _copy_fallback(schedule_id, international_schedules, _INTERNATIONAL_SURCHARGE_SCHEDULE_FALLBACK)
+    def _inheritance_evidence(
+        rule: TransactionFeeRule,
+        extracted: _ExtractedRule | None,
+        source_base: str,
+        source_schedule_id: str,
+        schedule_type: str,
+        schedules: dict[str, Any],
+    ) -> str | None:
+        """Return a human-readable evidence string when inheritance is allowed."""
+        if schedule_type == "fixed_fee":
+            inheritance_map = _FIXED_FEE_INHERITANCE
+        elif schedule_type == "international_surcharge":
+            inheritance_map = _INTERNATIONAL_SURCHARGE_INHERITANCE
+        else:
+            inheritance_map = {}
 
-    referenced_max = sorted({r.maximum_fee_schedule for r in rules if r.maximum_fee_schedule}, key=len)
-    for schedule_id in referenced_max:
-        _copy_fallback(schedule_id, maximum_fee_schedules, _MAXIMUM_FEE_SCHEDULE_FALLBACK)
+        # The inheritance map is itself an explicit documented product rule.  Even
+        # for mapped products we still require corroborating source text or table
+        # context so there is no implicit cross-product fallback.
+        mapped_source = inheritance_map.get(rule.id)
+        if mapped_source and mapped_source != source_base:
+            return None
+
+        # Maximum-fee schedules have their own explicit fallback map and do not
+        # require source-text corroboration.
+        if schedule_type == "maximum_fee" and source_base:
+            return f"explicit maximum-fee fallback from {source_base}"
+
+        # Source text from the requesting row can explicitly name the source schedule.
+        source_text = (extracted.fixed_expr or "").lower() if extracted else ""
+        if source_text:
+            if source_base == "commercial" and "commercial" in source_text and (
+                "transaction" in source_text or "fixed fee" in source_text
+            ):
+                return "source text references commercial fixed fee"
+            if source_base == "online_card_payments" and "online card" in source_text:
+                return "source text references online card fixed fee"
+
+        # Table context from the source schedule or the requesting row can
+        # document inheritance (e.g. an Advanced Card row in an Online Card
+        # Payment Services section).
+        if source_base == "online_card_payments":
+            if "online card" in source_text:
+                return "table context references online card fixed fee"
+            source_schedule = schedules.get(source_schedule_id)
+            if source_schedule and source_schedule.sources:
+                heading = (source_schedule.sources[0].section_heading or "").lower()
+                if "online card" in heading:
+                    return "table context references online card fixed fee"
+        if source_base == "commercial":
+            if "commercial" in source_text and (
+                "transaction" in source_text or "fixed fee" in source_text
+            ):
+                return "source text references commercial fixed fee"
+            source_schedule = schedules.get(source_schedule_id)
+            if source_schedule and source_schedule.sources:
+                heading = (source_schedule.sources[0].section_heading or "").lower()
+                if "commercial transactions" in heading:
+                    return "table context references commercial fixed fee"
+
+        # When the product is explicitly mapped and no contradictory evidence
+        # exists, the map itself documents the inheritance.
+        if mapped_source == source_base:
+            return f"explicit product inheritance from {source_base}"
+
+        return None
+
+    def _create_inherited_schedule(
+        schedule_id: str,
+        source_schedule_id: str,
+        schedules: dict[str, Any],
+        rule_source: Provenance | None,
+        reason: str,
+    ) -> None:
+        source = schedules[source_schedule_id]
+        inherited_sources = list(source.sources)
+        sources = list(source.sources)
+        if rule_source and rule_source not in sources:
+            sources.append(rule_source)
+        schedules[schedule_id] = source.model_copy(
+            update={
+                "origin": "inherited",
+                "inherited_from": source_schedule_id,
+                "inheritance_reason": reason,
+                "inherited_sources": inherited_sources,
+                "sources": sources,
+            }
+        )
+
+    def _resolve_schedule(
+        schedule_id: str,
+        source_id: str | None,
+        schedule_type: str,
+        schedules: dict[str, Any],
+        inheritance_map: dict[str, str],
+        rule: TransactionFeeRule,
+        extracted: _ExtractedRule | None,
+    ) -> str | None:
+        """Return the actual source schedule id if inheritance is allowed, else None."""
+        if not source_id:
+            return None
+        source_base = source_id.split("__", 1)[0]
+        expected_source = inheritance_map.get(rule.id)
+        if expected_source and source_base != expected_source:
+            return None
+        actual_source = _source_schedule_id(source_base, schedule_id, schedules)
+        if not actual_source:
+            return None
+        reason = _inheritance_evidence(rule, extracted, source_base, actual_source, schedule_type, schedules)
+        if not reason:
+            return None
+        _create_inherited_schedule(schedule_id, actual_source, schedules, rule.source, reason)
+        diagnostics.append(
+            Diagnostic(
+                type="inherited_schedule",
+                rule_id=rule.id,
+                schedule_type=schedule_type,
+                expected_schedule=schedule_id,
+                inherited_from=actual_source,
+                sources=[rule.source] if rule.source else [],
+            )
+        )
+        return actual_source
+
+    # Collect all missing schedule references and create inherited schedules
+    # before updating any rule.  Base schedules are created first (shorter ids)
+    # so variant-specific ids can reuse an inherited base schedule.
+    refs: list[tuple[str, str | None, str, dict[str, Any], dict[str, str], TransactionFeeRule, _ExtractedRule | None]] = []
+    for i, rule in enumerate(rules):
+        extracted = extracted_rules[i] if i < len(extracted_rules) else None
+        for schedule_type, schedules, inheritance_map in _schedule_attrs:
+            schedule_id = getattr(rule, f"{schedule_type}_schedule")
+            source_id = getattr(extracted, f"{schedule_type}_schedule_source", None)
+            if schedule_id and schedule_id not in schedules:
+                refs.append((schedule_id, source_id, schedule_type, schedules, inheritance_map, rule, extracted))
+
+    # Deduplicate by (schedule_type, schedule_id), preferring an entry with a
+    # concrete source id so we can resolve the source schedule.
+    seen: dict[tuple[str, str], tuple[str, str | None, str, dict[str, Any], dict[str, str], TransactionFeeRule, _ExtractedRule | None]] = {}
+    for ref in refs:
+        key = (ref[2], ref[0])
+        existing = seen.get(key)
+        if existing is None or (existing[1] is None and ref[1] is not None):
+            seen[key] = ref
+    unique_refs = sorted(seen.values(), key=lambda r: (len(r[0]), r[0]))
+
+    created: set[tuple[str, str]] = set()
+    schedule_source: dict[tuple[str, str], str | None] = {}
+    for schedule_id, source_id, schedule_type, schedules, inheritance_map, rule, extracted in unique_refs:
+        source = _resolve_schedule(schedule_id, source_id, schedule_type, schedules, inheritance_map, rule, extracted)
+        if source:
+            created.add((schedule_type, schedule_id))
+        schedule_source[(schedule_type, schedule_id)] = source
+
+    # Update every rule to use an inherited schedule when one was created, or
+    # report it as missing.
+    for i, rule in enumerate(rules):
+        extracted = extracted_rules[i] if i < len(extracted_rules) else None
+        updates: dict[str, Any] = {}
+        for schedule_type, schedules, _ in _schedule_attrs:
+            attr = f"{schedule_type}_schedule"
+            schedule_id = getattr(rule, attr)
+            if not schedule_id:
+                continue
+            if schedule_id in schedules:
+                continue
+            if (schedule_type, schedule_id) in created:
+                continue
+            diagnostics.append(
+                Diagnostic(
+                    type="missing_required_schedule",
+                    rule_id=rule.id,
+                    schedule_type=schedule_type,
+                    expected_schedule=schedule_id,
+                    sources=[rule.source] if rule.source else [],
+                )
+            )
+            updates[attr] = None
+        if updates:
+            rules[i] = rule.model_copy(update=updates)
 
 
 def _merge_provenance_sources(*source_lists: list[Provenance]) -> list[Provenance]:
@@ -6490,59 +6720,31 @@ def _validate_top_level_schedule_references(
     maximum_fee_schedules: dict[str, FixedFeeSchedule],
     diagnostics: list[Diagnostic],
 ) -> None:
-    """Validate top-level schedule references and emit inherited/missing diagnostics."""
+    """Validate top-level schedule references and emit any remaining missing diagnostics."""
     for idx, rule in enumerate(unresolved_rules):
-        if rule.fixed_fee_schedule:
-            if rule.fixed_fee_schedule in fixed_schedules:
-                if rule.id in _FIXED_FEE_INHERITANCE and rule.fixed_fee_schedule == _FIXED_FEE_INHERITANCE[rule.id]:
-                    diagnostics.append(
-                        Diagnostic(
-                            type="inherited_schedule",
-                            rule_id=rule.id,
-                            schedule_type="fixed_fee",
-                            expected_schedule=rule.fixed_fee_schedule,
-                            inherited_from=_FIXED_FEE_INHERITANCE[rule.id],
-                            sources=[rule.source] if rule.source else [],
-                        )
-                    )
-            else:
-                diagnostics.append(
-                    Diagnostic(
-                        type="missing_required_schedule",
-                        rule_id=rule.id,
-                        schedule_type="fixed_fee",
-                        expected_schedule=rule.fixed_fee_schedule,
-                        sources=[rule.source] if rule.source else [],
-                    )
+        updates: dict[str, Any] = {}
+        if rule.fixed_fee_schedule and rule.fixed_fee_schedule not in fixed_schedules:
+            diagnostics.append(
+                Diagnostic(
+                    type="missing_required_schedule",
+                    rule_id=rule.id,
+                    schedule_type="fixed_fee",
+                    expected_schedule=rule.fixed_fee_schedule,
+                    sources=[rule.source] if rule.source else [],
                 )
-                rule = rule.model_copy(update={"fixed_fee_schedule": None})
-        if rule.international_surcharge_schedule:
-            if rule.international_surcharge_schedule in international_schedules:
-                if (
-                    rule.id in _INTERNATIONAL_SURCHARGE_INHERITANCE
-                    and rule.international_surcharge_schedule == _INTERNATIONAL_SURCHARGE_INHERITANCE[rule.id]
-                ):
-                    diagnostics.append(
-                        Diagnostic(
-                            type="inherited_schedule",
-                            rule_id=rule.id,
-                            schedule_type="international_surcharge",
-                            expected_schedule=rule.international_surcharge_schedule,
-                            inherited_from=_INTERNATIONAL_SURCHARGE_INHERITANCE[rule.id],
-                            sources=[rule.source] if rule.source else [],
-                        )
-                    )
-            else:
-                diagnostics.append(
-                    Diagnostic(
-                        type="missing_required_schedule",
-                        rule_id=rule.id,
-                        schedule_type="international_surcharge",
-                        expected_schedule=rule.international_surcharge_schedule,
-                        sources=[rule.source] if rule.source else [],
-                    )
+            )
+            updates["fixed_fee_schedule"] = None
+        if rule.international_surcharge_schedule and rule.international_surcharge_schedule not in international_schedules:
+            diagnostics.append(
+                Diagnostic(
+                    type="missing_required_schedule",
+                    rule_id=rule.id,
+                    schedule_type="international_surcharge",
+                    expected_schedule=rule.international_surcharge_schedule,
+                    sources=[rule.source] if rule.source else [],
                 )
-                rule = rule.model_copy(update={"international_surcharge_schedule": None})
+            )
+            updates["international_surcharge_schedule"] = None
         if rule.maximum_fee_schedule and rule.maximum_fee_schedule not in maximum_fee_schedules:
             diagnostics.append(
                 Diagnostic(
@@ -6553,8 +6755,9 @@ def _validate_top_level_schedule_references(
                     sources=[rule.source] if rule.source else [],
                 )
             )
-            rule = rule.model_copy(update={"maximum_fee_schedule": None})
-        unresolved_rules[idx] = rule
+            updates["maximum_fee_schedule"] = None
+        if updates:
+            unresolved_rules[idx] = rule.model_copy(update=updates)
 
 
 def _validate_nested_schedule_references(
@@ -6627,14 +6830,22 @@ def _materialize_fee_components(
     ]
 
 
-def _count_inherited_schedules(rules: list[TransactionFeeRule]) -> int:
-    """Return the number of rules that use inherited schedules."""
+def _count_inherited_schedules(
+    rules: list[TransactionFeeRule],
+    fixed_schedules: dict[str, FixedFeeSchedule],
+    international_schedules: dict[str, InternationalSurchargeSchedule],
+) -> int:
+    """Return the number of rule schedule references that point to inherited schedules."""
     inherited = 0
     for rule in rules:
-        if rule.fixed_fee_schedule and rule.id in _FIXED_FEE_INHERITANCE:
-            inherited += 1
-        if rule.international_surcharge_schedule and rule.id in _INTERNATIONAL_SURCHARGE_INHERITANCE:
-            inherited += 1
+        if rule.fixed_fee_schedule:
+            schedule = fixed_schedules.get(rule.fixed_fee_schedule)
+            if schedule and schedule.origin == "inherited":
+                inherited += 1
+        if rule.international_surcharge_schedule:
+            schedule = international_schedules.get(rule.international_surcharge_schedule)
+            if schedule and schedule.origin == "inherited":
+                inherited += 1
     return inherited
 
 
@@ -6705,7 +6916,7 @@ def _build_coverage_summary(
         ambiguous=len(ambiguous_rows),
         conflicts=counts["conflicts"],
         missing_required_schedules=counts["missing_schedules"],
-        inherited_schedules=_count_inherited_schedules(rules),
+        inherited_schedules=_count_inherited_schedules(rules, fixed_schedules, international_schedules),
         unresolved_references=counts["unresolved_references"],
         unresolved_nested_references=counts["unresolved_nested_references"],
         extracted_apm_methods=extracted_apm,
@@ -6842,11 +7053,18 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
                 )
             )
 
-    # Resolve references, validate schedules, and create rules for schedules
-    # that are not attached to a rate table.
+    # Resolve references, create explicitly inherited schedules, and validate
+    # schedule references for rules that are not attached to a rate table.
     _resolve_rate_references(extracted_rules, unresolved_rules, diagnostics)
     resolved_rules: list[TransactionFeeRule] = [r for r in unresolved_rules if r is not None]
-    _ensure_fallback_schedules(resolved_rules, fixed_schedules, international_schedules, maximum_fee_schedules)
+    _resolve_schedule_inheritance(
+        extracted_rules,
+        resolved_rules,
+        fixed_schedules,
+        international_schedules,
+        maximum_fee_schedules,
+        diagnostics,
+    )
     _validate_top_level_schedule_references(
         resolved_rules, fixed_schedules, international_schedules, maximum_fee_schedules, diagnostics
     )

@@ -121,12 +121,20 @@ class ComponentsExtractor:
     def _traverse(self, data: Any) -> None:
         if not isinstance(data, dict):
             return
-        component_id = data.get("componentId") or data.get("id")
+        component_type = data.get("componentType") or data.get("type")
+        # Table-related components are identified by their long stable CMS id;
+        # componentId is a template identifier that may be reused across distinct
+        # FeeTableSection components (e.g. multiple "fixedfee" sections). Other
+        # components keep their componentId-based deduplication to avoid reordering
+        # the page traversal.
+        if component_type in _TABLE_COMPONENT_TYPES:
+            component_id = data.get("id") or data.get("componentId")
+        else:
+            component_id = data.get("componentId") or data.get("id")
         if isinstance(component_id, str) and component_id:
             if component_id in self._seen_component_ids:
                 return
             self._seen_component_ids.add(component_id)
-        component_type = data.get("componentType") or data.get("type")
 
         heading = self._extract_heading(data)
         is_section_like = component_type in _SECTION_COMPONENT_TYPES or component_type in _TABLE_COMPONENT_TYPES

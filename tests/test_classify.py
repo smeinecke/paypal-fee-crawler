@@ -150,8 +150,8 @@ def test_germany_apm_variants() -> None:
     ]
 
 
-def test_no_cross_product_schedule_inheritance() -> None:
-    """Product-specific rules must not be merged into a generic commercial schedule."""
+def test_schedule_inheritance_from_commercial_when_allowed() -> None:
+    """Product-specific schedules may be explicitly inherited from commercial."""
     commercial = _table(
         "Standardgebühr beim Empfang von Inlandstransaktionen",
         [
@@ -172,16 +172,21 @@ def test_no_cross_product_schedule_inheritance() -> None:
         ],
     )
     result = classify_tables([commercial, fixed_fee, intl_surcharge])
-    assert result.coverage_summary.inherited_schedules == 0
+    assert result.coverage_summary.inherited_schedules == 4
     inherited = [d for d in result.diagnostics if d.type == "inherited_schedule"]
-    assert not inherited
+    assert len(inherited) == 4
+    assert all(d.inherited_from == "commercial" for d in inherited)
     for rule in result.transaction_fee_rules:
         if rule.id == "paypal_checkout":
             assert rule.fixed_fee_schedule == "paypal_checkout"
             assert rule.international_surcharge_schedule == "paypal_checkout"
+            assert result.fixed_fee_schedules["paypal_checkout"].origin == "inherited"
+            assert result.international_surcharge_schedules["paypal_checkout"].origin == "inherited"
         if rule.id == "other_commercial":
             assert rule.fixed_fee_schedule == "other_commercial"
             assert rule.international_surcharge_schedule == "other_commercial"
+            assert result.fixed_fee_schedules["other_commercial"].origin == "inherited"
+            assert result.international_surcharge_schedules["other_commercial"].origin == "inherited"
 
 
 def test_nested_reference_schedule_validated() -> None:

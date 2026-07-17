@@ -95,7 +95,7 @@ This release focuses on production hardening without regressing the existing ext
 - **Transient vs. unsupported separation**: network errors and temporary failures preserve prior output and are reported as failures; only confirmed missing fee pages are recorded as unsupported.
 - **Locale and metadata extraction**: `get_canonical_page_id` walks `pageModel.metadata.pageId`, `pageContext.cmsEngineContext.environment.pageURI`, and `additionalContext.clientSideContext.pageId`; `page__title`, `update_time`, and `locale` are extracted from the nested page model and requestor context.
 
-All 92 unit tests pass with ≥80% coverage, and `ruff`, `pyright`, and `bandit` are clean.
+All 178 unit tests pass with ≥80% coverage, and `ruff`, `pyright`, and `bandit` are clean.
 
 ## License
 

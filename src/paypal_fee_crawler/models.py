@@ -230,13 +230,26 @@ class FixedFeeSchedule(PublicModel):
     """Fixed fees by received currency for a single product schedule.
 
     ``entries`` maps ISO 4217 currency codes to decimal strings.  ``sources``
-    records the provenance of each contributing table fragment.
+    records the provenance of each contributing table fragment.  Schedules that
+    are inherited from another product family carry ``origin`` metadata so that
+    silent schedule copies can be distinguished from directly extracted ones.
     """
 
     model_config = ConfigDict(frozen=True)
 
     entries: dict[str, str] = Field(default_factory=dict)
     sources: list[Provenance] = Field(default_factory=list)
+    origin: str = "direct"
+    inherited_from: str | None = None
+    inheritance_reason: str | None = None
+    inherited_sources: list[Provenance] = Field(default_factory=list)
+
+    @field_validator("origin")
+    @classmethod
+    def _validate_origin(cls, value: str) -> str:
+        if value not in {"direct", "inherited"}:
+            raise ValueError("origin must be 'direct' or 'inherited'")
+        return value
 
 
 class InternationalSurchargeScheduleEntry(PublicModel):
@@ -247,10 +260,25 @@ class InternationalSurchargeScheduleEntry(PublicModel):
 
 
 class InternationalSurchargeSchedule(PublicModel):
-    """International surcharge schedule for a single product or product family."""
+    """International surcharge schedule for a single product or product family.
+
+    Like ``FixedFeeSchedule``, inherited surcharge schedules expose provenance
+    metadata describing the source schedule and the reason for inheritance.
+    """
 
     entries: list[InternationalSurchargeScheduleEntry] = Field(default_factory=list)
     sources: list[Provenance] = Field(default_factory=list)
+    origin: str = "direct"
+    inherited_from: str | None = None
+    inheritance_reason: str | None = None
+    inherited_sources: list[Provenance] = Field(default_factory=list)
+
+    @field_validator("origin")
+    @classmethod
+    def _validate_origin(cls, value: str) -> str:
+        if value not in {"direct", "inherited"}:
+            raise ValueError("origin must be 'direct' or 'inherited'")
+        return value
 
 
 class ResolvedRate(PublicModel):
