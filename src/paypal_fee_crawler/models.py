@@ -512,7 +512,7 @@ class PublicMarket(PublicModel):
 class PublicCountryOutput(PublicModel):
     """Compact public consumer-facing country fee result."""
 
-    schema_version: int = 4
+    schema_version: int = 1
     generated_at: str | None = None
     crawled_at: str | None = None
     source_updated_at: str | None = None
@@ -523,7 +523,7 @@ class PublicCountryOutput(PublicModel):
     @classmethod
     def from_internal(cls, output: CountryOutput) -> PublicCountryOutput:
         return cls(
-            schema_version=4,
+            schema_version=1,
             generated_at=output.generated_at,
             crawled_at=output.generated_at,
             source_updated_at=output.source.page_updated_at,
@@ -612,7 +612,7 @@ class CountryIndexEntry(PublicModel):
 class CountryIndex(PublicModel):
     """Index of successfully processed countries."""
 
-    schema_version: int = 4
+    schema_version: int = 1
     generated_at: str | None = None
     countries: list[CountryIndexEntry] = Field(default_factory=list)
 
@@ -658,7 +658,7 @@ class UnsupportedCountry(PublicModel):
 class CountryManifest(PublicModel):
     """Discovered country manifest."""
 
-    schema_version: int = 4
+    schema_version: int = 1
     generated_at: str | None = None
     markets: list[Market] = Field(default_factory=list)
     unsupported: list[UnsupportedCountry] = Field(default_factory=list)
@@ -757,7 +757,7 @@ class PublicCoreFeeEntry(PublicModel):
 class CoreFees(PublicModel):
     """Consolidated core fees across all countries."""
 
-    schema_version: int = 4
+    schema_version: int = 1
     generated_at: str | None = None
     countries: list[PublicCoreFeeEntry] = Field(default_factory=list)
 
@@ -765,14 +765,14 @@ class CoreFees(PublicModel):
 class SchemaVersionInfo(PublicModel):
     """Schema version metadata."""
 
-    schema_version: int = 4
-    schema_path: str = "schemas/paypal-fees-v4.schema.json"
+    schema_version: int = 1
+    schema_path: str = "schemas/paypal-fees-v1.schema.json"
     schemas: list[str] = Field(
         default_factory=lambda: [
-            "schemas/paypal-fees-v4.schema.json",
-            "schemas/core-fees-v4.schema.json",
-            "schemas/index-v4.schema.json",
-            "schemas/manifest-v4.schema.json",
+            "schemas/paypal-fees-v1.schema.json",
+            "schemas/core-fees-v1.schema.json",
+            "schemas/index-v1.schema.json",
+            "schemas/manifest-v1.schema.json",
         ]
     )
     description: str | None = None

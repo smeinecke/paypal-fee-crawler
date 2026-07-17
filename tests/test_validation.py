@@ -96,7 +96,7 @@ def test_validate_file_bad_schema_type(tmp_path: Path) -> None:
 def test_generate_country_schema_has_id() -> None:
     schema = generate_country_schema()
     assert "$id" in schema
-    assert "paypal-fees-v4.schema.json" in schema["$id"]
+    assert "paypal-fees-v1.schema.json" in schema["$id"]
 
 
 def test_validate_output_tree_valid() -> None:

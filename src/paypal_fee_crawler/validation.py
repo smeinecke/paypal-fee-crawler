@@ -390,7 +390,7 @@ def generate_country_schema() -> dict[str, Any]:
     """Generate the JSON schema for per-country output."""
     schema = PublicCountryOutput.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/paypal-fees-v4.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/paypal-fees-v1.schema.json"
     return schema
 
 
@@ -398,7 +398,7 @@ def generate_core_fees_schema() -> dict[str, Any]:
     """Generate the JSON schema for the consolidated core fees file."""
     schema = CoreFees.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/core-fees-v4.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/core-fees-v1.schema.json"
     return schema
 
 
@@ -406,7 +406,7 @@ def generate_index_schema() -> dict[str, Any]:
     """Generate the JSON schema for the country index file."""
     schema = CountryIndex.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/index-v4.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/index-v1.schema.json"
     return schema
 
 
@@ -414,7 +414,7 @@ def generate_manifest_schema() -> dict[str, Any]:
     """Generate the JSON schema for the country manifest file."""
     schema = CountryManifest.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/manifest-v4.schema.json"
+    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/manifest-v1.schema.json"
     return schema
 
 
@@ -504,10 +504,10 @@ def _validate_required_files(root: Path) -> list[str]:
 
 def _validate_schema_files(root: Path) -> list[str]:
     schema_files = [
-        "paypal-fees-v4.schema.json",
-        "core-fees-v4.schema.json",
-        "index-v4.schema.json",
-        "manifest-v4.schema.json",
+        "paypal-fees-v1.schema.json",
+        "core-fees-v1.schema.json",
+        "index-v1.schema.json",
+        "manifest-v1.schema.json",
     ]
     errors: list[str] = []
     for name in schema_files:

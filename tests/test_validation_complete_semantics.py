@@ -10,7 +10,7 @@ from paypal_fee_crawler.validation import validate_output_tree, validate_public_
 
 def _country(derived: dict[str, Any]) -> dict[str, Any]:
     return {
-        "schema_version": 4,
+        "schema_version": 1,
         "generated_at": None,
         "market": {
             "paypal_market_code": "DE",
@@ -91,7 +91,7 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     _write_json(
         root / "json" / "index.json",
         {
-            "schema_version": 4,
+            "schema_version": 1,
             "generated_at": None,
             "countries": [
                 {
@@ -121,7 +121,7 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     _write_json(
         root / "json" / "core-fees.json",
         {
-            "schema_version": 4,
+            "schema_version": 1,
             "generated_at": None,
             "countries": [
                 {
@@ -136,7 +136,7 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     _write_json(
         root / "meta" / "countries.json",
         {
-            "schema_version": 4,
+            "schema_version": 1,
             "generated_at": None,
             "markets": [
                 {
@@ -155,13 +155,13 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
     _write_json(
         root / "meta" / "schema-version.json",
         {
-            "schema_version": 4,
-            "schema_path": "schemas/paypal-fees-v4.schema.json",
+            "schema_version": 1,
+            "schema_path": "schemas/paypal-fees-v1.schema.json",
             "schemas": [
-                "schemas/paypal-fees-v4.schema.json",
-                "schemas/core-fees-v4.schema.json",
-                "schemas/index-v4.schema.json",
-                "schemas/manifest-v4.schema.json",
+                "schemas/paypal-fees-v1.schema.json",
+                "schemas/core-fees-v1.schema.json",
+                "schemas/index-v1.schema.json",
+                "schemas/manifest-v1.schema.json",
             ],
         },
     )
@@ -170,10 +170,10 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
         {"schema_version": 1, "generated_at": None, "markets": {}},
     )
     for schema_name in [
-        "paypal-fees-v4.schema.json",
-        "core-fees-v4.schema.json",
-        "index-v4.schema.json",
-        "manifest-v4.schema.json",
+        "paypal-fees-v1.schema.json",
+        "core-fees-v1.schema.json",
+        "index-v1.schema.json",
+        "manifest-v1.schema.json",
     ]:
         _write_json(root / "schemas" / schema_name, {"type": "object"})
 

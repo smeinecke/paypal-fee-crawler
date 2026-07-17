@@ -393,19 +393,19 @@ class OutputPublisher:
         _write_json(meta_dir / "countries.json", manifest_data)
         _write_json(
             meta_dir / "unsupported-countries.json",
-            {"schema_version": 2, "unsupported": [u.model_dump(mode="json", exclude_none=True) for u in unsupported]},
+            {"schema_version": 1, "unsupported": [u.model_dump(mode="json", exclude_none=True) for u in unsupported]},
         )
         _write_json(
             meta_dir / "schema-version.json",
             SchemaVersionInfo(
-                description="Public schema for PayPal fee data v4",
+                description="Public schema for PayPal fee data v1",
             ).model_dump(mode="json", exclude_none=True),
         )
 
-        _write_json(schemas_dir / "paypal-fees-v4.schema.json", generate_country_schema())
-        _write_json(schemas_dir / "core-fees-v4.schema.json", generate_core_fees_schema())
-        _write_json(schemas_dir / "index-v4.schema.json", generate_index_schema())
-        _write_json(schemas_dir / "manifest-v4.schema.json", generate_manifest_schema())
+        _write_json(schemas_dir / "paypal-fees-v1.schema.json", generate_country_schema())
+        _write_json(schemas_dir / "core-fees-v1.schema.json", generate_core_fees_schema())
+        _write_json(schemas_dir / "index-v1.schema.json", generate_index_schema())
+        _write_json(schemas_dir / "manifest-v1.schema.json", generate_manifest_schema())
 
         _write_json(
             meta_dir / "crawl-cache.json",
