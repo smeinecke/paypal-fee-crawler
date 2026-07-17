@@ -1231,10 +1231,13 @@ def _parse_canonical_amount(amount_str: str) -> str | None:
     amount_str = amount_str.replace("\u00a0", "").replace("\u202f", "").replace(" ", "")
     if not amount_str:
         return None
+    # Reject non-numeric strings before trying to interpret separators.
+    if not re.fullmatch(r"[+-]?(?:\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)", amount_str):
+        return None
     has_dot = "." in amount_str
     has_comma = "," in amount_str
     if not has_dot and not has_comma:
-        return amount_str
+        return normalize_decimal_string(amount_str)
     if has_dot and has_comma:
         last_dot = amount_str.rfind(".")
         last_comma = amount_str.rfind(",")
@@ -5608,9 +5611,7 @@ def _handle_unusable_rate_row(
 ) -> None:
     """Store a row without a usable percentage/reference in the right bucket."""
     if _has_likely_numeric_fee_candidate(row, table):
-        unclassified.append(
-            _ignored_rate_row(row, row_index, label, table, source, "unsupported_fee_shape")
-        )
+        unclassified.append(_ignored_rate_row(row, row_index, label, table, source, "unsupported_fee_shape"))
     else:
         ignored.append(_ignored_rate_row(row, row_index, label, table, source, "no rate or reference"))
 
@@ -5635,17 +5636,11 @@ def _extract_rules_from_rate_table(
 
     for idx, row in enumerate(table.rows):
         label = _row_label(row)
-        if _has_likely_numeric_fee_candidate(row, table) and not _is_limit_or_cap_row(label, _row_fee_cell(row)):
+        fee_text = _row_fee_cell(row)
+        if _has_likely_numeric_fee_candidate(row, table) and not _is_limit_or_cap_row(label, fee_text):
             numeric_fee_candidates += 1
         if not label:
-            ignored.append(
-                UnclassifiedFeeRow(
-                    normalized_cells=_row_cells_text(row),
-                    original_label=label,
-                    source=_provenance(table, row, idx, source, original_label=label),
-                    reason="empty label",
-                )
-            )
+            ignored.append(_ignored_rate_row(row, idx, label, table, source, "empty label"))
             continue
 
         product_id, reference = _resolve_product_id(
@@ -5663,156 +5658,59 @@ def _extract_rules_from_rate_table(
         if product_id is None:
             continue
 
-        fee_text = _row_fee_cell(row)
         if _is_limit_or_cap_row(label, fee_text):
-            ignored.append(
-                UnclassifiedFeeRow(
-                    normalized_cells=_row_cells_text(row),
-                    original_label=label,
-                    source=_provenance(table, row, idx, source, original_label=label),
-                    reason="limit or cap",
-                )
-            )
+            ignored.append(_ignored_rate_row(row, idx, label, table, source, "limit or cap"))
             continue
 
-        pct, _fixed = _parse_rate_expression(fee_text)
+        pct, fixed_expr = _parse_rate_expression(fee_text)
         methods, unknown_methods = _extract_apm_methods(label)
-        variant_id = _variant_id_for_row(product_id, label, methods, table, fee_text=fee_text)
-        if variant_id is None:
-            variant_id = "standard"
+        variant_id = _variant_id_for_row(product_id, label, methods, table, fee_text=fee_text) or "standard"
 
-        # Variant-specific APM rows (e.g. "Third-party Digital Wallet Transfer")
-        # are not method lists, so unknown tokens from their labels are noise.
-        if product_id == "alternative_payment_methods" and variant_id in {
-            "payment_links",
-            "cash_a_check",
-            "wire_transfer",
-            "spendback_transfer",
-            "debit_card_transfer",
-            "bank_transfer",
-            "third_party_wallet",
-            "fx_service",
-        }:
+        if product_id == "alternative_payment_methods" and variant_id in _APM_VARIANT_ONLY_VARIANTS:
             unknown_methods = []
 
-        conditions = _conditions_for_row(product_id, variant_id, label, methods=methods, table=table)
-
-        # Direct fixed-fee rows have no percentage and no reference but carry a
-        # monetary amount. A single cell may encode multiple variant-specific
-        # amounts (e.g. SEPA standard vs instant settlement).
         if pct is None and reference is None and product_id in _DIRECT_FIXED_FEE_PRODUCTS:
             direct_amounts = _extract_direct_fixed_amounts(row, product_id, table, source)
             if direct_amounts:
-                for amount, currency, amount_variant_id in direct_amounts:
-                    if amount_variant_id == "standard" and variant_id not in (None, "standard"):
-                        amount_variant_id = variant_id
-                    amount_conditions = _conditions_for_row(
-                        product_id, amount_variant_id, label, methods=methods, table=table
+                rules.extend(
+                    _build_direct_fixed_rules(
+                        row,
+                        idx,
+                        product_id,
+                        variant_id,
+                        label,
+                        methods,
+                        table,
+                        source,
+                        direct_amounts,
                     )
-                    rules.append(
-                        _ExtractedRule(
-                            product_id=product_id,
-                            variant_id=amount_variant_id,
-                            label=label,
-                            percentage=None,
-                            fixed_fee_schedule=None,
-                            international_surcharge_schedule=None,
-                            maximum_fee_schedule=None,
-                            conditions=amount_conditions,
-                            table=table,
-                            row=row,
-                            row_index=idx,
-                            reference=None,
-                            unknown_apm_methods=[],
-                            fee_components=[FeeComponent(type="fixed_amount", amount=amount, currency=currency)],
-                        )
-                    )
+                )
                 continue
 
-        # Withdrawal/payout rows are percentage-based with a max fee cap; the
-        # "+" in a withdrawal cell is not a fixed fee schedule.
-        fixed_schedule: str | None = None
-        if _fixed and product_id != "withdrawals":
-            fixed_base = _fixed_fee_schedule_for(product_id, variant_id)
-            if fixed_base:
-                sig = _signature_from_conditions(conditions, fixed_base, product_id)
-                fixed_schedule = _select_schedule_id(
-                    fixed_base,
-                    sig,
-                    fixed_schedules,
-                    _FIXED_FEE_SCHEDULE_FALLBACK.get(product_id, ()),
-                )[0]
+        conditions = _conditions_for_row(product_id, variant_id, label, methods=methods, table=table)
 
-        intl_schedule: str | None = None
-        intl_base = _international_surcharge_schedule_for(product_id, variant_id)
-        if intl_base:
-            sig = _signature_from_conditions(conditions, intl_base, product_id)
-            intl_schedule = _select_schedule_id(
-                intl_base,
-                sig,
-                international_schedules,
-                _INTERNATIONAL_SURCHARGE_SCHEDULE_FALLBACK.get(product_id, ()),
-            )[0]
-
-        # Withdrawal/payout rows that are percentage-based with a max fee cap
-        # carry a maximum-fee schedule.
-        maximum_fee_schedule: str | None = None
-        if product_id == "withdrawals" and table_category == "withdrawals_rate_table" and pct is not None:
-            max_base = _maximum_fee_schedule_for_conditions(conditions)
-            if max_base:
-                sig = _signature_from_conditions(conditions, max_base, product_id)
-                maximum_fee_schedule = _select_schedule_id(
-                    max_base,
-                    sig,
-                    maximum_fee_schedules,
-                    _MAXIMUM_FEE_SCHEDULE_FALLBACK.get(max_base, ()),
-                )[0]
-
-        # Listed-campaign donation campaigns are free, so they should not carry
-        # a percentage or fixed fee schedule.
-        if variant_id == "campaign_unlisted":
-            pct = "0"
-            fixed_schedule = None
-            intl_schedule = None
-
-        # A row with no percentage and no reference is not a usable transaction
-        # fee rule (e.g. a footnote in an Other Fees table).
         if pct is None and reference is None:
-            if _has_likely_numeric_fee_candidate(row, table):
-                unclassified.append(
-                    UnclassifiedFeeRow(
-                        normalized_cells=_row_cells_text(row),
-                        original_label=label,
-                        source=_provenance(table, row, idx, source, original_label=label),
-                        reason="unsupported_fee_shape",
-                    )
-                )
-            else:
-                ignored.append(
-                    UnclassifiedFeeRow(
-                        normalized_cells=_row_cells_text(row),
-                        original_label=label,
-                        source=_provenance(table, row, idx, source, original_label=label),
-                        reason="no rate or reference",
-                    )
-                )
+            _handle_unusable_rate_row(row, idx, label, product_id, table, source, unclassified, ignored)
             continue
 
         rules.append(
-            _ExtractedRule(
-                product_id=product_id,
-                variant_id=variant_id,
-                label=label,
-                percentage=pct,
-                fixed_fee_schedule=fixed_schedule,
-                international_surcharge_schedule=intl_schedule,
-                maximum_fee_schedule=maximum_fee_schedule,
-                conditions=conditions,
-                table=table,
-                row=row,
-                row_index=idx,
-                reference=reference,
-                unknown_apm_methods=unknown_methods,
+            _build_standard_rate_rule(
+                row,
+                idx,
+                product_id,
+                variant_id,
+                label,
+                pct,
+                reference,
+                methods,
+                unknown_methods,
+                conditions,
+                table,
+                table_category,
+                fixed_expr,
+                fixed_schedules,
+                international_schedules,
+                maximum_fee_schedules,
             )
         )
     unclassified_fee_candidates = sum(

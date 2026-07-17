@@ -442,19 +442,10 @@ class OutputPublisher:
                     },
                 )
 
-        # Write the change report when there are new changes, or when the live
-        # report still contains stale changes/regressions that need to be
-        # replaced with the current (possibly empty) report.
+        # Write the change report when there are new changes, or when a previous
+        # report exists so it is replaced with the current (possibly empty) result.
         if change_report is not None:
-            write_change_report = bool(change_report.changes)
-            if not write_change_report and (self.output_dir / "change-report.json").exists():
-                try:
-                    old_report = ChangeReport.model_validate_json(
-                        (self.output_dir / "change-report.json").read_text(encoding="utf-8")
-                    )
-                    write_change_report = bool(old_report.changes or old_report.has_regression)
-                except Exception:
-                    write_change_report = True
+            write_change_report = bool(change_report.changes) or (self.output_dir / "change-report.json").exists()
             if write_change_report:
                 change_report = change_report.model_copy(update={"generated_at": run_generated_at})
                 _write_json(staging / "change-report.json", change_report.model_dump(mode="json"))

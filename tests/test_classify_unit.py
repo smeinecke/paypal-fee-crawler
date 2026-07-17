@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from paypal_fee_crawler.classify import (
+    _build_direct_fixed_rules,
     _cell_looks_like_fee_cell,
     _classify_product_or_apm,
     _condition_score,
@@ -11,9 +14,11 @@ from paypal_fee_crawler.classify import (
     _detect_reference,
     _extract_amount_condition,
     _extract_direct_fixed_amounts,
+    _handle_unusable_rate_row,
     _has_likely_numeric_fee_candidate,
     _is_apm_special_label,
     _market_code_from_url,
+    _parse_canonical_amount,
     _pricing_plan_for_label,
     _resolve_reference,
     _variant_for_withdrawals,
@@ -292,3 +297,131 @@ def test_numeric_fee_candidate_ignored_for_non_fee_header() -> None:
     table = _table("Market Codes", ["Market", "Code"], [["Germany", "DE"]])
     row = _row(["Germany", "DE"])
     assert _has_likely_numeric_fee_candidate(row, table) is False
+
+
+def test_parse_canonical_amount_understands_separators() -> None:
+    assert _parse_canonical_amount("50,000.00") == "50000"
+    assert _parse_canonical_amount("50.000,00") == "50000"
+    assert _parse_canonical_amount("1,000") == "1000"
+    assert _parse_canonical_amount("0,35") == "0.35"
+    assert _parse_canonical_amount("10,00") == "10"
+    assert _parse_canonical_amount("1000000") == "1000000"
+    assert _parse_canonical_amount("no number") is None
+
+
+def test_extract_direct_fixed_amounts_parses_idr_bank_return() -> None:
+    """A thousands-separated IDR bank-return amount is parsed as one fixed fee."""
+    table = _table(
+        "Bank Return on Withdrawal/Transfer out of PayPal",
+        ["Market/Region", "Rate"],
+        [["ID", "50,000.00 IDR"]],
+    )
+    amounts = _extract_direct_fixed_amounts(table.rows[0], "withdrawals", table, None)
+    assert amounts == [("50000", "IDR", "bank_return")]
+
+
+def test_extract_direct_fixed_amounts_records_request_multi_currency() -> None:
+    """Records Request carrying GBP and EUR yields two standard variant amounts."""
+    table = _table(
+        "Other Fees",
+        ["Activity", "Rate"],
+        [["Records Request", "10,00 GBP or 12,00 EUR (per item)"]],
+    )
+    amounts = _extract_direct_fixed_amounts(table.rows[0], "records_request", table, None)
+    assert amounts == [("10", "GBP", "standard"), ("12", "EUR", "standard")]
+
+
+def test_extract_direct_fixed_amounts_sepa_italian_variants() -> None:
+    """An Italian SEPA cell with standard and instant settlement yields two variant amounts."""
+    table = _table(
+        "Ricezione",
+        ["Tipo di pagamento", "Tariffa"],
+        [
+            [
+                "Addebito diretto SEPA",
+                "0,35 EUR/transazione (liquidazione standard)0,40 EUR/transazione (liquidazione istantanea)",
+            ]
+        ],
+    )
+    amounts = _extract_direct_fixed_amounts(table.rows[0], "sepa_direct_debit", table, None)
+    assert amounts == [
+        ("0.35", "EUR", "standard_settlement"),
+        ("0.4", "EUR", "instant_settlement"),
+    ]
+
+
+def test_build_direct_fixed_rules_adds_fee_currency_when_multi_currency_same_variant() -> None:
+    """Multiple currencies for the same variant receive a fee_currency condition."""
+    table = _table(
+        "Other Fees",
+        ["Activity", "Rate"],
+        [["Records Request", "10,00 GBP or 12,00 EUR"]],
+    )
+    row = table.rows[0]
+    direct_amounts = [("10", "GBP", "standard"), ("12", "EUR", "standard")]
+    rules = _build_direct_fixed_rules(
+        row=row,
+        row_index=0,
+        product_id="records_request",
+        fallback_variant_id="standard",
+        label="Records Request",
+        methods=[],
+        table=table,
+        source=None,
+        direct_amounts=direct_amounts,
+    )
+    assert len(rules) == 2
+    gbp_rule = [r for r in rules if r.fee_components[0].currency == "GBP"][0]
+    eur_rule = [r for r in rules if r.fee_components[0].currency == "EUR"][0]
+    assert gbp_rule.conditions["fee_currency"] == "GBP"
+    assert eur_rule.conditions["fee_currency"] == "EUR"
+
+
+def test_build_direct_fixed_rules_no_incomplete_placeholder_for_sepa_variants() -> None:
+    """SEPA standard/instant split produces two complete, distinct rules."""
+    table = _table(
+        "SEPA",
+        ["Product", "Rate"],
+        [["SEPA Direct Debit", "0.35 EUR (standard)0.40 EUR (instant)"]],
+    )
+    row = table.rows[0]
+    direct_amounts = [("0.35", "EUR", "standard_settlement"), ("0.4", "EUR", "instant_settlement")]
+    rules = _build_direct_fixed_rules(
+        row=row,
+        row_index=0,
+        product_id="sepa_direct_debit",
+        fallback_variant_id="standard",
+        label="SEPA Direct Debit",
+        methods=[],
+        table=table,
+        source=None,
+        direct_amounts=direct_amounts,
+    )
+    assert len(rules) == 2
+    assert all(r.fee_components[0].amount in {"0.35", "0.4"} for r in rules)
+    assert {r.variant_id for r in rules} == {"standard_settlement", "instant_settlement"}
+
+
+def test_handle_unusable_rate_row_buckets_numeric_candidates() -> None:
+    """Rows with a numeric candidate and no usable rate become unclassified."""
+    table = _table("Other Fees", ["Product", "Fee"], [["Bank Return", "250.00 PHP"]])
+    row = table.rows[0]
+    unclassified: list[Any] = []
+    ignored: list[Any] = []
+    _handle_unusable_rate_row(row, 0, "Bank Return", "withdrawals", table, None, unclassified, ignored)
+    assert len(unclassified) == 1
+    assert unclassified[0].reason == "unsupported_fee_shape"
+
+
+def test_variant_for_withdrawals_finds_bank_return_from_table_context() -> None:
+    """A bare row label in a bank-return table still resolves the bank_return variant."""
+    variant = _variant_for_withdrawals(
+        "ID",
+        "id",
+        "bank return on withdrawal transfer out of paypal",
+        "id bank return on withdrawal transfer out of paypal",
+        [],
+        False,
+        False,
+    )
+    assert variant == "bank_return"

@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from .classify import _fee_components_for_rule
 from .exceptions import ValidationError as CrawlerValidationError
 from .models import (
     CoreFees,
@@ -161,12 +162,54 @@ def _validate_transaction_rules(derived: Any, label: str) -> list[str]:
 
 
 def _strict_publication_errors(derived: Any, label: str) -> list[str]:
-    """Return errors that block publication of a derived-fee result.
+    """Return blocking semantic defects that make a derived-fee result unsafe to publish.
 
-    In strict mode a publication-ready country must be complete, have no
-    classifier diagnostics, no unclassified or ambiguous rows, and no remaining
-    unknown APM methods or schedule conflicts.
+    Strict validation catches conflicting identities, dangling references,
+    invalid calculable rules, unsupported fee shapes and schedule conflicts.
+    Partial or unclassified markets are intentionally allowed because they are
+    still useful data; use ``_require_all_complete_errors`` to reject them.
     """
+    errors: list[str] = []
+    status = getattr(derived, "status", None)
+    diagnostics = getattr(derived, "diagnostics", None) or []
+    diagnostic_types = {d.type for d in diagnostics}
+    for diagnostic_type in sorted(diagnostic_types):
+        if diagnostic_type in {
+            "conflicting_rule_identity",
+            "ambiguous_identity",
+            "unresolved_reference",
+            "unsupported_fee_shape",
+        }:
+            errors.append(f"{label} has {diagnostic_type} diagnostic(s)")
+
+    coverage = getattr(derived, "coverage_summary", None)
+    if coverage:
+        if coverage.conflicts:
+            errors.append(f"{label} has {coverage.conflicts} schedule conflict(s)")
+        if coverage.missing_required_schedules:
+            errors.append(f"{label} has {coverage.missing_required_schedules} missing required schedule(s)")
+        if coverage.unresolved_references or coverage.unresolved_nested_references:
+            errors.append(f"{label} has unresolved reference(s)")
+        if coverage.ambiguous_identities:
+            errors.append(f"{label} has {coverage.ambiguous_identities} ambiguous identity conflict(s)")
+        if coverage.unsupported_fee_shapes:
+            errors.append(f"{label} has {coverage.unsupported_fee_shapes} unsupported fee shape(s)")
+        # A market marked complete must not leave fee candidates unresolved.
+        if status == "complete" and coverage.unclassified_fee_candidates:
+            errors.append(
+                f"{label} is complete but has {coverage.unclassified_fee_candidates} unresolved fee candidate(s)"
+            )
+
+    # Any rule that is calculable must actually carry usable fee components.
+    for rule in getattr(derived, "transaction_fee_rules", []) or []:
+        if rule.calculation_status == "calculable" and not _fee_components_for_rule(rule):
+            errors.append(f"{label} rule {rule.id} is calculable but has no fee components")
+
+    return errors
+
+
+def _require_all_complete_errors(derived: Any, label: str) -> list[str]:
+    """Return errors when a country is not fully complete and clean."""
     errors: list[str] = []
     status = getattr(derived, "status", None)
     if status != "complete":
@@ -185,18 +228,8 @@ def _strict_publication_errors(derived: Any, label: str) -> list[str]:
     if coverage:
         if coverage.unknown_apm_methods:
             errors.append(f"{label} has {coverage.unknown_apm_methods} unknown APM method(s)")
-        if coverage.conflicts:
-            errors.append(f"{label} has {coverage.conflicts} schedule conflict(s)")
-        if coverage.missing_required_schedules:
-            errors.append(f"{label} has {coverage.missing_required_schedules} missing required schedule(s)")
-        if coverage.inherited_schedules:
-            errors.append(f"{label} has {coverage.inherited_schedules} inherited schedule(s)")
-        if coverage.unresolved_references or coverage.unresolved_nested_references:
-            errors.append(f"{label} has unresolved reference(s)")
-        if coverage.ambiguous_identities:
-            errors.append(f"{label} has {coverage.ambiguous_identities} ambiguous identity conflict(s)")
-        if coverage.unsupported_fee_shapes:
-            errors.append(f"{label} has {coverage.unsupported_fee_shapes} unsupported fee shape(s)")
+        if coverage.unclassified_fee_candidates:
+            errors.append(f"{label} has {coverage.unclassified_fee_candidates} unclassified fee candidate(s)")
     return errors
 
 
@@ -237,7 +270,12 @@ def _complete_derived_errors(derived: Any, label: str) -> list[str]:
     return errors
 
 
-def validate_country_output(data: dict[str, Any], schema_only: bool = False, strict: bool = False) -> list[str]:
+def validate_country_output(
+    data: dict[str, Any],
+    schema_only: bool = False,
+    strict: bool = False,
+    require_all_complete: bool = False,
+) -> list[str]:
     """Validate an internal per-country JSON object (allows classifier fields)."""
     errors: list[str] = []
     try:
@@ -251,12 +289,19 @@ def validate_country_output(data: dict[str, Any], schema_only: bool = False, str
     errors.extend(_complete_derived_errors(output.derived, f"Country {output.market.paypal_market_code}"))
     if strict:
         errors.extend(_strict_publication_errors(output.derived, f"Country {output.market.paypal_market_code}"))
+    if require_all_complete:
+        errors.extend(_require_all_complete_errors(output.derived, f"Country {output.market.paypal_market_code}"))
     if not schema_only:
         _validate_table_plausibility(output, errors)
     return errors
 
 
-def validate_public_country_output(data: dict[str, Any], schema_only: bool = False, strict: bool = False) -> list[str]:
+def validate_public_country_output(
+    data: dict[str, Any],
+    schema_only: bool = False,
+    strict: bool = False,
+    require_all_complete: bool = False,
+) -> list[str]:
     """Validate a public per-country JSON object (rejects internal fields)."""
     errors: list[str] = []
     try:
@@ -271,6 +316,8 @@ def validate_public_country_output(data: dict[str, Any], schema_only: bool = Fal
         errors.extend(_complete_derived_errors(output.derived, f"Country {output.market.paypal_market_code}"))
         if strict:
             errors.extend(_strict_publication_errors(output.derived, f"Country {output.market.paypal_market_code}"))
+        if require_all_complete:
+            errors.extend(_require_all_complete_errors(output.derived, f"Country {output.market.paypal_market_code}"))
     return errors
 
 
@@ -284,7 +331,7 @@ def validate_country_index(data: dict[str, Any]) -> list[str]:
     return errors
 
 
-def validate_core_fees(data: dict[str, Any], strict: bool = False) -> list[str]:
+def validate_core_fees(data: dict[str, Any], strict: bool = False, require_all_complete: bool = False) -> list[str]:
     errors: list[str] = []
     try:
         core = CoreFees.model_validate(data)
@@ -296,6 +343,8 @@ def validate_core_fees(data: dict[str, Any], strict: bool = False) -> list[str]:
         errors.extend(_complete_derived_errors(entry.derived, f"Core-fee entry {entry.paypal_market_code}"))
         if strict:
             errors.extend(_strict_publication_errors(entry.derived, f"Core-fee entry {entry.paypal_market_code}"))
+        if require_all_complete:
+            errors.extend(_require_all_complete_errors(entry.derived, f"Core-fee entry {entry.paypal_market_code}"))
     return errors
 
 
@@ -309,7 +358,13 @@ def validate_country_manifest(data: dict[str, Any]) -> list[str]:
     return errors
 
 
-def validate_file(path: Path | str, schema_type: str, schema_only: bool = False, strict: bool = False) -> list[str]:
+def validate_file(
+    path: Path | str,
+    schema_type: str,
+    schema_only: bool = False,
+    strict: bool = False,
+    require_all_complete: bool = False,
+) -> list[str]:
     """Validate a JSON file on disk.
 
     ``schema_type`` is one of ``country``, ``index``, ``core_fees``, ``manifest``.
@@ -318,11 +373,13 @@ def validate_file(path: Path | str, schema_type: str, schema_only: bool = False,
         data = json.load(f)
 
     if schema_type == "country":
-        return validate_public_country_output(data, schema_only=schema_only, strict=strict)
+        return validate_public_country_output(
+            data, schema_only=schema_only, strict=strict, require_all_complete=require_all_complete
+        )
     if schema_type == "index":
         return validate_country_index(data)
     if schema_type == "core_fees":
-        return validate_core_fees(data, strict=strict)
+        return validate_core_fees(data, strict=strict, require_all_complete=require_all_complete)
     if schema_type == "manifest":
         return validate_country_manifest(data)
     raise CrawlerValidationError(f"Unknown schema type: {schema_type}")
@@ -360,7 +417,12 @@ def generate_manifest_schema() -> dict[str, Any]:
     return schema
 
 
-def validate_all_output(output_dir: Path | str, schema_only: bool = False, strict: bool = False) -> list[str]:
+def validate_all_output(
+    output_dir: Path | str,
+    schema_only: bool = False,
+    strict: bool = False,
+    require_all_complete: bool = False,
+) -> list[str]:
     """Validate every generated JSON file in the output directory."""
     output_dir = Path(output_dir)
     errors: list[str] = []
@@ -368,7 +430,9 @@ def validate_all_output(output_dir: Path | str, schema_only: bool = False, stric
     for path in output_dir.glob("json/*.json"):
         if path.name in {"index.json", "core-fees.json"}:
             continue
-        file_errors = validate_file(path, "country", schema_only=schema_only, strict=strict)
+        file_errors = validate_file(
+            path, "country", schema_only=schema_only, strict=strict, require_all_complete=require_all_complete
+        )
         if file_errors:
             errors.append(f"{path}: " + "; ".join(file_errors))
 
@@ -380,7 +444,7 @@ def validate_all_output(output_dir: Path | str, schema_only: bool = False, stric
 
     core_path = output_dir / "json" / "core-fees.json"
     if core_path.exists():
-        file_errors = validate_file(core_path, "core_fees", strict=strict)
+        file_errors = validate_file(core_path, "core_fees", strict=strict, require_all_complete=require_all_complete)
         if file_errors:
             errors.append(f"{core_path}: " + "; ".join(file_errors))
 
@@ -589,7 +653,11 @@ def _validate_supported_coverage(
             errors.append(f"Country file {cc} is not listed in the supported index")
 
 
-def validate_output_tree(root: Path | str, strict: bool = False) -> list[str]:
+def validate_output_tree(
+    root: Path | str,
+    strict: bool = False,
+    require_all_complete: bool = False,
+) -> list[str]:
     """Validate schemas and cross-file relationships in the generated tree.
 
     ``root`` may be either a staging directory containing only generated files or
@@ -597,8 +665,10 @@ def validate_output_tree(root: Path | str, strict: bool = False) -> list[str]:
     unrelated non-managed files such as ``.git`` and ``README.md`` when they are
     already present in the repository root.
 
-    When ``strict`` is True, publication-level checks are applied: every country
-    must be complete and have no classifier diagnostics.
+    When ``strict`` is True, blocking semantic checks are applied (conflicting
+    identities, dangling references, invalid calculable rules, unsupported fee
+    shapes). When ``require_all_complete`` is True, every country must be
+    complete and have no classifier diagnostics or unresolved candidates.
     """
     root = Path(root)
     errors: list[str] = []
@@ -623,10 +693,26 @@ def validate_output_tree(root: Path | str, strict: bool = False) -> list[str]:
     _validate_core_fees(core, supported, errors)
     _validate_supported_coverage(country_files, supported, errors)
 
-    if strict:
+    if strict or require_all_complete:
         for cc, (_path, output, _raw) in country_files.items():
-            errors.extend(_strict_publication_errors(output.derived, f"Country {cc}"))
+            if strict:
+                errors.extend(_strict_publication_errors(output.derived, f"Country {cc}"))
+            if require_all_complete:
+                errors.extend(_require_all_complete_errors(output.derived, f"Country {cc}"))
         for entry in core.countries:
-            errors.extend(_strict_publication_errors(entry.derived, f"Core-fee entry {entry.paypal_market_code}"))
+            if strict:
+                errors.extend(_strict_publication_errors(entry.derived, f"Core-fee entry {entry.paypal_market_code}"))
+            if require_all_complete:
+                errors.extend(_require_all_complete_errors(entry.derived, f"Core-fee entry {entry.paypal_market_code}"))
+
+    # A change report with regressions signals an output tree that should not be
+    # considered publication-ready.
+    if strict:
+        report_path = root / "change-report.json"
+        if report_path.exists():
+            with open(report_path, encoding="utf-8") as f:
+                report = json.load(f)
+            if report.get("has_regression"):
+                errors.append(f"Regression report at {report_path} flags has_regression=true")
 
     return errors

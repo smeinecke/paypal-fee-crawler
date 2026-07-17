@@ -291,12 +291,17 @@ def crawl_country(
 @main.command()
 @click.argument("output_dir", type=click.Path(exists=True))
 @click.option("--verbose", is_flag=True, help="Enable verbose logging.")
-@click.option("--strict", is_flag=True, help="Enable strict publication validation.")
-def validate(output_dir: str, verbose: bool, strict: bool) -> None:
+@click.option("--strict", is_flag=True, help="Enable strict semantic validation.")
+@click.option(
+    "--require-all-complete",
+    is_flag=True,
+    help="Require every country to be complete with no unresolved candidates.",
+)
+def validate(output_dir: str, verbose: bool, strict: bool, require_all_complete: bool) -> None:
     """Validate all generated JSON files in the output directory."""
     _configure_logging(verbose)
-    errors = validate_all_output(output_dir, strict=strict)
-    errors.extend(validate_output_tree(output_dir, strict=strict))
+    errors = validate_all_output(output_dir, strict=strict, require_all_complete=require_all_complete)
+    errors.extend(validate_output_tree(output_dir, strict=strict, require_all_complete=require_all_complete))
     errors = sorted(set(errors))
     if errors:
         for error in errors:
