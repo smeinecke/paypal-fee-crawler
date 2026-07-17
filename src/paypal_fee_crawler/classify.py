@@ -1144,6 +1144,18 @@ _DIRECT_FIXED_FEE_PRODUCTS: frozenset[str] = frozenset(
     }
 )
 
+# Rate tables whose rows should be scoped to the table's product category.
+_CATEGORY_SPECIFIC_TABLES: frozenset[str] = frozenset(
+    {
+        "nonprofit_rate_table",
+        "donation_rate_table",
+        "micropayment_rate_table",
+        "pos_rate_table",
+        "goods_and_services_rate_table",
+        "withdrawals_rate_table",
+    }
+)
+
 
 # Best-guess default currency for a PayPal market code. Used only when the
 # table cells or headers do not carry an explicit ISO 4217 code.
@@ -1214,6 +1226,44 @@ def _infer_currency_for_row(row: Row, table: Table, source: Source | None) -> st
     return None
 
 
+def _parse_canonical_amount(amount_str: str) -> str | None:
+    """Return a canonical decimal string for an amount that may use thousands or decimal separators."""
+    amount_str = amount_str.replace("\u00a0", "").replace("\u202f", "").replace(" ", "")
+    if not amount_str:
+        return None
+    has_dot = "." in amount_str
+    has_comma = "," in amount_str
+    if not has_dot and not has_comma:
+        return amount_str
+    if has_dot and has_comma:
+        last_dot = amount_str.rfind(".")
+        last_comma = amount_str.rfind(",")
+        if last_dot > last_comma:
+            decimal_str = amount_str.replace(",", "")
+        else:
+            decimal_str = amount_str.replace(".", "").replace(",", ".")
+        return normalize_decimal_string(decimal_str)
+    sep = "." if has_dot else ","
+    parts = amount_str.split(sep)
+    if len(parts) == 2:
+        int_part, frac_part = parts
+        if len(frac_part) in (1, 2):
+            decimal = True
+        elif len(frac_part) == 3:
+            decimal = not (int_part.isdigit() and len(int_part) <= 3)
+        else:
+            decimal = True
+        if decimal:
+            if sep == ",":
+                return normalize_decimal_string(amount_str.replace(",", "."))
+            return normalize_decimal_string(amount_str)
+        return int_part + frac_part
+    if len(parts[-1]) == 3 and all(len(p) <= 3 for p in parts[:-1]):
+        return "".join(parts)
+    decimal_str = "".join(parts[:-1]) + "." + parts[-1]
+    return normalize_decimal_string(decimal_str)
+
+
 def _extract_direct_fixed_amounts(
     row: Row,
     product_id: str,
@@ -1227,28 +1277,28 @@ def _extract_direct_fixed_amounts(
     label = _row_label(row)
     inferred_currency = _infer_currency_for_row(row, table, source)
     amounts: list[tuple[str, str, str]] = []
-    # Match numeric amounts with an optional trailing ISO currency code.
-    pattern = re.compile(r"(?P<operator>[+\-])?(?P<amount>\d+(?:[.,]\d+)?)\s*(?P<currency>[A-Z]{3})?")
+    # Match numeric amounts with an optional trailing ISO currency code.  The
+    # pattern supports both thousands-separated and decimal-comma forms so a
+    # value like "50,000.00 IDR" is parsed as a single amount.
+    pattern = re.compile(
+        r"(?P<operator>[+\-])?(?P<amount>\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)\s*(?P<currency>[A-Za-z]{3})?"
+    )
     matches = list(pattern.finditer(fee_text))
     for idx, match in enumerate(matches):
         amount_raw = match.group("amount")
         if not amount_raw:
             continue
-        try:
-            amount = normalize_decimal_string(amount_raw)
-        except ValueError:
+        amount = _parse_canonical_amount(amount_raw)
+        if amount is None:
             continue
-        currency = match.group("currency") or inferred_currency
+        currency = (match.group("currency") or "").upper() or inferred_currency
         if not currency:
             continue
-        start = match.start()
         next_start = matches[idx + 1].start() if idx + 1 < len(matches) else len(fee_text)
-        segment = fee_text[max(0, start - 40) : next_start]
+        segment = fee_text[match.start() : next_start]
         variant_id = _variant_id_for_row(product_id, label, [], table, fee_text=segment)
         if variant_id is None:
-            variant_id = _variant_id_for_row(product_id, label, [], table, fee_text=fee_text)
-        if variant_id is None:
-            variant_id = "standard"
+            variant_id = _variant_id_for_row(product_id, label, [], table, fee_text=fee_text) or "standard"
         amounts.append((amount, currency, variant_id))
     # Fallback: use the tokenizer's money/number tokens when regex failed to
     # produce a parseable result.
@@ -1256,16 +1306,14 @@ def _extract_direct_fixed_amounts(
         for cell in reversed(row.cells):
             for token in cell.tokens:
                 if token.kind == "money" and token.amount and token.currency:
-                    try:
-                        amount = normalize_decimal_string(token.amount)
-                    except ValueError:
+                    amount = _parse_canonical_amount(token.amount)
+                    if amount is None:
                         continue
                     variant_id = _variant_id_for_row(product_id, label, [], table, fee_text=fee_text) or "standard"
                     amounts.append((amount, token.currency, variant_id))
                 elif token.kind == "number" and token.value and inferred_currency:
-                    try:
-                        amount = normalize_decimal_string(token.value)
-                    except ValueError:
+                    amount = _parse_canonical_amount(token.value)
+                    if amount is None:
                         continue
                     variant_id = _variant_id_for_row(product_id, label, [], table, fee_text=fee_text) or "standard"
                     amounts.append((amount, inferred_currency, variant_id))
@@ -3004,6 +3052,21 @@ _DONATIONS_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("button", "bouton", "botón", "pulsante", "knop"), "button"),
 )
 
+# APM variant rows whose labels describe a specific product/service rather than
+# a list of methods should not carry extracted APM method tokens as unknown.
+_APM_VARIANT_ONLY_VARIANTS: frozenset[str] = frozenset(
+    {
+        "payment_links",
+        "cash_a_check",
+        "wire_transfer",
+        "spendback_transfer",
+        "debit_card_transfer",
+        "bank_transfer",
+        "third_party_wallet",
+        "fx_service",
+    }
+)
+
 _INVOICE_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("rückzahlung", "repayment", "remboursement", "reembolso", "rimborso", "refund", "refund"), "repayment"),
 )
@@ -3037,7 +3100,18 @@ _WITHDRAWAL_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
 _SEPA_DIRECT_DEBIT_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
     # Instant must be checked before standard because "Standardabrechnung" can
     # appear inside a cell that also mentions the instant option.
-    (("instant", "sofort", "sofortige", "sofortabrechnung", "instant settlement"), "instant_settlement"),
+    (
+        (
+            "instant",
+            "sofort",
+            "sofortige",
+            "sofortabrechnung",
+            "instant settlement",
+            "istantanea",
+            "istantaneo",
+        ),
+        "instant_settlement",
+    ),
     (("standard", "standardabrechnung", "standard settlement"), "standard_settlement"),
 )
 
@@ -3232,7 +3306,11 @@ def _variant_for_pay_later_consumer(
 def _variant_for_withdrawals(
     label: str, norm_label: str, table_text: str, combined: str, methods: list[str], is_intl: bool, is_dom: bool
 ) -> str | None:
-    return _first_variant_match(norm_label, _WITHDRAWAL_VARIANTS) or "standard"
+    return (
+        _first_variant_match(norm_label, _WITHDRAWAL_VARIANTS)
+        or _first_variant_match(combined, _WITHDRAWAL_VARIANTS)
+        or "standard"
+    )
 
 
 def _variant_for_sepa_direct_debit(
@@ -5376,6 +5454,167 @@ def _resolve_product_id(
     return product_id, reference
 
 
+def _ignored_rate_row(
+    row: Row,
+    row_index: int,
+    label: str,
+    table: Table,
+    source: Source | None,
+    reason: str,
+) -> UnclassifiedFeeRow:
+    """Return an ignored fee row with the given reason."""
+    return UnclassifiedFeeRow(
+        normalized_cells=_row_cells_text(row),
+        original_label=label,
+        source=_provenance(table, row, row_index, source, original_label=label),
+        reason=reason,
+    )
+
+
+def _build_direct_fixed_rules(
+    row: Row,
+    row_index: int,
+    product_id: str,
+    fallback_variant_id: str,
+    label: str,
+    methods: list[str],
+    table: Table,
+    source: Source | None,
+    direct_amounts: list[tuple[str, str, str]],
+) -> list[_ExtractedRule]:
+    """Build direct fixed-fee rules from a row's parsed amounts.
+
+    When multiple currencies apply to the same variant, a ``fee_currency``
+    condition is added so the rules have distinct identities.
+    """
+    rules: list[_ExtractedRule] = []
+    variant_currencies: dict[str, set[str]] = {}
+    for _, currency, amount_variant_id in direct_amounts:
+        variant_currencies.setdefault(amount_variant_id, set()).add(currency)
+
+    for amount, currency, amount_variant_id in direct_amounts:
+        if amount_variant_id == "standard" and fallback_variant_id not in (None, "standard"):
+            amount_variant_id = fallback_variant_id
+        amount_conditions = _conditions_for_row(product_id, amount_variant_id, label, methods=methods, table=table)
+        if len(variant_currencies.get(amount_variant_id, set())) > 1:
+            amount_conditions["fee_currency"] = currency
+        rules.append(
+            _ExtractedRule(
+                product_id=product_id,
+                variant_id=amount_variant_id,
+                label=label,
+                percentage=None,
+                fixed_fee_schedule=None,
+                international_surcharge_schedule=None,
+                maximum_fee_schedule=None,
+                conditions=amount_conditions,
+                table=table,
+                row=row,
+                row_index=row_index,
+                reference=None,
+                unknown_apm_methods=[],
+                fee_components=[FeeComponent(type="fixed_amount", amount=amount, currency=currency)],
+            )
+        )
+    return rules
+
+
+def _build_standard_rate_rule(
+    row: Row,
+    row_index: int,
+    product_id: str,
+    variant_id: str,
+    label: str,
+    pct: str | None,
+    reference: str | None,
+    methods: list[str],
+    unknown_methods: list[str],
+    conditions: dict[str, Any],
+    table: Table,
+    table_category: str,
+    fixed_expr: str | None,
+    fixed_schedules: dict[str, FixedFeeSchedule],
+    international_schedules: dict[str, InternationalSurchargeSchedule],
+    maximum_fee_schedules: dict[str, FixedFeeSchedule],
+) -> _ExtractedRule:
+    """Build a standard percentage/reference rule with schedule references."""
+    fixed_schedule: str | None = None
+    if fixed_expr and product_id != "withdrawals":
+        fixed_base = _fixed_fee_schedule_for(product_id, variant_id)
+        if fixed_base:
+            sig = _signature_from_conditions(conditions, fixed_base, product_id)
+            fixed_schedule = _select_schedule_id(
+                fixed_base,
+                sig,
+                fixed_schedules,
+                _FIXED_FEE_SCHEDULE_FALLBACK.get(product_id, ()),
+            )[0]
+
+    intl_schedule: str | None = None
+    intl_base = _international_surcharge_schedule_for(product_id, variant_id)
+    if intl_base:
+        sig = _signature_from_conditions(conditions, intl_base, product_id)
+        intl_schedule = _select_schedule_id(
+            intl_base,
+            sig,
+            international_schedules,
+            _INTERNATIONAL_SURCHARGE_SCHEDULE_FALLBACK.get(product_id, ()),
+        )[0]
+
+    maximum_fee_schedule: str | None = None
+    if product_id == "withdrawals" and table_category == "withdrawals_rate_table" and pct is not None:
+        max_base = _maximum_fee_schedule_for_conditions(conditions)
+        if max_base:
+            sig = _signature_from_conditions(conditions, max_base, product_id)
+            maximum_fee_schedule = _select_schedule_id(
+                max_base,
+                sig,
+                maximum_fee_schedules,
+                _MAXIMUM_FEE_SCHEDULE_FALLBACK.get(max_base, ()),
+            )[0]
+
+    # Listed-campaign donation campaigns are free.
+    if variant_id == "campaign_unlisted":
+        pct = "0"
+        fixed_schedule = None
+        intl_schedule = None
+
+    return _ExtractedRule(
+        product_id=product_id,
+        variant_id=variant_id,
+        label=label,
+        percentage=pct,
+        fixed_fee_schedule=fixed_schedule,
+        international_surcharge_schedule=intl_schedule,
+        maximum_fee_schedule=maximum_fee_schedule,
+        conditions=conditions,
+        table=table,
+        row=row,
+        row_index=row_index,
+        reference=reference,
+        unknown_apm_methods=unknown_methods,
+    )
+
+
+def _handle_unusable_rate_row(
+    row: Row,
+    row_index: int,
+    label: str,
+    product_id: str,
+    table: Table,
+    source: Source | None,
+    unclassified: list[UnclassifiedFeeRow],
+    ignored: list[UnclassifiedFeeRow],
+) -> None:
+    """Store a row without a usable percentage/reference in the right bucket."""
+    if _has_likely_numeric_fee_candidate(row, table):
+        unclassified.append(
+            _ignored_rate_row(row, row_index, label, table, source, "unsupported_fee_shape")
+        )
+    else:
+        ignored.append(_ignored_rate_row(row, row_index, label, table, source, "no rate or reference"))
+
+
 def _extract_rules_from_rate_table(
     table: Table,
     table_category: str,
@@ -5392,18 +5631,7 @@ def _extract_rules_from_rate_table(
     unclassified_fee_candidates = 0
 
     default_product = _TABLE_CATEGORY_PRODUCT.get(table_category)
-    # Product-specific rate tables (non-profit, donations, micropayments, POS,
-    # APM, goods-and-services) are scoped to their table category.
-    # We still let commercial rate tables carry mixed product rows.
-    category_specific_tables = {
-        "nonprofit_rate_table",
-        "donation_rate_table",
-        "micropayment_rate_table",
-        "pos_rate_table",
-        "goods_and_services_rate_table",
-        "withdrawals_rate_table",
-    }
-    force_default_product = table_category in category_specific_tables
+    force_default_product = table_category in _CATEGORY_SPECIFIC_TABLES
 
     for idx, row in enumerate(table.rows):
         label = _row_label(row)
