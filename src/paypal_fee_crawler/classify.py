@@ -6258,8 +6258,10 @@ def _resolve_schedule_inheritance(
         # Source text from the requesting row can explicitly name the source schedule.
         source_text = (extracted.fixed_expr or "").lower() if extracted else ""
         if source_text:
-            if source_base == "commercial" and "commercial" in source_text and (
-                "transaction" in source_text or "fixed fee" in source_text
+            if (
+                source_base == "commercial"
+                and "commercial" in source_text
+                and ("transaction" in source_text or "fixed fee" in source_text)
             ):
                 return "source text references commercial fixed fee"
             if source_base == "online_card_payments" and "online card" in source_text:
@@ -6277,9 +6279,7 @@ def _resolve_schedule_inheritance(
                 if "online card" in heading:
                     return "table context references online card fixed fee"
         if source_base == "commercial":
-            if "commercial" in source_text and (
-                "transaction" in source_text or "fixed fee" in source_text
-            ):
+            if "commercial" in source_text and ("transaction" in source_text or "fixed fee" in source_text):
                 return "source text references commercial fixed fee"
             source_schedule = schedules.get(source_schedule_id)
             if source_schedule and source_schedule.sources:
@@ -6354,7 +6354,9 @@ def _resolve_schedule_inheritance(
     # Collect all missing schedule references and create inherited schedules
     # before updating any rule.  Base schedules are created first (shorter ids)
     # so variant-specific ids can reuse an inherited base schedule.
-    refs: list[tuple[str, str | None, str, dict[str, Any], dict[str, str], TransactionFeeRule, _ExtractedRule | None]] = []
+    refs: list[
+        tuple[str, str | None, str, dict[str, Any], dict[str, str], TransactionFeeRule, _ExtractedRule | None]
+    ] = []
     for i, rule in enumerate(rules):
         extracted = extracted_rules[i] if i < len(extracted_rules) else None
         for schedule_type, schedules, inheritance_map in _schedule_attrs:
@@ -6365,7 +6367,10 @@ def _resolve_schedule_inheritance(
 
     # Deduplicate by (schedule_type, schedule_id), preferring an entry with a
     # concrete source id so we can resolve the source schedule.
-    seen: dict[tuple[str, str], tuple[str, str | None, str, dict[str, Any], dict[str, str], TransactionFeeRule, _ExtractedRule | None]] = {}
+    seen: dict[
+        tuple[str, str],
+        tuple[str, str | None, str, dict[str, Any], dict[str, str], TransactionFeeRule, _ExtractedRule | None],
+    ] = {}
     for ref in refs:
         key = (ref[2], ref[0])
         existing = seen.get(key)
@@ -6734,7 +6739,10 @@ def _validate_top_level_schedule_references(
                 )
             )
             updates["fixed_fee_schedule"] = None
-        if rule.international_surcharge_schedule and rule.international_surcharge_schedule not in international_schedules:
+        if (
+            rule.international_surcharge_schedule
+            and rule.international_surcharge_schedule not in international_schedules
+        ):
             diagnostics.append(
                 Diagnostic(
                     type="missing_required_schedule",
