@@ -18,6 +18,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -38,17 +39,11 @@ CACHE_VERSION = "1"
 # Content-negotiation headers that can change which market/language is served.
 _NEGOTIATION_HEADERS = {"accept", "accept-language", "accept-encoding", "accept-charset"}
 
-# Query parameters that are volatile or sensitive and must not affect the key.
+# Query parameters that are known to be safe tracking tokens and do not affect
+# the response body, market selection or authorization.  All other query
+# parameters are included in the cache key by default so that sensitive or
+# content-affecting values never collide.
 _VOLATILE_PARAMS = {
-    "token",
-    "session",
-    "sid",
-    "auth",
-    "nonce",
-    "csrf",
-    "request_id",
-    "correlation_id",
-    "visitor_id",
     "utm_source",
     "utm_medium",
     "utm_campaign",
@@ -64,6 +59,27 @@ _CACHED_RESPONSE_HEADERS = {
     "cache-control",
     "expires",
 }
+
+
+def _parse_cache_control(header: str | None) -> dict[str, str | None]:
+    """Return a dict of Cache-Control directive names to optional values.
+
+    Tokens such as ``no-store`` and ``private`` map to ``None``; directives with
+    values such as ``max-age=0`` map to their value as a string.
+    """
+    if not header:
+        return {}
+    directives: dict[str, str | None] = {}
+    for part in header.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" in part:
+            key, value = part.split("=", 1)
+            directives[key.strip().lower()] = value.strip().strip('"')
+        else:
+            directives[part.lower()] = None
+    return directives
 
 
 def _normalize_url(url: str) -> str:
@@ -250,6 +266,34 @@ class HttpCache:
         return self._file_locks[key]
 
     def _is_fresh(self, entry: _CacheEntry) -> bool:
+        """Return True if the stored entry may be served without revalidation."""
+        directives = _parse_cache_control(entry.cache_control)
+
+        # no-cache means the stored response must be revalidated before reuse.
+        if "no-cache" in directives:
+            return False
+
+        # max-age (or shared-cache s-maxage) determines freshness in seconds.
+        max_age_value = directives.get("s-maxage") or directives.get("max-age")
+        if max_age_value is not None:
+            try:
+                max_age = int(max_age_value)
+            except ValueError:
+                max_age = None
+            if max_age is not None:
+                if max_age == 0:
+                    return False
+                return (time.time() - entry.fetched_at) < min(max_age, self._ttl_seconds)
+
+        # Fall back to Expires if no Cache-Control max-age is present.
+        expires = entry.headers.get("expires")
+        if expires:
+            try:
+                expires_dt = parsedate_to_datetime(expires)
+                return time.time() < expires_dt.timestamp()
+            except Exception:  # nosec B110 # noqa: S110
+                pass
+
         return (time.time() - entry.fetched_at) < self._ttl_seconds
 
     def _read_entry(self, key: str) -> _CacheEntry | None:
@@ -386,6 +430,16 @@ class HttpCache:
                         self.stats.bytes_avoided += len(entry.content)
                         return entry.to_httpx_response(method), True
                     # No stored body for this 304; return the upstream response.
+                    return response, False
+
+                directives = _parse_cache_control(response.headers.get("cache-control"))
+
+                # Responses marked no-store or private must not be persisted,
+                # and any previously stored copy for the same resource is removed
+                # so it cannot be served again.
+                if "no-store" in directives or "private" in directives:
+                    self._remove_entry(key)
+                    self.stats.cache_misses += 1
                     return response, False
 
                 if _is_valid_cacheable_response(response):

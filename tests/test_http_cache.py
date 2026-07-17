@@ -436,3 +436,289 @@ def test_cookies_are_not_stored_or_shared_between_markets(tmp_path: Path) -> Non
     assert entry_files
     data = json.loads(entry_files[0].read_text(encoding="utf-8"))
     assert "set-cookie" not in {k.lower() for k in data["headers"]}
+
+
+def test_sensitive_query_params_produce_different_cache_keys() -> None:
+    """Sensitive or content-affecting query parameters must not share a cache key."""
+    headers = {"Accept": "text/html", "Accept-Language": "en", "Accept-Encoding": "identity"}
+    base = "https://www.paypal.com/de/page"
+    for param in ("token", "session", "auth"):
+        key_a = _cache_key("GET", f"{base}?{param}=A", "DE", None, headers)
+        key_b = _cache_key("GET", f"{base}?{param}=B", "DE", None, headers)
+        assert key_a != key_b, f"{param} values should not collide"
+
+    # Safe UTM parameters are stripped from the key and may collide.
+    key_a = _cache_key("GET", f"{base}?utm_source=a", "DE", None, headers)
+    key_b = _cache_key("GET", f"{base}?utm_source=b", "DE", None, headers)
+    assert key_a == key_b
+
+
+def test_no_store_responses_are_not_cached(tmp_path: Path) -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(
+            200,
+            text=f"<html>call {len(calls)}</html>",
+            headers={"cache-control": "no-store"},
+        )
+
+    config = CrawlConfiguration(max_workers=1, request_delay=0, cache_dir=str(tmp_path / "cache"))
+    r1 = asyncio.run(_run_get(handler, url="https://www.paypal.com/de/page", config=config))
+    r2 = asyncio.run(_run_get(handler, url="https://www.paypal.com/de/page", config=config))
+
+    assert r1.text == "<html>call 1</html>"
+    assert r2.text == "<html>call 2</html>"
+    assert len(calls) == 2
+    assert not list((tmp_path / "cache" / "entries").rglob("*.json"))
+
+
+def test_private_responses_are_not_cached(tmp_path: Path) -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(
+            200,
+            text=f"<html>call {len(calls)}</html>",
+            headers={"cache-control": "private"},
+        )
+
+    config = CrawlConfiguration(max_workers=1, request_delay=0, cache_dir=str(tmp_path / "cache"))
+    r1 = asyncio.run(_run_get(handler, url="https://www.paypal.com/de/page", config=config))
+    r2 = asyncio.run(_run_get(handler, url="https://www.paypal.com/de/page", config=config))
+
+    assert r1.text == "<html>call 1</html>"
+    assert r2.text == "<html>call 2</html>"
+    assert len(calls) == 2
+    assert not list((tmp_path / "cache" / "entries").rglob("*.json"))
+
+
+def test_no_cache_triggers_revalidation(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    url = "https://www.paypal.com/de/business/paypal-business-fees"
+    config = CrawlConfiguration(max_workers=1, request_delay=0, cache_dir=str(cache_dir))
+    entry = _CacheEntry(
+        key="",
+        url=url,
+        final_url=url,
+        status_code=200,
+        headers={"content-type": "text/html; charset=utf-8"},
+        content=b"<html>cached</html>",
+        etag='"abc"',
+        last_modified=None,
+        fetched_at=time.time(),
+        cache_version="1",
+        market="DE",
+        locale=None,
+        cache_control="no-cache",
+    )
+    entry.key = _cache_key(
+        "GET",
+        url,
+        "DE",
+        None,
+        {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "identity",
+        },
+    )
+    path = _entry_path(cache_dir, "GET", url, "DE", None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entry.to_json(), ensure_ascii=False, sort_keys=True), encoding="utf-8")
+
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        assert request.headers["if-none-match"] == '"abc"'
+        return httpx.Response(304, headers={"etag": '"abc"'})
+
+    response = asyncio.run(_run_get(handler, url=url, market="DE", config=config))
+    assert response.text == "<html>cached</html>"
+    assert response.from_cache
+    assert len(calls) == 1
+
+
+def test_max_age_zero_triggers_revalidation(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    url = "https://www.paypal.com/de/business/paypal-business-fees"
+    config = CrawlConfiguration(max_workers=1, request_delay=0, cache_dir=str(cache_dir))
+    entry = _CacheEntry(
+        key="",
+        url=url,
+        final_url=url,
+        status_code=200,
+        headers={"content-type": "text/html; charset=utf-8"},
+        content=b"<html>cached</html>",
+        etag='"abc"',
+        last_modified=None,
+        fetched_at=time.time(),
+        cache_version="1",
+        market="DE",
+        locale=None,
+        cache_control="max-age=0",
+    )
+    entry.key = _cache_key(
+        "GET",
+        url,
+        "DE",
+        None,
+        {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "identity",
+        },
+    )
+    path = _entry_path(cache_dir, "GET", url, "DE", None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entry.to_json(), ensure_ascii=False, sort_keys=True), encoding="utf-8")
+
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        assert request.headers["if-none-match"] == '"abc"'
+        return httpx.Response(304, headers={"etag": '"abc"'})
+
+    response = asyncio.run(_run_get(handler, url=url, market="DE", config=config))
+    assert response.text == "<html>cached</html>"
+    assert response.from_cache
+    assert len(calls) == 1
+
+
+def test_normal_responses_use_24_hour_ttl(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    url = "https://www.paypal.com/de/business/paypal-business-fees"
+    config = CrawlConfiguration(max_workers=1, request_delay=0, cache_dir=str(cache_dir))
+    entry = _CacheEntry(
+        key="",
+        url=url,
+        final_url=url,
+        status_code=200,
+        headers={"content-type": "text/html; charset=utf-8"},
+        content=b"<html>cached</html>",
+        etag='"abc"',
+        last_modified=None,
+        fetched_at=time.time() - 3600,
+        cache_version="1",
+        market="DE",
+        locale=None,
+        cache_control=None,
+    )
+    entry.key = _cache_key(
+        "GET",
+        url,
+        "DE",
+        None,
+        {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "identity",
+        },
+    )
+    path = _entry_path(cache_dir, "GET", url, "DE", None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entry.to_json(), ensure_ascii=False, sort_keys=True), encoding="utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("Fresh cache entry should not trigger network request")
+
+    response = asyncio.run(_run_get(handler, url=url, market="DE", config=config))
+    assert response.text == "<html>cached</html>"
+    assert response.from_cache
+
+
+def test_max_age_shorter_than_ttl_is_respected(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    url = "https://www.paypal.com/de/business/paypal-business-fees"
+    config = CrawlConfiguration(max_workers=1, request_delay=0, cache_dir=str(cache_dir))
+    entry = _CacheEntry(
+        key="",
+        url=url,
+        final_url=url,
+        status_code=200,
+        headers={"content-type": "text/html; charset=utf-8"},
+        content=b"<html>cached</html>",
+        etag='"abc"',
+        last_modified=None,
+        fetched_at=time.time() - 3,
+        cache_version="1",
+        market="DE",
+        locale=None,
+        cache_control="max-age=2",
+    )
+    entry.key = _cache_key(
+        "GET",
+        url,
+        "DE",
+        None,
+        {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "identity",
+        },
+    )
+    path = _entry_path(cache_dir, "GET", url, "DE", None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entry.to_json(), ensure_ascii=False, sort_keys=True), encoding="utf-8")
+
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        assert request.headers["if-none-match"] == '"abc"'
+        return httpx.Response(304, headers={"etag": '"abc"'})
+
+    response = asyncio.run(_run_get(handler, url=url, market="DE", config=config))
+    assert response.text == "<html>cached</html>"
+    assert response.from_cache
+    assert len(calls) == 1
+
+
+def test_failed_revalidation_does_not_corrupt_entry(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    url = "https://www.paypal.com/de/business/paypal-business-fees"
+    config = CrawlConfiguration(max_workers=1, request_delay=0, cache_dir=str(cache_dir), max_retries=0)
+    entry = _CacheEntry(
+        key="",
+        url=url,
+        final_url=url,
+        status_code=200,
+        headers={"content-type": "text/html; charset=utf-8"},
+        content=b"<html>cached</html>",
+        etag='"abc"',
+        last_modified=None,
+        fetched_at=time.time() - 48 * 3600,
+        cache_version="1",
+        market="DE",
+        locale=None,
+        cache_control=None,
+    )
+    entry.key = _cache_key(
+        "GET",
+        url,
+        "DE",
+        None,
+        {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "identity",
+        },
+    )
+    path = _entry_path(cache_dir, "GET", url, "DE", None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original_text = json.dumps(entry.to_json(), ensure_ascii=False, sort_keys=True)
+    path.write_text(original_text, encoding="utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="error")
+
+    from paypal_fee_crawler.exceptions import NetworkError
+
+    with pytest.raises(NetworkError):
+        asyncio.run(_run_get(handler, url=url, market="DE", config=config))
+
+    assert path.read_text(encoding="utf-8") == original_text
