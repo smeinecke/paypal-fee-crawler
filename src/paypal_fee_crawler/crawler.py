@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import subprocess  # nosec B404
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,40 @@ from .regression import PreviousState, RegressionLimits, check_regression, enfor
 from .validation import validate_all_output, validate_country_output
 
 logger = logging.getLogger(__name__)
+
+
+def _crawler_revision(crawler_dir: Path | None = None) -> str | None:
+    """Return the current crawler Git revision, or None if not available.
+
+    Prefers the supplied ``crawler_dir`` (the crawler submodule checkout in the
+    data repository) and falls back to the crawler source checkout root adjacent
+    to this file.
+    """
+    candidates: list[Path] = []
+    if crawler_dir is not None:
+        candidates.append(crawler_dir)
+    # Source layout: .../crawler/src/paypal_fee_crawler/crawler.py
+    candidates.append(Path(__file__).resolve().parents[2])
+
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        result = None
+        try:
+            result = subprocess.run(  # nosec
+                ["git", "rev-parse", "HEAD"],
+                cwd=candidate,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except Exception as exc:
+            logger.debug("Cannot read crawler revision from %s: %s", candidate, exc)
+        if result is not None:
+            rev = result.stdout.strip()
+            if rev:
+                return rev
+    return None
 
 
 def _placeholder_tables(table_count: int, row_count: int) -> list:
@@ -610,13 +645,31 @@ class Crawler:
         markets: list[Market],
         unsupported: list[UnsupportedCountry],
         change_report: ChangeReport,
-    ) -> bool:
+        failed: list[str],
+    ) -> tuple[bool, OutputPublisher]:
         publisher = OutputPublisher(
             output_dir=output_dir,
             staging_dir=self.config.staging_dir,
             timestamp=self._stable_timestamp(),
             keep_diagnostics=self.config.keep_diagnostics,
         )
+
+        market_by_code = {m.paypal_market_code: m for m in markets}
+        transient_failures = [
+            UnsupportedCountry(
+                paypal_market_code=cc,
+                iso_country_code=market_by_code[cc].iso_country_code,
+                country_name=market_by_code[cc].country_name,
+                reason="transient failure during crawl",
+                temporary=True,
+            )
+            for cc in failed
+            if cc in market_by_code
+        ]
+
+        crawler_dir = output_dir / "crawler"
+        crawler_revision = _crawler_revision(crawler_dir if crawler_dir.exists() else None)
+
         staging: Path | None = None
         try:
             _, staging = publisher.publish(
@@ -628,13 +681,16 @@ class Crawler:
                     classifier_mode="rules",
                     classifier_version="rules-v1",
                 ),
+                crawler_revision=crawler_revision,
+                transient_failures=transient_failures,
             )
+            publisher.generate_readme(staging)
             changed, _ = publisher.commit(staging)
         except Exception as exc:
             if staging is not None:
                 publisher.rollback(staging)
             raise CrawlerValidationError(f"Failed to publish output: {exc}") from exc
-        return changed
+        return changed, publisher
 
     def _determine_exit_code(self, failed: list[str]) -> ExitCode:
         if self.config.fail_on_warning and self.warnings:
@@ -680,12 +736,13 @@ class Crawler:
             logger.error("Regression guard failed: %s", exc)
             raise
 
-        changed = await self._publish_outputs(
+        changed, publisher = await self._publish_outputs(
             output_dir,
             outputs,
             markets,
             unsupported,
             change_report,
+            failed,
         )
 
         final_errors = validate_all_output(output_dir)
@@ -705,7 +762,7 @@ class Crawler:
             cache_stats.cache_errors,
             cache_stats.bytes_avoided,
         )
-        return CrawlReport(
+        report = CrawlReport(
             exit_code=exit_code,
             changed=changed,
             countries_processed=len(outputs),
@@ -717,3 +774,5 @@ class Crawler:
             diagnostics_path=diagnostics_path,
             cache_stats=cache_stats,
         )
+        publisher.write_crawl_report(output_dir, report)
+        return report

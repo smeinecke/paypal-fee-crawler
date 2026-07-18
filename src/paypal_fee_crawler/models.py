@@ -662,6 +662,7 @@ class CountryManifest(PublicModel):
     generated_at: str | None = None
     markets: list[Market] = Field(default_factory=list)
     unsupported: list[UnsupportedCountry] = Field(default_factory=list)
+    transient_failures: list[UnsupportedCountry] = Field(default_factory=list)
     fee_page_urls: dict[str, str] = Field(default_factory=dict)
 
 

@@ -1,11 +1,38 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
+from paypal_fee_crawler.models import CrawlReport
 from paypal_fee_crawler.regression import _country_output_hash
-from paypal_fee_crawler.validation import validate_output_tree, validate_public_country_output
+from paypal_fee_crawler.validation import (
+    _derive_publication_stats,
+    validate_output_tree,
+    validate_public_country_output,
+)
+
+
+def _git_init_with_commit(path: Path) -> str:
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
+    }
+    subprocess.run(["git", "init", "-q", str(path)], check=True, env=env)
+    subprocess.run(["git", "-C", str(path), "commit", "--allow-empty", "-m", "init", "-q"], check=True, env=env)
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    return result.stdout.strip()
 
 
 def _country(derived: dict[str, Any]) -> dict[str, Any]:
@@ -84,7 +111,17 @@ def _write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
+def _render_readme_table(stats: dict[str, str]) -> str:
+    lines = ["| Metric | Value |", "|--------|------:|"]
+    for key, value in stats.items():
+        lines.append(f"| {key} | {value} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
+    crawler_dir = root / "crawler"
+    crawler_rev = _git_init_with_commit(crawler_dir)
     country_hash = _country_output_hash(country)
 
     _write_json(root / "json" / "de.json", country)
@@ -149,8 +186,17 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
                 }
             ],
             "unsupported": [],
+            "transient_failures": [],
             "fee_page_urls": {},
         },
+    )
+    _write_json(
+        root / "meta" / "unsupported-countries.json",
+        {"schema_version": 1, "unsupported": []},
+    )
+    _write_json(
+        root / "meta" / "transient-failures.json",
+        {"schema_version": 1, "transient_failures": []},
     )
     _write_json(
         root / "meta" / "schema-version.json",
@@ -169,6 +215,18 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
         root / "meta" / "crawl-state.json",
         {"schema_version": 1, "generated_at": None, "markets": {}},
     )
+    _write_json(
+        root / "change-report.json",
+        {"schema_version": 1, "changes": [], "generated_at": None, "has_regression": False},
+    )
+    _write_json(
+        root / "meta" / "crawl-report.json",
+        CrawlReport(exit_code=0, changed=False, countries_processed=1).model_dump(mode="json"),
+    )
+    _write_json(
+        root / "meta" / "crawler-revision.json",
+        {"crawler_revision": crawler_rev, "generated_at": None},
+    )
     for schema_name in [
         "paypal-fees-v1.schema.json",
         "core-fees-v1.schema.json",
@@ -176,6 +234,12 @@ def _write_minimal_tree(root: Path, country: dict[str, Any]) -> None:
         "manifest-v1.schema.json",
     ]:
         _write_json(root / "schemas" / schema_name, {"type": "object"})
+
+    # Generate a README whose metrics match the staged data so strict validation
+    # does not fail for fixture trees that are otherwise valid.
+    stats = _derive_publication_stats(root)
+    readme = f"# Test data\n\n## Statistics\n\n<!-- STATS_START -->\n{_render_readme_table(stats)}<!-- STATS_END -->\n"
+    (root / "README.md").write_text(readme, encoding="utf-8")
 
 
 def test_output_tree_ignores_existing_repo_root_files(tmp_path: Path) -> None:

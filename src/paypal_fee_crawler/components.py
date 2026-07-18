@@ -467,17 +467,38 @@ class ComponentsExtractor:
         return ordered, len(ordered)
 
     def _assign_table_ids(self) -> None:
-        """Assign a stable internal identity to every physical table."""
+        """Assign a stable internal identity to every physical table.
+
+        ``table_id`` is derived from a deterministic ordering of the records so
+        that provenance identifiers are stable across runs, but the original
+        ``self.table_records``/``self.tables`` order is preserved so downstream
+        classification logic is not affected.
+        """
+        sorted_records = sorted(
+            self.table_records,
+            key=lambda r: (
+                tuple(r.table.section_path or []),
+                r.table.document_id or "",
+                r.table.component_id or "",
+                r.table.caption or "",
+                len(r.table.rows),
+                r.table.column_count or 0,
+                r.table.source_order,
+            ),
+        )
+        rank_by_table_id = {
+            id(r.table): idx for idx, r in enumerate(sorted_records, start=1)
+        }
         updated: list[NormalizedTableRecord] = []
         for record in self.table_records:
             table = record.table
+            rank = rank_by_table_id[id(table)]
             parts = [
                 table.component_type or "table",
                 table.document_id or table.component_id or "",
-                str(table.source_order),
+                str(rank),
             ]
             table_id = "::".join(p for p in parts if p)
-            # Reassign via model_copy because the model is frozen.
             updated_table = table.model_copy(update={"table_id": table_id})
             updated.append(NormalizedTableRecord(table=updated_table, contexts=record.contexts))
         self.table_records = updated

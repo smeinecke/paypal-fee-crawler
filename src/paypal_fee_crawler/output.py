@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import shutil
+import subprocess  # nosec B404
+import sys
 import tempfile
 from dataclasses import dataclass
 from enum import Enum
@@ -73,6 +75,33 @@ def _to_jsonable(obj: Any) -> Any:
     return str(obj)
 
 
+def _normalize_public_output(obj: Any, parent_key: str | None = None) -> Any:
+    """Recursively normalize public output data for deterministic serialization.
+
+    Lists of dicts are sorted by a canonical JSON key so that non-semantic
+    ordering differences do not change the published artifacts. Scalar lists
+    are also sorted unless they carry positional meaning (e.g. ``normalized_cells``
+    or ``section_path``).
+    """
+    if isinstance(obj, dict):
+        return {k: _normalize_public_output(v, parent_key=k) for k, v in obj.items()}
+    if isinstance(obj, list):
+        normalized = [_normalize_public_output(item) for item in obj]
+        if not normalized:
+            return normalized
+        if parent_key in {"normalized_cells", "section_path"}:
+            return normalized
+        if all(isinstance(item, dict) for item in normalized):
+            return sorted(
+                normalized,
+                key=lambda d: json.dumps(d, sort_keys=True, ensure_ascii=False),
+            )
+        if all(isinstance(item, (str, int, float, bool, type(None))) for item in normalized):
+            return sorted(normalized, key=lambda x: (x is None, type(x).__name__, x))
+        return normalized
+    return obj
+
+
 def _serialize(obj: Any) -> str:
     """Serialize an object to deterministic JSON with stable ordering."""
     return (
@@ -123,7 +152,12 @@ class OutputPublisher:
 
     # These are the only paths the crawler owns.  The output directory itself may
     # be the root of a git repository and must never be renamed or deleted.
-    MANAGED_PATHS = ("json", "meta", "schemas", "change-report.json")
+    MANAGED_PATHS = ("json", "meta", "schemas", "change-report.json", "README.md")
+
+    # Paths that may legitimately differ between runs (e.g. the crawl report
+    # records whether the run changed the data) and must not feed back into the
+    # "changed" flag itself.
+    IGNORED_CHANGED_PATHS = frozenset({"meta/crawl-report.json", "change-report.json"})
 
     def __init__(
         self,
@@ -155,6 +189,51 @@ class OutputPublisher:
     def _run_generated_at(self, outputs: dict[str, CountryOutput]) -> str | None:
         """Return the configured run timestamp."""
         return self.timestamp
+
+    def _write_crawler_revision(self, staging: Path, crawler_revision: str | None) -> None:
+        """Write the crawler Git revision used to generate this data."""
+        if crawler_revision:
+            _write_json(
+                staging / "meta" / "crawler-revision.json",
+                {"crawler_revision": crawler_revision, "generated_at": self.timestamp},
+            )
+
+    def publish_change_report(self, staging: Path, change_report: ChangeReport | None) -> None:
+        """Publish the computed change report, overwriting any stale previous report."""
+        if change_report is None:
+            change_report = ChangeReport()
+        change_report = change_report.model_copy(update={"generated_at": self.timestamp})
+        _write_json(
+            staging / "change-report.json",
+            _normalize_public_output(change_report.model_dump(mode="json")),
+        )
+
+    def generate_readme(self, staging: Path) -> None:
+        """Regenerate README.md from the staged artifacts."""
+        script_path = self.output_dir / "scripts" / "generate_readme.py"
+        if not script_path.exists():
+            # Fall back to the bundled script adjacent to the crawler package.
+            script_path = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "generate_readme.py"
+        if not script_path.exists():
+            return
+        try:
+            subprocess.run(  # nosec
+                [sys.executable, str(script_path), str(staging)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except Exception as exc:
+            logger.warning("README generation failed: %s", exc)
+
+    def write_crawl_report(self, output_dir: Path, report: Any) -> None:
+        """Write the crawl execution report to meta/crawl-report.json."""
+        path = output_dir / "meta" / "crawl-report.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
 
     def _build_state_entry(
         self,
@@ -301,6 +380,8 @@ class OutputPublisher:
         shadow_runs: dict[str, Any] | None = None,
         diagnostics: dict[str, Any] | None = None,
         classifier_metadata: ClassifierMetadata | None = None,
+        crawler_revision: str | None = None,
+        transient_failures: list[UnsupportedCountry] | None = None,
     ) -> tuple[bool, Path]:
         """Write all output files to a staging directory and return (changed, staging_path)."""
         staging = self._make_staging()
@@ -338,7 +419,9 @@ class OutputPublisher:
                 )
 
             path = json_dir / f"{output.market.url_slug}.json"
-            country_data = public.model_dump(mode="json", exclude_none=True)
+            country_data = _normalize_public_output(
+                public.model_dump(mode="json", exclude_none=True)
+            )
             content_hash = self._compute_content_sha256(country_data)
             _write_json(path, country_data)
 
@@ -376,24 +459,45 @@ class OutputPublisher:
             )
 
         index = CountryIndex(generated_at=run_generated_at, countries=index_entries)
-        index_data = index.model_dump(mode="json", exclude_none=True)
+        index_data = _normalize_public_output(
+            index.model_dump(mode="json", exclude_none=True)
+        )
         _write_json(json_dir / "index.json", index_data)
 
         core_fees = CoreFees(generated_at=run_generated_at, countries=core_entries)
-        core_data = core_fees.model_dump(mode="json", exclude_none=True)
+        core_data = _normalize_public_output(
+            core_fees.model_dump(mode="json", exclude_none=True)
+        )
         _write_json(json_dir / "core-fees.json", core_data)
 
         manifest = CountryManifest(
             generated_at=run_generated_at,
             markets=markets,
             unsupported=unsupported,
+            transient_failures=transient_failures or [],
         )
-        manifest_data = manifest.model_dump(mode="json", exclude_none=True)
+        manifest_data = _normalize_public_output(
+            manifest.model_dump(mode="json", exclude_none=True)
+        )
         manifest_data["generated_at"] = manifest.generated_at
         _write_json(meta_dir / "countries.json", manifest_data)
         _write_json(
             meta_dir / "unsupported-countries.json",
-            {"schema_version": 1, "unsupported": [u.model_dump(mode="json", exclude_none=True) for u in unsupported]},
+            _normalize_public_output(
+                {
+                    "schema_version": 1,
+                    "unsupported": [u.model_dump(mode="json", exclude_none=True) for u in unsupported],
+                }
+            ),
+        )
+        _write_json(
+            meta_dir / "transient-failures.json",
+            _normalize_public_output(
+                {
+                    "schema_version": 1,
+                    "transient_failures": [u.model_dump(mode="json", exclude_none=True) for u in (transient_failures or [])],
+                }
+            ),
         )
         _write_json(
             meta_dir / "schema-version.json",
@@ -409,18 +513,24 @@ class OutputPublisher:
 
         _write_json(
             meta_dir / "crawl-cache.json",
-            CrawlCache(markets=cache_entries).model_dump(mode="json", exclude_none=True),
+            _normalize_public_output(
+                CrawlCache(markets=cache_entries).model_dump(mode="json", exclude_none=True)
+            ),
         )
 
         _write_json(
             meta_dir / "crawl-state.json",
-            CrawlState(generated_at=run_generated_at, markets=state_entries).model_dump(mode="json"),
+            _normalize_public_output(
+                CrawlState(generated_at=run_generated_at, markets=state_entries).model_dump(mode="json")
+            ),
         )
 
         if classifier_metadata is not None:
             _write_json(
                 meta_dir / "classifier-version.json",
-                classifier_metadata.model_dump(mode="json", exclude_none=True),
+                _normalize_public_output(
+                    classifier_metadata.model_dump(mode="json", exclude_none=True)
+                ),
             )
 
         accepted_path = self.output_dir / "meta" / "accepted-regressions.json"
@@ -434,26 +544,25 @@ class OutputPublisher:
                 run = diagnostics.get(cc) if diagnostics else None
                 _write_json(
                     diagnostics_dir / f"{cc.lower()}.json",
-                    {
-                        "schema_version": 1,
-                        "generated_at": outputs[cc].source.page_updated_at or self.timestamp,
-                        "normalized_output": outputs[cc].model_dump(mode="json", exclude_none=True),
-                        "classification_run": _to_jsonable(run) if run is not None else None,
-                    },
+                    _normalize_public_output(
+                        {
+                            "schema_version": 1,
+                            "generated_at": outputs[cc].source.page_updated_at or self.timestamp,
+                            "normalized_output": outputs[cc].model_dump(mode="json", exclude_none=True),
+                            "classification_run": _to_jsonable(run) if run is not None else None,
+                        }
+                    ),
                 )
 
-        # Write the change report when there are new changes, or when a previous
-        # report exists so it is replaced with the current (possibly empty) result.
-        if change_report is not None:
-            write_change_report = bool(change_report.changes) or (self.output_dir / "change-report.json").exists()
-            if write_change_report:
-                change_report = change_report.model_copy(update={"generated_at": run_generated_at})
-                _write_json(staging / "change-report.json", change_report.model_dump(mode="json"))
+        self._write_crawler_revision(staging, crawler_revision)
+        self.publish_change_report(staging, change_report)
 
         if shadow_runs:
             _write_json(
                 meta_dir / "classification-shadow.json",
-                {"schema_version": 2, "generated_at": run_generated_at, "countries": _to_jsonable(shadow_runs)},
+                _normalize_public_output(
+                    {"schema_version": 2, "generated_at": run_generated_at, "countries": _to_jsonable(shadow_runs)}
+                ),
             )
 
         return staging != self.output_dir, staging
@@ -533,10 +642,10 @@ class OutputPublisher:
 
             self._cleanup_backups_best_effort(journal)
             self.rollback(staging)
-            # The change-report is a generated summary, not a data change;
-            # a crawl that only updates the report (e.g. clearing a stale
-            # regression) should still be considered unchanged for determinism.
-            data_changed = any(f != "change-report.json" for f in changed_files)
+            # The change-report and crawl-report are generated summaries, not data
+            # changes; a crawl that only updates these reports (e.g. clearing a
+            # stale regression) should still be considered unchanged.
+            data_changed = bool(set(changed_files) - self.IGNORED_CHANGED_PATHS)
             return data_changed, changed_files
 
         except Exception as exc:

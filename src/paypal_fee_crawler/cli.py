@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -75,8 +74,6 @@ def _build_config(
         selected_countries = list(country)
     if countries:
         selected_countries = [c.strip().upper() for c in countries.split(",") if c.strip()]
-    if timestamp is None:
-        timestamp = datetime.now(UTC).isoformat().replace("+00:00", "")
     return CrawlConfiguration(
         output_dir=output,
         staging_dir=staging_dir,
@@ -342,8 +339,6 @@ def crawl_country(
 ) -> None:
     """Crawl a single PayPal market and print or save the result."""
     _configure_logging(verbose)
-    if timestamp is None:
-        timestamp = datetime.now(UTC).isoformat().replace("+00:00", "")
     config = CrawlConfiguration(
         countries=[country_code.upper()],
         output_dir=output or "./out",

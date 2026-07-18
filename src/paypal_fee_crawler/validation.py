@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import re
+import subprocess  # nosec B404
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +20,10 @@ from .models import (
     CountryIndex,
     CountryManifest,
     CountryOutput,
+    CrawlReport,
     PublicCountryOutput,
     TransactionFeeRule,
+    UnsupportedCountry,
 )
 from .normalize import CURRENCY_CODES, normalize_decimal_string
 from .regression import _country_output_hash
@@ -654,6 +660,314 @@ def _validate_supported_coverage(
             errors.append(f"Country file {cc} is not listed in the supported index")
 
 
+def _load_json(path: Path) -> Any:
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _format_dt(value: str | None) -> str:
+    if not value:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+    except Exception:
+        return value
+
+
+def _derive_publication_stats(output_dir: Path) -> dict[str, str]:
+    index = _load_json(output_dir / "json" / "index.json")
+    countries_meta = _load_json(output_dir / "meta" / "countries.json")
+    unsupported = _load_json(output_dir / "meta" / "unsupported-countries.json")
+
+    countries = index.get("countries", [])
+    total_countries = len(countries)
+    status_counts: dict[str, int] = {}
+    for country in countries:
+        status = country.get("derived_status") or "unknown"
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    transaction_rule_count = 0
+    currency_conversion_count = 0
+    inherited_schedule_objects = 0
+    inherited_schedule_references = 0
+    rule_categories: set[str] = set()
+    for country_path in (output_dir / "json").glob("*.json"):
+        if country_path.name in ("index.json", "core-fees.json"):
+            continue
+        country_data = _load_json(country_path)
+        derived = country_data.get("derived", {})
+        transaction_rules = derived.get("transaction_fee_rules") or []
+        transaction_rule_count += len(transaction_rules)
+        for rule in transaction_rules:
+            rule_categories.add(rule.get("id", "unknown"))
+        if derived.get("fixed_fee_schedules"):
+            rule_categories.add("fixed_fee_schedules")
+        if derived.get("international_surcharge_schedules"):
+            rule_categories.add("international_surcharge_schedules")
+        if derived.get("currency_conversion"):
+            currency_conversion_count += 1
+            rule_categories.add("currency_conversion")
+        coverage = derived.get("coverage_summary") or {}
+        inherited_schedule_objects += coverage.get("inherited_schedule_objects", 0)
+        inherited_schedule_references += coverage.get("inherited_schedule_references", 0)
+
+    regions: set[str] = set()
+    for market in countries_meta.get("markets", []):
+        region = market.get("region")
+        if region:
+            regions.add(region)
+
+    latest_update = None
+    for country in countries:
+        updated = country.get("crawled_at") or country.get("generated_at")
+        if updated:
+            try:
+                candidate = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+                if latest_update is None or candidate > latest_update:
+                    latest_update = candidate
+            except Exception:
+                pass
+
+    core_fees = _load_json(output_dir / "json" / "core-fees.json")
+    generated_at = index.get("generated_at") or core_fees.get("generated_at")
+    if generated_at and latest_update is None:
+        with contextlib.suppress(Exception):
+            latest_update = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+
+    unsupported_count = 0
+    if isinstance(unsupported, dict):
+        unsupported_count = len(unsupported.get("unsupported", []))
+    elif isinstance(unsupported, list):
+        unsupported_count = len(unsupported)
+
+    status_order = ["complete", "partial", "unclassified", "failed"]
+    status_parts = []
+    for status in status_order:
+        count = status_counts.get(status, 0)
+        if count:
+            status_parts.append(f"{count} {status}")
+    for status, count in sorted(status_counts.items()):
+        if status not in status_order:
+            status_parts.append(f"{count} {status}")
+    status_str = ", ".join(status_parts) if status_parts else "—"
+
+    return {
+        "Countries": f"**{total_countries}**",
+        "Derivation status": status_str,
+        "Transaction fee rules": f"**{transaction_rule_count:,}**",
+        "Currency conversion entries": f"**{currency_conversion_count:,}**",
+        "Total core entries": f"**{transaction_rule_count + currency_conversion_count:,}**",
+        "Inherited schedule objects": f"{inherited_schedule_objects:,}",
+        "Inherited schedule references": f"{inherited_schedule_references:,}",
+        "Rule categories": ", ".join(sorted(rule_categories)) or "—",
+        "Regions": f"{len(regions)} ({', '.join(sorted(regions)) or '—'})",
+        "Unsupported countries": str(unsupported_count),
+        "Last crawled": _format_dt(latest_update.isoformat().replace("+00:00", "Z") if latest_update else None),
+    }
+
+
+def _validate_readme_metrics(output_dir: Path, errors: list[str]) -> None:
+    readme_path = output_dir / "README.md"
+    if not readme_path.exists():
+        errors.append("README.md is missing")
+        return
+    content = readme_path.read_text(encoding="utf-8")
+    match = re.search(r"<!-- STATS_START -->\n(.*?)<!-- STATS_END -->", content, re.DOTALL)
+    if not match:
+        errors.append("README.md does not contain STATS markers")
+        return
+    table = match.group(1)
+    actual: dict[str, str] = {}
+    for line in table.splitlines():
+        if not line.startswith("| "):
+            continue
+        parts = [p.strip() for p in line[2:-2].split("|")]
+        if len(parts) >= 2 and parts[0] not in ("Metric", "---"):
+            actual[parts[0]] = parts[1]
+
+    expected = _derive_publication_stats(output_dir)
+    for key, expected_value in expected.items():
+        if actual.get(key) != expected_value:
+            errors.append(f"README.md metric '{key}' is {actual.get(key)!r}, expected {expected_value!r}")
+
+
+def _crawler_submodule_revision(data_dir: Path) -> str | None:
+    crawler_dir = data_dir / "crawler"
+    if not (crawler_dir / ".git").exists():
+        return None
+    try:
+        result = subprocess.run(  # nosec
+            ["git", "-C", str(crawler_dir), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception as exc:
+        logger.debug("Cannot read crawler submodule revision: %s", exc)
+    return None
+
+
+def _is_full_git_hash(value: str) -> bool:
+    if len(value) != 40:
+        return False
+    return all(c in "0123456789abcdef" for c in value.lower())
+
+
+def _validate_crawler_revision(data_dir: Path, errors: list[str]) -> None:
+    revision_path = data_dir / "meta" / "crawler-revision.json"
+    if not revision_path.exists():
+        errors.append("meta/crawler-revision.json is missing")
+        return
+    try:
+        data = _load_json(revision_path)
+    except Exception as exc:
+        errors.append(f"meta/crawler-revision.json is malformed: {exc}")
+        return
+    if not isinstance(data, dict):
+        errors.append("meta/crawler-revision.json must be an object")
+        return
+    metadata_rev = data.get("crawler_revision")
+    if metadata_rev is None:
+        errors.append("meta/crawler-revision.json is missing crawler_revision")
+        return
+    if not isinstance(metadata_rev, str) or not _is_full_git_hash(metadata_rev):
+        errors.append(f"meta/crawler-revision.json crawler_revision is not a full 40-character Git hash: {metadata_rev!r}")
+        return
+    submodule_rev = _crawler_submodule_revision(data_dir)
+    if submodule_rev is None:
+        errors.append("crawler submodule is not a git checkout; cannot verify crawler-revision.json")
+        return
+    if metadata_rev != submodule_rev:
+        errors.append(
+            f"meta/crawler-revision.json crawler_revision ({metadata_rev}) does not match crawler submodule ({submodule_rev})"
+        )
+
+
+def _validate_change_report(data_dir: Path, errors: list[str]) -> None:
+    report_path = data_dir / "change-report.json"
+    if not report_path.exists():
+        errors.append("change-report.json is missing")
+        return
+    try:
+        data = _load_json(report_path)
+    except Exception as exc:
+        errors.append(f"change-report.json is malformed: {exc}")
+        return
+    if not isinstance(data, dict):
+        errors.append("change-report.json must be an object")
+        return
+    if "has_regression" not in data:
+        errors.append("change-report.json is missing has_regression")
+        return
+    if data["has_regression"] is not False:
+        errors.append(f"change-report.json has_regression must be false, got {data['has_regression']!r}")
+
+
+def _validate_crawl_report(data_dir: Path, errors: list[str]) -> None:
+    report_path = data_dir / "meta" / "crawl-report.json"
+    if not report_path.exists():
+        errors.append("meta/crawl-report.json is missing")
+        return
+    try:
+        data = _load_json(report_path)
+    except Exception as exc:
+        errors.append(f"meta/crawl-report.json is malformed: {exc}")
+        return
+    if not isinstance(data, dict):
+        errors.append("meta/crawl-report.json must be an object")
+        return
+    try:
+        report = CrawlReport.model_validate(data)
+    except Exception as exc:
+        errors.append(f"meta/crawl-report.json is not a valid CrawlReport: {exc}")
+        return
+    if report.exit_code != 0:
+        errors.append(f"meta/crawl-report.json exit_code is not 0: {report.exit_code}")
+
+
+def _validate_completeness(data_dir: Path, errors: list[str]) -> None:
+    manifest_path = data_dir / "meta" / "countries.json"
+    index_path = data_dir / "json" / "index.json"
+    unsupported_path = data_dir / "meta" / "unsupported-countries.json"
+    transient_path = data_dir / "meta" / "transient-failures.json"
+
+    manifest: CountryManifest | None = None
+    if manifest_path.exists():
+        try:
+            manifest = CountryManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            errors.append(f"meta/countries.json: cannot validate: {exc}")
+            return
+    else:
+        errors.append("meta/countries.json is missing")
+        return
+
+    index: CountryIndex | None = None
+    if index_path.exists():
+        try:
+            index = CountryIndex.model_validate_json(index_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            errors.append(f"json/index.json: cannot validate: {exc}")
+
+    unsupported: list[UnsupportedCountry] = []
+    if unsupported_path.exists():
+        try:
+            data = _load_json(unsupported_path)
+            items = data.get("unsupported", []) if isinstance(data, dict) else data
+            unsupported = [UnsupportedCountry.model_validate(item) for item in items]
+        except Exception as exc:
+            errors.append(f"meta/unsupported-countries.json: cannot validate: {exc}")
+
+    transient: list[UnsupportedCountry] = []
+    if transient_path.exists():
+        try:
+            data = _load_json(transient_path)
+            items = data.get("transient_failures", []) if isinstance(data, dict) else data
+            transient = [UnsupportedCountry.model_validate(item) for item in items]
+        except Exception as exc:
+            errors.append(f"meta/transient-failures.json: cannot validate: {exc}")
+
+    discovered: set[str] = set()
+    if manifest:
+        for market in manifest.markets:
+            if market.paypal_market_code:
+                discovered.add(market.paypal_market_code)
+        for item in manifest.unsupported:
+            if item.paypal_market_code:
+                discovered.add(item.paypal_market_code)
+        for item in manifest.transient_failures:
+            if item.paypal_market_code:
+                discovered.add(item.paypal_market_code)
+
+    supported = {entry.paypal_market_code for entry in (index.countries if index else [])}
+    unsupported_set = {u.paypal_market_code for u in unsupported if u.paypal_market_code}
+    transient_set = {t.paypal_market_code for t in transient if t.paypal_market_code}
+
+    for cc in sorted(discovered):
+        states: list[str] = []
+        if cc in supported:
+            states.append("supported")
+        if cc in unsupported_set:
+            states.append("unsupported")
+        if cc in transient_set:
+            states.append("transient")
+        if len(states) != 1:
+            errors.append(f"{cc}: expected exactly one state, got {states}")
+
+    for cc in sorted(supported):
+        if cc not in discovered:
+            errors.append(f"{cc}: supported country {cc} is not in the discovered market set")
+    for cc in sorted(unsupported_set):
+        if cc not in discovered:
+            errors.append(f"{cc}: unsupported country {cc} is not in the discovered market set")
+    for cc in sorted(transient_set):
+        if cc not in discovered:
+            errors.append(f"{cc}: transient country {cc} is not in the discovered market set")
+
+
 def validate_output_tree(
     root: Path | str,
     strict: bool = False,
@@ -706,14 +1020,14 @@ def validate_output_tree(
             if require_all_complete:
                 errors.extend(_require_all_complete_errors(entry.derived, f"Core-fee entry {entry.paypal_market_code}"))
 
-    # A change report with regressions signals an output tree that should not be
-    # considered publication-ready.
+    # Strict publication-readiness checks.
     if strict:
-        report_path = root / "change-report.json"
-        if report_path.exists():
-            with open(report_path, encoding="utf-8") as f:
-                report = json.load(f)
-            if report.get("has_regression"):
-                errors.append(f"Regression report at {report_path} flags has_regression=true")
+        _validate_change_report(root, errors)
+        _validate_crawl_report(root, errors)
+        _validate_crawler_revision(root, errors)
+        _validate_readme_metrics(root, errors)
+
+    if require_all_complete:
+        _validate_completeness(root, errors)
 
     return errors
