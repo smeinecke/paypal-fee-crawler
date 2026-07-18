@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from paypal_fee_crawler.crawler import _crawler_revision
-from paypal_fee_crawler.models import CrawlReport, CountryOutput, Market, Source, UnsupportedCountry
+from paypal_fee_crawler.models import CountryOutput, CrawlReport, Market, Source, UnsupportedCountry
 from paypal_fee_crawler.output import OutputPublisher
 from paypal_fee_crawler.validation import (
     _crawler_submodule_revision,
@@ -178,7 +178,9 @@ def _write_minimal_tree(
 
     if not skip_readme:
         stats = readme_stats if readme_stats is not None else _derive_publication_stats(root)
-        readme = f"# Test data\n\n## Statistics\n\n<!-- STATS_START -->\n{_render_readme_table(stats)}<!-- STATS_END -->\n"
+        readme = (
+            f"# Test data\n\n## Statistics\n\n<!-- STATS_START -->\n{_render_readme_table(stats)}<!-- STATS_END -->\n"
+        )
         (root / "README.md").write_text(readme, encoding="utf-8")
 
 
@@ -320,13 +322,13 @@ def test_missing_crawler_revision_file_fails_strict_validation(tmp_path: Path) -
     assert any("meta/crawler-revision.json is missing" in e for e in errors)
 
 
-def test_incomplete_supported_data_fails_require_all_complete(tmp_path: Path) -> None:
-    """A supported market that is not complete is rejected by --require-all-complete."""
+def test_incomplete_supported_data_passes_require_all_complete(tmp_path: Path) -> None:
+    """A supported market that is partial is still accepted by --require-all-complete."""
     derived = _complete_derived()
     derived["status"] = "partial"
     _write_minimal_tree(tmp_path, _country(derived))
     errors = validate_output_tree(tmp_path, require_all_complete=True)
-    assert any("not complete" in e.lower() for e in errors)
+    assert not any("not complete" in e.lower() for e in errors)
 
 
 def test_missing_supported_country_file_fails_validation(tmp_path: Path) -> None:

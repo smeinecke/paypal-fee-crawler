@@ -381,7 +381,7 @@ def crawl_country(
 @click.option(
     "--require-all-complete",
     is_flag=True,
-    help="Require every country to be complete with no unresolved candidates.",
+    help="Require the publication tree to be complete (all discovered markets have an output).",
 )
 def validate(output_dir: str, verbose: bool, strict: bool, require_all_complete: bool) -> None:
     """Validate all generated JSON files in the output directory."""

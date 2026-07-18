@@ -486,9 +486,7 @@ class ComponentsExtractor:
                 r.table.source_order,
             ),
         )
-        rank_by_table_id = {
-            id(r.table): idx for idx, r in enumerate(sorted_records, start=1)
-        }
+        rank_by_table_id = {id(r.table): idx for idx, r in enumerate(sorted_records, start=1)}
         updated: list[NormalizedTableRecord] = []
         for record in self.table_records:
             table = record.table

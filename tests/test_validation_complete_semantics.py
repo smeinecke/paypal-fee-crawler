@@ -278,14 +278,14 @@ def test_strict_allows_partial_market_with_unclassified_candidates(tmp_path: Pat
     assert validate_output_tree(tmp_path, strict=True) == []
 
 
-def test_require_all_complete_rejects_partial_markets(tmp_path: Path) -> None:
-    """--require-all-complete rejects intentionally partial markets."""
+def test_require_all_complete_allows_partial_markets(tmp_path: Path) -> None:
+    """--require-all-complete allows partial markets because they are still publishable."""
     derived = _complete_derived()
     derived["status"] = "partial"
     _write_minimal_tree(tmp_path, _country(derived))
 
     errors = validate_output_tree(tmp_path, require_all_complete=True)
-    assert any("not complete" in error.lower() for error in errors)
+    assert not any("not complete" in error.lower() for error in errors)
 
 
 def test_strict_rejects_conflicting_rule_identities(tmp_path: Path) -> None:

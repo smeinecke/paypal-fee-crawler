@@ -419,9 +419,7 @@ class OutputPublisher:
                 )
 
             path = json_dir / f"{output.market.url_slug}.json"
-            country_data = _normalize_public_output(
-                public.model_dump(mode="json", exclude_none=True)
-            )
+            country_data = _normalize_public_output(public.model_dump(mode="json", exclude_none=True))
             content_hash = self._compute_content_sha256(country_data)
             _write_json(path, country_data)
 
@@ -459,15 +457,11 @@ class OutputPublisher:
             )
 
         index = CountryIndex(generated_at=run_generated_at, countries=index_entries)
-        index_data = _normalize_public_output(
-            index.model_dump(mode="json", exclude_none=True)
-        )
+        index_data = _normalize_public_output(index.model_dump(mode="json", exclude_none=True))
         _write_json(json_dir / "index.json", index_data)
 
         core_fees = CoreFees(generated_at=run_generated_at, countries=core_entries)
-        core_data = _normalize_public_output(
-            core_fees.model_dump(mode="json", exclude_none=True)
-        )
+        core_data = _normalize_public_output(core_fees.model_dump(mode="json", exclude_none=True))
         _write_json(json_dir / "core-fees.json", core_data)
 
         manifest = CountryManifest(
@@ -476,9 +470,7 @@ class OutputPublisher:
             unsupported=unsupported,
             transient_failures=transient_failures or [],
         )
-        manifest_data = _normalize_public_output(
-            manifest.model_dump(mode="json", exclude_none=True)
-        )
+        manifest_data = _normalize_public_output(manifest.model_dump(mode="json", exclude_none=True))
         manifest_data["generated_at"] = manifest.generated_at
         _write_json(meta_dir / "countries.json", manifest_data)
         _write_json(
@@ -495,7 +487,9 @@ class OutputPublisher:
             _normalize_public_output(
                 {
                     "schema_version": 1,
-                    "transient_failures": [u.model_dump(mode="json", exclude_none=True) for u in (transient_failures or [])],
+                    "transient_failures": [
+                        u.model_dump(mode="json", exclude_none=True) for u in (transient_failures or [])
+                    ],
                 }
             ),
         )
@@ -513,9 +507,7 @@ class OutputPublisher:
 
         _write_json(
             meta_dir / "crawl-cache.json",
-            _normalize_public_output(
-                CrawlCache(markets=cache_entries).model_dump(mode="json", exclude_none=True)
-            ),
+            _normalize_public_output(CrawlCache(markets=cache_entries).model_dump(mode="json", exclude_none=True)),
         )
 
         _write_json(
@@ -528,9 +520,7 @@ class OutputPublisher:
         if classifier_metadata is not None:
             _write_json(
                 meta_dir / "classifier-version.json",
-                _normalize_public_output(
-                    classifier_metadata.model_dump(mode="json", exclude_none=True)
-                ),
+                _normalize_public_output(classifier_metadata.model_dump(mode="json", exclude_none=True)),
             )
 
         accepted_path = self.output_dir / "meta" / "accepted-regressions.json"
