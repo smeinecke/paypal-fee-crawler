@@ -49,12 +49,11 @@ def _detect_reference(row: Row, product_id: str | None) -> str | None:
     if _first_money(row):
         return None
     for schedule_name, keywords in _REFERENCE_SCHEDULE_KEYWORDS.items():
-        for kw in keywords:
-            if _norm(kw) in fee_text:
-                suffix = _REFERENCE_PRODUCT_SUFFIX.get(product_id or "", "")
-                if suffix:
-                    return f"{schedule_name}.{suffix}"
-                return schedule_name
+        if _keyword_match(fee_text, keywords, word_boundary=False):
+            suffix = _REFERENCE_PRODUCT_SUFFIX.get(product_id or "", "")
+            if suffix:
+                return f"{schedule_name}.{suffix}"
+            return schedule_name
     return None
 
 

@@ -57,9 +57,8 @@ def _schedule_name_from_table(table: Table, default: str | None) -> str:
         return "advanced_card_payments"
     mapping = _SCHEDULE_NAME_FROM_TABLE_MAPPING
     for name, keywords in mapping.items():
-        for kw in keywords:
-            if _norm(kw) in text:
-                return name
+        if _keyword_match(text, keywords, word_boundary=False):
+            return name
     return default or "commercial"
 
 

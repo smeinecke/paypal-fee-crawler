@@ -9,7 +9,7 @@ from ..models import (
 )
 from ..normalize import normalize_decimal_string
 from .apm import _extract_apm_methods, _is_domestic_label, _is_international_label
-from .text_utils import _keyword_in_text, _keyword_match, _norm, _table_text
+from .text_utils import _keyword_match, _norm, _table_text
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +214,7 @@ def _card_payment_methods_from_label(label: str) -> list[str] | None:
         ("credit card", "credit_card"),
         ("other card", "other_card"),
     ):
-        if _keyword_in_text(text, keyword) and method_id not in methods:
+        if _keyword_match(text, (keyword,), word_boundary=True) and method_id not in methods:
             methods.append(method_id)
     return methods if methods else None
 
