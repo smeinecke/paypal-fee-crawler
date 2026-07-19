@@ -198,14 +198,17 @@ class Crawler:
             except Exception as exc:
                 logger.debug("Could not load crawl state for %s: %s", market.paypal_market_code, exc)
 
+        # Prefer public source timestamps; fall back to crawl-state sidecar for
+        # values that are not included in the compact public output.
         source_url = None
-        source_updated_at = None
+        source_updated_at = public.source_updated_at
+        cms_updated_at = public.cms_updated_at
         raw_content_sha256 = None
         table_count = 0
         row_count = 0
         if state_entry is not None:
             source_url = state_entry.source_url
-            source_updated_at = state_entry.source_updated_at
+            source_updated_at = source_updated_at or state_entry.source_updated_at
             raw_content_sha256 = state_entry.raw_content_sha256
             table_count = state_entry.table_count
             row_count = state_entry.row_count
@@ -214,6 +217,7 @@ class Crawler:
             requested_url=source_url or "",
             canonical_url=source_url,
             page_updated_at=source_updated_at,
+            cms_updated_at=cms_updated_at,
             content_sha256=raw_content_sha256,
         )
 

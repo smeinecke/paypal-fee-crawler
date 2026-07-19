@@ -176,14 +176,6 @@ def _build_output(code: str, html: str, existing: CountryOutput | None) -> Count
     )
 
 
-def _stable_timestamp(outputs: dict[str, CountryOutput]) -> str:
-    """Return the latest generated_at timestamp so existing files remain stable."""
-    timestamps = [o.generated_at for o in outputs.values() if o.generated_at]
-    if not timestamps:
-        return "2025-01-01T00:00:00+00:00"
-    return max(timestamps)
-
-
 def _build_change_report(
     outputs: dict[str, CountryOutput],
     output_dir: Path,
@@ -220,18 +212,12 @@ def main() -> int:
         existing = outputs.get(code.upper())
         outputs[code.upper()] = _build_output(code, html, existing)
 
-    timestamp = _stable_timestamp(outputs)
-
-    for cc in list(outputs.keys()):
-        if outputs[cc].generated_at is None:
-            outputs[cc] = outputs[cc].model_copy(update={"generated_at": timestamp})
-
     markets = [output.market for output in outputs.values()]
     unsupported: list = []
 
     change_report = _build_change_report(outputs, OUTPUT_DIR)
 
-    crawler = Crawler(CrawlConfiguration(output_dir=str(OUTPUT_DIR), timestamp=timestamp))
+    crawler = Crawler(CrawlConfiguration(output_dir=str(OUTPUT_DIR)))
     changed, changed_files, publisher = crawler.publish_outputs(
         OUTPUT_DIR,
         outputs,
