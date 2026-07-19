@@ -38,22 +38,25 @@ from .text_utils import (
 logger = logging.getLogger(__name__)
 
 
-def _score_label_against_product(label: str, normalized_aliases: tuple[str, ...]) -> int:
-    normalized = _norm(label)
+def _score_label_against_product(label: str, normalized_aliases: tuple[str, ...], label_norm: str | None = None) -> int:
+    if label_norm is None:
+        label_norm = _norm(label)
     best = 0
     for alias in normalized_aliases:
-        if alias == normalized:
+        if alias == label_norm:
             return max(best, len(alias) * 10)
-        if alias in normalized:
+        if alias in label_norm:
             best = max(best, len(alias))
     return best
 
 
-def _classify_product(label: str) -> tuple[str | None, list[str]]:
+def _classify_product(label: str, *, label_norm: str | None = None) -> tuple[str | None, list[str]]:
     """Return the best matching product ID and any ambiguous alternatives."""
+    if label_norm is None:
+        label_norm = _norm(label)
     scores: dict[str, int] = {}
     for product_id, aliases in _NORMALIZED_PRODUCT_ALIASES.items():
-        score = _score_label_against_product(label, aliases)
+        score = _score_label_against_product(label, aliases, label_norm=label_norm)
         if score:
             scores[product_id] = score
     if not scores:
@@ -110,14 +113,14 @@ def _is_withdrawals_rate_table(table: Table, text: str) -> bool:
     ):
         return False
     # Look for a Rate/% column. Tables that merely list limits or currencies are
-    # not rate tables.
-    header_text = " ".join(h.text for h in table.headers)
-    if "rate" in _norm(header_text) or "%" in header_text:
+    # not rate tables. ``text`` already normalizes caption, section path and
+    # headers, so reuse it for the header scan.
+    if "rate" in text or "%" in text:
         return True
     # Some rate tables put the rate in the second column without a header.
     for row in table.rows:
         cells = [c.text for c in row.cells if c.text.strip()]
-        if any("%" in c or "rate" in _norm(c) for c in cells):
+        if any("%" in c or "rate" in c.lower() for c in cells):
             return True
     return False
 
@@ -184,11 +187,13 @@ def _classify_table_category(table: Table) -> str | None:
     return category
 
 
-def _is_limit_or_cap_row(label: str, fee_text: str = "") -> bool:
+def _is_limit_or_cap_row(label: str, fee_text: str = "", *, label_norm: str | None = None) -> bool:
     """Return True if a row describes a limit, cap, min/max or ceiling/floor."""
     if _text_indicates_percentage(fee_text):
         return False
-    combined = _norm(label + " " + fee_text)
+    if label_norm is None:
+        label_norm = _norm(label)
+    combined = _norm(label_norm + " " + fee_text)
     return _keyword_match(combined, _LIMIT_OR_CAP_KEYWORDS, word_boundary=False)
 
 
@@ -249,7 +254,7 @@ def _classify_table_by_row_labels(table: Table) -> str | None:
         label = _row_label(row)
         if not label:
             continue
-        product_id, _ = _classify_product(label)
+        product_id, _ = _classify_product(label, label_norm=_norm(label))
         if product_id:
             category = _PRODUCT_CATEGORY_MAP.get(product_id)
             if category:
@@ -266,11 +271,16 @@ def _classify_table_by_row_labels(table: Table) -> str | None:
     return best_category
 
 
-def _classify_product_or_apm(label: str) -> tuple[str | None, list[str]]:
+def _classify_product_or_apm(
+    label: str,
+    *,
+    label_norm: str | None = None,
+    methods: list[str] | None = None,
+) -> tuple[str | None, list[str]]:
     """Classify a row label, treating APM special labels as unambiguous APM."""
-    if _is_apm_special_label(label):
+    if _is_apm_special_label(label, methods=methods, label_norm=label_norm):
         return "alternative_payment_methods", []
-    return _classify_product(label)
+    return _classify_product(label, label_norm=label_norm)
 
 
 def _resolve_ambiguous_product(
@@ -384,9 +394,12 @@ def _resolve_product_id(
     unclassified: list[UnclassifiedFeeRow],
     ambiguous: list[AmbiguousFeeRow],
     ignored: list[UnclassifiedFeeRow],
+    *,
+    label_norm: str | None = None,
+    methods: list[str] | None = None,
 ) -> tuple[str | None, str | None]:
     """Determine the product id and textual reference for a single table row."""
-    product_id, ambiguous_candidates = _classify_product_or_apm(label)
+    product_id, ambiguous_candidates = _classify_product_or_apm(label, label_norm=label_norm, methods=methods)
     if ambiguous_candidates:
         product_id = _resolve_ambiguous_product(
             label,

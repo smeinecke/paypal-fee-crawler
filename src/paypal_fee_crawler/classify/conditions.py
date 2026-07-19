@@ -120,7 +120,11 @@ def _is_generic_apm_label(label: str) -> bool:
     )
 
 
-def _extract_country_group_condition(label: str) -> dict[str, Any] | None:
+def _extract_country_group_condition(
+    label: str,
+    *,
+    label_norm: str | None = None,
+) -> dict[str, Any] | None:
     """Parse a row label like 'AG, BB, BM & SA' into a list of market codes.
 
     Returns an applies_to_markets condition if the label contains market codes.
@@ -145,7 +149,9 @@ def _extract_country_group_condition(label: str) -> dict[str, Any] | None:
         "altri",
         "sonstige",
     )
-    if _keyword_match(_norm(text), default_phrases, word_boundary=False):
+    if label_norm is None:
+        label_norm = _norm(text)
+    if _keyword_match(label_norm, default_phrases, word_boundary=False):
         return {"applies_to_markets": ["all_other_markets"]}
     # Look for 2-character uppercase market codes separated by commas,
     # ampersands, 'and' or whitespace. A 2-char code may be followed by
@@ -398,25 +404,35 @@ def _transaction_region_for_variant(
     label: str,
     variant_id: str | None,
     table: Table | None,
+    *,
+    label_norm: str | None = None,
+    table_text_norm: str | None = None,
 ) -> str | None:
     """Infer a transaction_region from the variant, row label, or table caption."""
+    if label_norm is None:
+        label_norm = _norm(label)
     if variant_id in ("domestic", "international"):
         return variant_id
     if variant_id in ("crypto", "digital_goods"):
-        if _is_international_label(label):
+        if _is_international_label(label, label_norm=label_norm):
             return "international"
-        if _is_domestic_label(label):
+        if _is_domestic_label(label, label_norm=label_norm):
             return "domestic"
         return None
-    if _is_international_label(label) and not _is_domestic_label(label):
+    if _is_international_label(label, label_norm=label_norm) and not _is_domestic_label(label, label_norm=label_norm):
         return "international"
-    if _is_domestic_label(label) and not _is_international_label(label):
+    if _is_domestic_label(label, label_norm=label_norm) and not _is_international_label(label, label_norm=label_norm):
         return "domestic"
     if table:
-        table_text = _table_text(table)
-        if _is_international_label(table_text) and not _is_domestic_label(table_text):
+        if table_text_norm is None:
+            table_text_norm = _table_text(table)
+        if _is_international_label(table_text_norm, label_norm=table_text_norm) and not _is_domestic_label(
+            table_text_norm, label_norm=table_text_norm
+        ):
             return "international"
-        if _is_domestic_label(table_text) and not _is_international_label(table_text):
+        if _is_domestic_label(table_text_norm, label_norm=table_text_norm) and not _is_international_label(
+            table_text_norm, label_norm=table_text_norm
+        ):
             return "domestic"
     return None
 
@@ -427,8 +443,15 @@ def _conditions_for_row(
     label: str,
     methods: list[str] | None = None,
     table: Table | None = None,
+    *,
+    label_norm: str | None = None,
+    table_text_norm: str | None = None,
 ) -> dict[str, Any]:
     """Return calculable conditions for a product rule based on the source row."""
+    if label_norm is None:
+        label_norm = _norm(label)
+    if table and table_text_norm is None:
+        table_text_norm = _table_text(table)
     conditions: dict[str, Any] = {}
     if product_id == "nonprofit":
         conditions["merchant_approval_required"] = True
@@ -446,14 +469,16 @@ def _conditions_for_row(
         _conditions_for_other_commercial(conditions, label, variant_id, table)
     if product_id == "withdrawals" and variant_id and variant_id != "standard":
         conditions["withdrawal_method"] = variant_id
-    region = _transaction_region_for_variant(label, variant_id, table)
+    region = _transaction_region_for_variant(
+        label, variant_id, table, label_norm=label_norm, table_text_norm=table_text_norm
+    )
     if region:
         conditions["transaction_region"] = region
-    market_condition = _extract_country_group_condition(label)
+    market_condition = _extract_country_group_condition(label, label_norm=label_norm)
     if market_condition:
         conditions.update(market_condition)
     if product_id == "qr_code_payments" and variant_id:
-        amount_condition = _extract_amount_condition(label)
+        amount_condition = _extract_amount_condition(label, label_norm=label_norm)
         if amount_condition:
             conditions["amount"] = amount_condition
     return conditions
@@ -470,9 +495,13 @@ def _maximum_fee_schedule_for_conditions(conditions: dict[str, Any]) -> str | No
     return None
 
 
-def _extract_amount_condition(label: str) -> dict[str, Any] | None:
+def _extract_amount_condition(
+    label: str,
+    *,
+    label_norm: str | None = None,
+) -> dict[str, Any] | None:
     """Parse a threshold expression like 'below 10.00 EUR' into a condition."""
-    text = _norm(label)
+    text = label_norm if label_norm is not None else _norm(label)
     operators = {
         "<": "lt",
         "<=": "lte",

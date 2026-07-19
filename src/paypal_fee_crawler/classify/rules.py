@@ -49,10 +49,18 @@ from .text_utils import (
     _row_cells_text,
     _row_fee_cell,
     _row_label,
+    _table_text,
 )
 from .variants import _variant_id_for_row
 
 logger = logging.getLogger(__name__)
+
+# Precompiled pattern for numeric amounts with an optional trailing ISO currency code.
+# Supports both thousands-separated and decimal-comma forms so a value like
+# "50,000.00 IDR" is parsed as a single amount.
+_DIRECT_FIXED_AMOUNT_RE = re.compile(
+    r"(?P<operator>[+\-])?(?P<amount>\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)\s*(?P<currency>[A-Za-z]{3})?"
+)
 
 
 def _extract_direct_fixed_amounts(
@@ -60,21 +68,19 @@ def _extract_direct_fixed_amounts(
     product_id: str,
     table: Table,
     source: Source | None,
+    *,
+    label_norm: str | None = None,
 ) -> list[tuple[str, str, str]]:
     """Return direct fixed-fee amounts for a row as (amount, currency, variant_id)."""
     fee_text = _row_fee_cell(row)
     if not fee_text:
         return []
     label = _row_label(row)
+    if label_norm is None:
+        label_norm = _norm(label)
     inferred_currency = _infer_currency_for_row(row, table, source)
     amounts: list[tuple[str, str, str]] = []
-    # Match numeric amounts with an optional trailing ISO currency code.  The
-    # pattern supports both thousands-separated and decimal-comma forms so a
-    # value like "50,000.00 IDR" is parsed as a single amount.
-    pattern = re.compile(
-        r"(?P<operator>[+\-])?(?P<amount>\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)\s*(?P<currency>[A-Za-z]{3})?"
-    )
-    matches = list(pattern.finditer(fee_text))
+    matches = list(_DIRECT_FIXED_AMOUNT_RE.finditer(fee_text))
     for idx, match in enumerate(matches):
         amount_raw = match.group("amount")
         if not amount_raw:
@@ -87,9 +93,12 @@ def _extract_direct_fixed_amounts(
             continue
         next_start = matches[idx + 1].start() if idx + 1 < len(matches) else len(fee_text)
         segment = fee_text[match.start() : next_start]
-        variant_id = _variant_id_for_row(product_id, label, [], table, fee_text=segment)
+        variant_id = _variant_id_for_row(product_id, label, [], table, fee_text=segment, label_norm=label_norm)
         if variant_id is None:
-            variant_id = _variant_id_for_row(product_id, label, [], table, fee_text=fee_text) or "standard"
+            variant_id = (
+                _variant_id_for_row(product_id, label, [], table, fee_text=fee_text, label_norm=label_norm)
+                or "standard"
+            )
         amounts.append((amount, currency, variant_id))
     # Fallback: use the tokenizer's money/number tokens when regex failed to
     # produce a parseable result.
@@ -100,13 +109,19 @@ def _extract_direct_fixed_amounts(
                     amount = _parse_canonical_amount(token.amount)
                     if amount is None:
                         continue
-                    variant_id = _variant_id_for_row(product_id, label, [], table, fee_text=fee_text) or "standard"
+                    variant_id = (
+                        _variant_id_for_row(product_id, label, [], table, fee_text=fee_text, label_norm=label_norm)
+                        or "standard"
+                    )
                     amounts.append((amount, token.currency, variant_id))
                 elif token.kind == "number" and token.value and inferred_currency:
                     amount = _parse_canonical_amount(token.value)
                     if amount is None:
                         continue
-                    variant_id = _variant_id_for_row(product_id, label, [], table, fee_text=fee_text) or "standard"
+                    variant_id = (
+                        _variant_id_for_row(product_id, label, [], table, fee_text=fee_text, label_norm=label_norm)
+                        or "standard"
+                    )
                     amounts.append((amount, inferred_currency, variant_id))
     # Explicit zero-fee rows (e.g. "No Fee") for direct fixed-fee products are
     # still fee information and should be represented as a 0 fixed amount.
@@ -115,7 +130,10 @@ def _extract_direct_fixed_amounts(
         if _keyword_match(fee_norm, ("no fee", "free", "gratis", "kostenlos", "0.00", "0,00"), word_boundary=False):
             currency = _infer_currency_for_row(row, table, source)
             if currency:
-                variant_id = _variant_id_for_row(product_id, label, [], table, fee_text=fee_text) or "standard"
+                variant_id = (
+                    _variant_id_for_row(product_id, label, [], table, fee_text=fee_text, label_norm=label_norm)
+                    or "standard"
+                )
                 amounts.append(("0", currency, variant_id))
     return amounts
 
@@ -333,16 +351,19 @@ def _extract_rules_from_rate_table(
     default_product = _TABLE_CATEGORY_PRODUCT.get(table_category)
     force_default_product = table_category in _CATEGORY_SPECIFIC_TABLES
 
+    table_text_norm = _table_text(table)
     for idx, row in enumerate(table.rows):
         label = _row_label(row)
+        label_norm = _norm(label)
         fee_text = _row_fee_cell(row)
-        is_limit_or_cap = _is_limit_or_cap_row(label, fee_text)
+        is_limit_or_cap = _is_limit_or_cap_row(label, fee_text, label_norm=label_norm)
         if _has_likely_numeric_fee_candidate(row, table) and not is_limit_or_cap:
             numeric_fee_candidates += 1
         if not label:
             ignored.append(_ignored_rate_row(row, idx, label, table, source, "empty label"))
             continue
 
+        methods, unknown_methods = _extract_apm_methods(label, label_norm=label_norm)
         product_id, reference = _resolve_product_id(
             label,
             row,
@@ -354,6 +375,8 @@ def _extract_rules_from_rate_table(
             unclassified,
             ambiguous,
             ignored,
+            label_norm=label_norm,
+            methods=methods,
         )
         if product_id is None:
             continue
@@ -363,14 +386,16 @@ def _extract_rules_from_rate_table(
             continue
 
         pct, fixed_expr = _parse_rate_expression(fee_text)
-        methods, unknown_methods = _extract_apm_methods(label)
-        variant_id = _variant_id_for_row(product_id, label, methods, table, fee_text=fee_text) or "standard"
+        variant_id = (
+            _variant_id_for_row(product_id, label, methods, table, fee_text=fee_text, label_norm=label_norm)
+            or "standard"
+        )
 
         if product_id == "alternative_payment_methods" and variant_id in _APM_VARIANT_ONLY_VARIANTS:
             unknown_methods = []
 
         if pct is None and reference is None and product_id in _DIRECT_FIXED_FEE_PRODUCTS:
-            direct_amounts = _extract_direct_fixed_amounts(row, product_id, table, source)
+            direct_amounts = _extract_direct_fixed_amounts(row, product_id, table, source, label_norm=label_norm)
             if direct_amounts:
                 rules.extend(
                     _build_direct_fixed_rules(
@@ -387,7 +412,15 @@ def _extract_rules_from_rate_table(
                 )
                 continue
 
-        conditions = _conditions_for_row(product_id, variant_id, label, methods=methods, table=table)
+        conditions = _conditions_for_row(
+            product_id,
+            variant_id,
+            label,
+            methods=methods,
+            table=table,
+            label_norm=label_norm,
+            table_text_norm=table_text_norm,
+        )
 
         if pct is None and reference is None:
             _handle_unusable_rate_row(row, idx, label, product_id, table, source, unclassified, ignored)

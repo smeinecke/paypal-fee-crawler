@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from .models import Cell, ParserWarning, Row, Section, Table, TableHeader
@@ -12,6 +12,38 @@ from .pricing_tokens import render_rich_text_node
 from .profiles import NormalizedTableRecord, TableContext
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_numbered_entries[T](
+    data: dict[str, Any],
+    kind: str,
+    factory: Callable[[Cell], T],
+) -> list[tuple[int, T]]:
+    """Extract values keyed as ``column<N>{kind}`` from ``data`` and its wrappers.
+
+    ``kind`` is the suffix matched by ``_NUMBERED_COLUMN_RE`` (e.g. ``"Header"``
+    or ``"Text"``). The returned list contains ``(index, value)`` pairs where
+    ``index`` is 0-based.
+    """
+    entries: list[tuple[int, T]] = []
+    for key, value in data.items():
+        match = _NUMBERED_COLUMN_RE.match(key)
+        if not match or match.group("kind") != kind:
+            continue
+        idx = int(match.group("index")) - 1
+        rendered = render_rich_text_node(value)
+        entries.append((idx, factory(rendered)))
+    content = data.get("content") or data.get("fields") or {}
+    if isinstance(content, dict):
+        for key, value in content.items():
+            match = _NUMBERED_COLUMN_RE.match(key)
+            if not match or match.group("kind") != kind:
+                continue
+            idx = int(match.group("index")) - 1
+            rendered = render_rich_text_node(value)
+            entries.append((idx, factory(rendered)))
+    return entries
+
 
 # Component types that carry page structure or table data.
 _TABLE_COMPONENT_TYPES = {"FeeTable", "FeeTableReference", "FeeTableRow", "FeeTableSection", "FeeTableSplitRow"}
@@ -266,11 +298,12 @@ class ComponentsExtractor:
                 # merged so a referenced table and its source stay consistent.
                 if table.document_id and table.document_id in self._table_records_by_id:
                     existing = self._table_records_by_id[table.document_id]
-                    merged_table = self._merge_tables(existing.table, table)
-                    merged_record = self._merge_table_records(existing, record, merged_table)
-                    self._table_by_id[table.document_id] = merged_table
+                    merged_record = self._merge_record(existing, record)
+                    self._table_by_id[table.document_id] = merged_record.table
                     self._table_records_by_id[table.document_id] = merged_record
-                    self.tables = [merged_table if t.document_id == table.document_id else t for t in self.tables]
+                    self.tables = [
+                        merged_record.table if t.document_id == table.document_id else t for t in self.tables
+                    ]
                     self.table_records = [
                         merged_record if r.table.document_id == table.document_id else r for r in self.table_records
                     ]
@@ -367,29 +400,16 @@ class ComponentsExtractor:
 
     def _extract_numbered_headers(self, data: dict[str, Any]) -> tuple[list[TableHeader], int | None]:
         """Extract headers keyed as column<N>Header, ordered numerically."""
-        headers: list[tuple[int, TableHeader]] = []
-        for key, value in data.items():
-            match = _NUMBERED_COLUMN_RE.match(key)
-            if not match or match.group("kind") != "Header":
-                continue
-            idx = int(match.group("index")) - 1
-            rendered = render_rich_text_node(value)
-            headers.append((idx, TableHeader(text=rendered.text, tokens=rendered.tokens, links=rendered.links)))
-        # Also check content/fields wrappers.
-        content = data.get("content") or data.get("fields") or {}
-        if isinstance(content, dict):
-            for key, value in content.items():
-                match = _NUMBERED_COLUMN_RE.match(key)
-                if not match or match.group("kind") != "Header":
-                    continue
-                idx = int(match.group("index")) - 1
-                rendered = render_rich_text_node(value)
-                headers.append((idx, TableHeader(text=rendered.text, tokens=rendered.tokens, links=rendered.links)))
-        if not headers:
+        entries = _extract_numbered_entries(
+            data,
+            "Header",
+            lambda rendered: TableHeader(text=rendered.text, tokens=rendered.tokens, links=rendered.links),
+        )
+        if not entries:
             return [], None
-        max_idx = max(idx for idx, _ in headers)
+        max_idx = max(idx for idx, _ in entries)
         ordered = [TableHeader(text="")] * (max_idx + 1)
-        for idx, header in headers:
+        for idx, header in entries:
             ordered[idx] = header
         return ordered, len(ordered)
 
@@ -428,24 +448,7 @@ class ComponentsExtractor:
 
     def _extract_numbered_cells(self, data: dict[str, Any]) -> tuple[list[Cell], int]:
         """Extract cells keyed as column<N>Text, ordered numerically, padding empties."""
-        cells: list[tuple[int, Cell]] = []
-        for key, value in data.items():
-            match = _NUMBERED_COLUMN_RE.match(key)
-            if not match or match.group("kind") != "Text":
-                continue
-            idx = int(match.group("index")) - 1
-            rendered = render_rich_text_node(value)
-            cells.append((idx, rendered))
-        # Also check content/fields wrappers.
-        content = data.get("content") or data.get("fields") or {}
-        if isinstance(content, dict):
-            for key, value in content.items():
-                match = _NUMBERED_COLUMN_RE.match(key)
-                if not match or match.group("kind") != "Text":
-                    continue
-                idx = int(match.group("index")) - 1
-                rendered = render_rich_text_node(value)
-                cells.append((idx, rendered))
+        cells = list(_extract_numbered_entries(data, "Text", lambda rendered: rendered))
         # Legacy cells array.
         raw_cells = data.get("cells") or []
         if isinstance(raw_cells, dict):
@@ -541,6 +544,11 @@ class ComponentsExtractor:
                 combined.append(context)
         return NormalizedTableRecord(table=merged_table, contexts=tuple(combined))
 
+    def _merge_record(self, existing: NormalizedTableRecord, new: NormalizedTableRecord) -> NormalizedTableRecord:
+        """Merge ``new`` into ``existing`` and return a single combined record."""
+        merged_table = self._merge_tables(existing.table, new.table)
+        return self._merge_table_records(existing, new, merged_table)
+
     def _merge_fragment_tables(self) -> None:
         """Merge physical FeeTable fragments that describe the same logical table.
 
@@ -569,10 +577,7 @@ class ComponentsExtractor:
                 table.declared_column_count,
             )
             if key in merged:
-                existing = merged[key]
-                merged_table = self._merge_tables(existing.table, table)
-                merged_record = self._merge_table_records(existing, record, merged_table)
-                merged[key] = merged_record
+                merged[key] = self._merge_record(merged[key], record)
             else:
                 merged[key] = record
 
@@ -587,9 +592,7 @@ class ComponentsExtractor:
                 continue
             doc_id = record.table.document_id
             if doc_id in target_records:
-                existing = target_records[doc_id]
-                merged_table = self._merge_tables(existing.table, record.table)
-                target_records[doc_id] = self._merge_table_records(existing, record, merged_table)
+                target_records[doc_id] = self._merge_record(target_records[doc_id], record)
             else:
                 target_records[doc_id] = record
         return target_records
@@ -667,11 +670,8 @@ class ComponentsExtractor:
             return content_records
 
         ref_table = self._resolved_reference_table(ref, target_record, target_id)
-        merged_table = self._merge_tables(target_record.table, ref_table)
-        merged_record = self._merge_table_records(
-            target_record,
-            NormalizedTableRecord(table=ref_table, contexts=ref_record.contexts),
-            merged_table,
+        merged_record = self._merge_record(
+            target_record, NormalizedTableRecord(table=ref_table, contexts=ref_record.contexts)
         )
         target_records[target_id] = merged_record
         return self._replace_content_record(content_records, target_record, merged_record)

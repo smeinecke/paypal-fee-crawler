@@ -55,7 +55,7 @@ def _tokenize_apm_label(part_norm: str) -> set[str]:
     return set(joined.split())
 
 
-def _extract_apm_methods(label: str) -> tuple[list[str], list[str]]:
+def _extract_apm_methods(label: str, *, label_norm: str | None = None) -> tuple[list[str], list[str]]:
     """Extract canonical payment-method IDs from an APM row label.
 
     Returns (canonical_ids, unknown_segments). The canonical IDs are sorted and
@@ -63,7 +63,7 @@ def _extract_apm_methods(label: str) -> tuple[list[str], list[str]]:
     known method. Token-based matching avoids false positives like "Republik"
     containing "blik" or "Thailändische Baht" containing "thai".
     """
-    norm = _norm(label)
+    norm = label_norm if label_norm is not None else _norm(label)
     if not norm:
         return [], []
 
@@ -110,7 +110,11 @@ def _extract_apm_methods(label: str) -> tuple[list[str], list[str]]:
     return sorted(methods), sorted(set(unknowns))
 
 
-def _is_apm_special_label(label: str) -> bool:
+def _is_apm_special_label(
+    label: str,
+    methods: list[str] | None = None,
+    label_norm: str | None = None,
+) -> bool:
     """Return True if a row label describes APM special methods.
 
     These labels list multiple alternative payment methods (e.g. Thai online
@@ -118,22 +122,24 @@ def _is_apm_special_label(label: str) -> bool:
     misclassified because they contain substrings like "pay later" (from
     "BLIK Pay Later") that collide with invoice_pay_later / pay_later_consumer.
     """
-    methods, _ = _extract_apm_methods(label)
+    if methods is None:
+        methods, _ = _extract_apm_methods(label, label_norm=label_norm)
     if not methods:
         return False
     # A spurious "online_bank_transfer" match can be triggered by generic tokens
     # such as "on" + "bank" in a withdrawal/return row (e.g. "Bank Return on
     # Withdrawal/Transfer out of PayPal"). Do not treat those as APM special.
     if methods == ["online_bank_transfer"]:
-        text = _norm(label)
-        if _keyword_match(text, ("withdrawal", "return", "chargeback", "refund"), word_boundary=False):
+        if label_norm is None:
+            label_norm = _norm(label)
+        if _keyword_match(label_norm, ("withdrawal", "return", "chargeback", "refund"), word_boundary=False):
             return False
     return any(m in _APM_SPECIAL_METHOD_IDS for m in methods)
 
 
-def _is_international_label(label: str) -> bool:
+def _is_international_label(label: str, *, label_norm: str | None = None) -> bool:
     """Return True if the label describes an international/cross-border fee."""
-    text = _norm(label)
+    text = label_norm if label_norm is not None else _norm(label)
     return _keyword_match(
         text,
         (
@@ -185,9 +191,9 @@ def _is_international_label(label: str) -> bool:
     )
 
 
-def _is_domestic_label(label: str) -> bool:
+def _is_domestic_label(label: str, *, label_norm: str | None = None) -> bool:
     """Return True if the label describes a domestic/in-country fee."""
-    text = _norm(label)
+    text = label_norm if label_norm is not None else _norm(label)
     if "international" in text:
         return False
     return _keyword_match(

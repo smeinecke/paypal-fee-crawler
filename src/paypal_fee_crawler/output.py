@@ -248,10 +248,9 @@ class OutputPublisher:
         existing_entry = self._existing_state_entry(output, existing_state, artifact_sha256)
         if existing_entry is not None:
             table_fingerprints = list(existing_entry.table_fingerprints)
-            classifier_version = existing_entry.classifier_version
         else:
             table_fingerprints = self._table_fingerprints_for_output(output)
-            classifier_version = classifier_metadata.classifier_version if classifier_metadata is not None else None
+        classifier_version = classifier_metadata.classifier_version if classifier_metadata is not None else None
 
         return CrawlStateEntry(
             raw_content_sha256=output.source.content_sha256,

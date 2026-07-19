@@ -276,11 +276,14 @@ def _variant_id_for_row(
     methods: list[str],
     table: Table | None = None,
     fee_text: str | None = None,
+    *,
+    label_norm: str | None = None,
 ) -> str | None:
     """Return a stable variant id for a row, if needed."""
-    norm_label = _norm(label)
+    if label_norm is None:
+        label_norm = _norm(label)
     table_text = _table_text(table) if table else ""
-    combined = norm_label + " " + table_text
+    combined = label_norm + " " + table_text
     # Direct fixed-fee variants are often encoded in the fee cell text (e.g. two
     # SEPA settlement options in one cell), so include that context when it is
     # available.
@@ -289,12 +292,12 @@ def _variant_id_for_row(
 
     # Generic domestic/international variants are detected up-front so that
     # product-specific logic can be layered on top of them.
-    is_international = _is_international_label(label)
-    is_domestic = _is_domestic_label(label)
+    is_international = _is_international_label(label, label_norm=label_norm)
+    is_domestic = _is_domestic_label(label, label_norm=label_norm)
 
     resolver = _VARIANT_DISPATCH.get(product_id)
     if resolver:
-        variant = resolver(label, norm_label, table_text, combined, methods, is_international, is_domestic)
+        variant = resolver(label, label_norm, table_text, combined, methods, is_international, is_domestic)
         if variant is not None:
             return variant
 

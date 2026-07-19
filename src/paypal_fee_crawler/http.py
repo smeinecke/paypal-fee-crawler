@@ -76,6 +76,7 @@ class HttpResponse:
     last_modified: str | None = None
     content_sha256: str | None = None
     from_cache: bool = False
+    html_tree: Any | None = None
 
     def __post_init__(self) -> None:
         if self.content_sha256 is None and self.content:
@@ -169,12 +170,19 @@ class HttpClient:
         if not self._is_allowed_host(url):
             raise ContentSecurityError(f"Host not in allowlist: {parsed.hostname}")
 
-    def _detect_blocking_page(self, response: httpx.Response) -> None:
+    def _detect_blocking_page(
+        self,
+        response: httpx.Response,
+        tree: Any | None = None,
+    ) -> None:
         """Raise if the response looks like a login, CAPTCHA, or generic error page.
 
         Detection is structural, not a simple substring search. A generic JavaScript
         dependency whose URL contains the string ``captcha`` must not by itself
         classify the page as a challenge.
+
+        When ``tree`` is provided it is reused; otherwise the response text is
+        parsed once here.
         """
         if response.status_code == 429:
             retry_after = response.headers.get("retry-after")
@@ -186,10 +194,11 @@ class HttpClient:
         if response.status_code >= 400:
             raise PermanentHttpError(f"HTTP {response.status_code} for {response.url}", response.status_code)
 
-        try:
-            tree = html.fromstring(response.text)
-        except Exception:
-            return
+        if tree is None:
+            try:
+                tree = html.fromstring(response.text)
+            except Exception:
+                return
 
         title, challenge_score, login_score = self._parse_challenge_signals(tree)
 
@@ -320,10 +329,11 @@ class HttpClient:
         request_headers = self._client_headers()
 
         last_error: Exception | None = None
+        html_tree: Any | None = None
 
         async def _network(req_headers: dict[str, str], reval_headers: dict[str, str]) -> httpx.Response:
             headers = {**req_headers, **reval_headers}
-            nonlocal last_error
+            nonlocal last_error, html_tree
             for attempt in range(self.config.max_retries + 1):
                 try:
                     async with self._semaphore:
@@ -343,7 +353,13 @@ class HttpClient:
                             )
                         if response.status_code == 304:
                             return response
-                        self._detect_blocking_page(response)
+                        # Reuse a single HTML parse for blocking-page detection
+                        # and downstream extraction.
+                        try:
+                            html_tree = html.fromstring(response.text)
+                        except Exception:
+                            html_tree = None
+                        self._detect_blocking_page(response, tree=html_tree)
                         if self.config.request_delay > 0:
                             await asyncio.sleep(self.config.request_delay)
                         return response
@@ -385,6 +401,7 @@ class HttpClient:
             etag=response.headers.get("etag"),
             last_modified=response.headers.get("last-modified"),
             from_cache=from_cache or response.status_code == 304,
+            html_tree=html_tree,
         )
         return http_response
 

@@ -38,26 +38,32 @@ def _strip_assignment(text: str, name: str) -> str:
     return after
 
 
-def _iter_script_texts(html_text: str) -> Iterator[str]:
-    """Parse *html_text* once and yield the text of every ``<script>`` tag."""
-    try:
-        tree = html.fromstring(html_text)
-    except Exception as exc:
-        raise ParserError(f"Failed to parse HTML: {exc}") from exc
+def _iter_script_texts(html_text: str, tree: Any | None = None) -> Iterator[str]:
+    """Parse *html_text* once and yield the text of every ``<script>`` tag.
+
+    If a pre-parsed *tree* is supplied it is used instead of parsing again.
+    """
+    if tree is None:
+        try:
+            tree = html.fromstring(html_text)
+        except Exception as exc:
+            raise ParserError(f"Failed to parse HTML: {exc}") from exc
+        if tree is None:
+            raise ParserError("Parsed HTML tree is unexpectedly None")
     for script in tree.xpath("//script"):
         text = script.text or ""
         if text:
             yield text
 
 
-def extract_cms_context(html_text: str) -> dict[str, Any]:
+def extract_cms_context(html_text: str, tree: Any | None = None) -> dict[str, Any]:
     """Parse the HTML and return exactly one CMS render context object.
 
     Raises:
         ParserError: if zero or multiple contexts are found or if the JSON is invalid.
     """
     contexts: list[dict[str, Any]] = []
-    for text in _iter_script_texts(html_text):
+    for text in _iter_script_texts(html_text, tree=tree):
         if TARGET_ASSIGNMENT not in text:
             continue
         # Find the assignment and strip the wrapper, keeping only the JSON object.

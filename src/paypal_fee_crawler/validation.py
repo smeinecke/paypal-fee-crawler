@@ -390,19 +390,20 @@ def generate_manifest_schema() -> dict[str, Any]:
 def validate_all_output(
     output_dir: Path | str,
     schema_only: bool = False,
-    strict: bool = False,
-    require_all_complete: bool = False,
 ) -> list[str]:
-    """Validate every generated JSON file in the output directory."""
+    """Validate every generated JSON file in the output directory.
+
+    Per-file schema, currency and completeness checks are performed here.
+    Strict publication-readiness checks and tree-level consistency are handled
+    by ``validate_output_tree`` to avoid applying the same strict checks twice.
+    """
     output_dir = Path(output_dir)
     errors: list[str] = []
 
     for path in output_dir.glob("json/*.json"):
         if path.name in {"index.json", "core-fees.json"}:
             continue
-        file_errors = validate_file(
-            path, "country", schema_only=schema_only, strict=strict, require_all_complete=require_all_complete
-        )
+        file_errors = validate_file(path, "country", schema_only=schema_only)
         if file_errors:
             errors.append(f"{path}: " + "; ".join(file_errors))
 
@@ -414,7 +415,7 @@ def validate_all_output(
 
     core_path = output_dir / "json" / "core-fees.json"
     if core_path.exists():
-        file_errors = validate_file(core_path, "core_fees", strict=strict, require_all_complete=require_all_complete)
+        file_errors = validate_file(core_path, "core_fees")
         if file_errors:
             errors.append(f"{core_path}: " + "; ".join(file_errors))
 

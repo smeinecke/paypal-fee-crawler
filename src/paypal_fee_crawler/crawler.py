@@ -437,8 +437,11 @@ class Crawler:
         response: HttpResponse,
         market: Market,
     ) -> PageContent:
+        html_tree = response.html_tree
+        if html_tree is None:
+            html_tree = _parse_html_tree(response.text)
         try:
-            cms = extract_cms_context(response.text)
+            cms = extract_cms_context(response.text, tree=html_tree)
         except ParserError as exc:
             logger.warning(
                 "CMS context missing for %s, falling back to HTML extraction: %s",
@@ -457,7 +460,6 @@ class Crawler:
             page_locale = self.extract_locale(cms)
             pdf_url = self.extract_pdf_url(cms)
         else:
-            html_tree = _parse_html_tree(response.text)
             sections, tables, warnings = extract_html_tables(response.text, str(response.url), tree=html_tree)
             page_id = str(response.url).rstrip("/").split("/")[-1] or "unknown"
             page_title = self.extract_page_title(response.text, {})

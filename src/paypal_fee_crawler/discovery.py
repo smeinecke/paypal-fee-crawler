@@ -12,6 +12,7 @@ from .cms_context import (
     extract_cms_context,
     find_global_json_assignments,
 )
+from .components import iter_components
 from .constants import (
     DEFAULT_DISCOVERY_URL,
     FEE_PAGE_PATH_TEMPLATE,
@@ -85,16 +86,7 @@ BOOTSTRAP_MARKETS: list[Market] = [
 
 def _find_country_selectors(data: Any) -> list[dict[str, Any]]:
     """Recursively search parsed JSON for CountrySelector structures."""
-    found: list[dict[str, Any]] = []
-    if isinstance(data, dict):
-        if data.get("componentType") == "CountrySelector" or data.get("type") == "CountrySelector":
-            found.append(data)
-        for value in data.values():
-            found.extend(_find_country_selectors(value))
-    elif isinstance(data, list):
-        for item in data:
-            found.extend(_find_country_selectors(item))
-    return found
+    return [dict(comp) for comp in iter_components(data, "CountrySelector")]
 
 
 def _extract_languages(country: dict[str, Any]) -> tuple[list[Language], str | None]:
@@ -250,41 +242,26 @@ def _is_fee_page(page_data: dict[str, Any], response: HttpResponse) -> bool:
         return True
 
     # Look for fee-related components.
-    def _has_fee_component(data: Any) -> bool:
-        if isinstance(data, dict):
-            ct = data.get("componentType", "")
-            if isinstance(ct, str) and "Fee" in ct:
-                return True
-            for value in data.values():
-                if _has_fee_component(value):
-                    return True
-        elif isinstance(data, list):
-            for item in data:
-                if _has_fee_component(item):
-                    return True
-        return False
+    for comp in iter_components(page_data):
+        ct = comp.get("componentType", "")
+        if isinstance(ct, str) and "Fee" in ct:
+            return True
 
-    return _has_fee_component(page_data)
+    return False
 
 
 def _find_fee_links(data: Any, homepage: str) -> list[str]:
     """Search structurally for fee/business/merchant/seller links in CMS navigation."""
     links: list[str] = []
-    if isinstance(data, dict):
-        ct = data.get("componentType", "")
-        if isinstance(ct, str) and any(token in ct.lower() for token in ["nav", "link", "button"]):
-            href = data.get("href") or data.get("url") or data.get("link")
-            if (
-                href
-                and isinstance(href, str)
-                and any(token in href.lower() for token in ["fee", "business", "merchant", "seller"])
-            ):
-                links.append(urljoin(homepage, href))
-        for value in data.values():
-            links.extend(_find_fee_links(value, homepage))
-    elif isinstance(data, list):
-        for item in data:
-            links.extend(_find_fee_links(item, homepage))
+    link_types = {"nav", "link", "button"}
+    fee_tokens = {"fee", "business", "merchant", "seller"}
+    for comp in iter_components(data):
+        ct = comp.get("componentType", "")
+        if not (isinstance(ct, str) and any(token in ct.lower() for token in link_types)):
+            continue
+        href = comp.get("href") or comp.get("url") or comp.get("link")
+        if href and isinstance(href, str) and any(token in href.lower() for token in fee_tokens):
+            links.append(urljoin(homepage, href))
     return links
 
 
@@ -335,6 +312,38 @@ async def _fetch_with_flags(
     return None, True, False
 
 
+def _evaluate_fee_response(
+    response: HttpResponse,
+    code: str,
+    slug: str,
+    *,
+    context: str,
+    allow_path_fallback: bool = False,
+) -> tuple[str | None, bool]:
+    """Extract CMS context from a response and validate it as a fee page.
+
+    When ``allow_path_fallback`` is set, a valid HTML response whose final URL
+    matches a known fee page path under ``/{slug}/`` is accepted even if the CMS
+    context could not be parsed.
+    """
+    response_url = str(response.url)
+    try:
+        page_data = extract_cms_context(response.text)
+    except ParserError as exc:
+        if (
+            allow_path_fallback
+            and _is_html_response(response)
+            and _is_fee_url_path(response_url)
+            and urlparse(response_url).path.lower().startswith(f"/{slug}/")
+        ):
+            return response_url, False
+        logger.debug("Parser error extracting CMS from %s for %s: %s", context, code, exc)
+        return None, True
+    if _is_fee_page(page_data, response):
+        return response_url, False
+    return None, False
+
+
 async def _try_candidates(
     http_client: HttpClient,
     candidates: list[str],
@@ -351,22 +360,16 @@ async def _try_candidates(
         parser_failure = parser_failure or pf
         if response is None:
             continue
-        try:
-            page_data = extract_cms_context(response.text)
-        except ParserError as exc:
-            response_url = str(response.url)
-            if (
-                index == 0
-                and _is_html_response(response)
-                and _is_fee_url_path(response_url)
-                and urlparse(response_url).path.lower().startswith(f"/{slug}/")
-            ):
-                return response_url, tested, transient_failure, parser_failure
-            logger.debug("Parser error extracting CMS from candidate for %s: %s", code, exc)
-            parser_failure = True
-            continue
-        if _is_fee_page(page_data, response):
-            return str(response.url), tested, transient_failure, parser_failure
+        confirmed, pf = _evaluate_fee_response(
+            response,
+            code,
+            slug,
+            context="candidate",
+            allow_path_fallback=(index == 0),
+        )
+        parser_failure = parser_failure or pf
+        if confirmed:
+            return confirmed, tested, transient_failure, parser_failure
     return None, tested, transient_failure, parser_failure
 
 
@@ -404,14 +407,16 @@ async def _try_homepage_links(
         parser_failure = parser_failure or pf
         if response is None:
             continue
-        try:
-            page_data_link = extract_cms_context(response.text)
-        except ParserError as exc:
-            logger.debug("Parser error extracting CMS from fee link for %s: %s", code, exc)
-            parser_failure = True
-            continue
-        if _is_fee_page(page_data_link, response):
-            return str(response.url), transient_failure, parser_failure
+        confirmed, pf = _evaluate_fee_response(
+            response,
+            code,
+            "",
+            context="fee link",
+            allow_path_fallback=False,
+        )
+        parser_failure = parser_failure or pf
+        if confirmed:
+            return confirmed, transient_failure, parser_failure
     return None, transient_failure, parser_failure
 
 

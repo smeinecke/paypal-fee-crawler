@@ -326,7 +326,9 @@ def crawl_country(
 def validate(output_dir: str, verbose: bool, strict: bool, require_all_complete: bool) -> None:
     """Validate all generated JSON files in the output directory."""
     _configure_logging(verbose)
-    errors = validate_all_output(output_dir, strict=strict, require_all_complete=require_all_complete)
+    # Per-file schema/complete checks; strict/tree-level checks live in
+    # validate_output_tree so they are not applied twice.
+    errors = validate_all_output(output_dir)
     errors.extend(validate_output_tree(output_dir, strict=strict, require_all_complete=require_all_complete))
     errors = sorted(set(errors))
     if errors:
