@@ -15,6 +15,7 @@ import logging
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 from .models import (
@@ -1006,6 +1007,7 @@ _TABLE_CATEGORY_SCHEDULE: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
+@lru_cache(maxsize=100_000)
 def _norm(text: str | None) -> str:
     return clean_text(text or "").lower()
 
