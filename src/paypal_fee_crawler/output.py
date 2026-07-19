@@ -186,7 +186,7 @@ class OutputPublisher:
     def _compute_content_sha256(self, data: dict[str, Any]) -> str:
         return _country_output_hash(data)
 
-    def _run_generated_at(self, outputs: dict[str, CountryOutput]) -> str | None:
+    def _run_generated_at(self) -> str | None:
         """Return the configured run timestamp."""
         return self.timestamp
 
@@ -240,21 +240,14 @@ class OutputPublisher:
         output: CountryOutput,
         artifact_sha256: str,
         existing_state: CrawlState | None,
-        diagnostics: dict[str, Any] | None,
     ) -> CrawlStateEntry:
-        classifier_version = None
-        if diagnostics:
-            run = diagnostics.get(output.market.paypal_market_code)
-            if run is not None:
-                classifier_version = getattr(run, "classifier_version", None)
-
         existing_entry = self._existing_state_entry(output, existing_state, artifact_sha256)
         if existing_entry is not None:
             table_fingerprints = list(existing_entry.table_fingerprints)
-            if classifier_version is None and existing_entry.classifier_version is not None:
-                classifier_version = existing_entry.classifier_version
+            classifier_version = existing_entry.classifier_version
         else:
             table_fingerprints = self._table_fingerprints_for_output(output)
+            classifier_version = None
 
         return CrawlStateEntry(
             raw_content_sha256=output.source.content_sha256,
@@ -377,7 +370,6 @@ class OutputPublisher:
         markets: list[Market],
         unsupported: list[UnsupportedCountry],
         change_report: ChangeReport | None = None,
-        shadow_runs: dict[str, Any] | None = None,
         diagnostics: dict[str, Any] | None = None,
         classifier_metadata: ClassifierMetadata | None = None,
         crawler_revision: str | None = None,
@@ -402,7 +394,7 @@ class OutputPublisher:
 
         existing_state = self._load_existing_state()
         state_entries: dict[str, CrawlStateEntry] = {}
-        run_generated_at = self._run_generated_at(outputs)
+        run_generated_at = self._run_generated_at()
 
         for cc in sorted(outputs.keys()):
             output = outputs[cc]
@@ -453,7 +445,7 @@ class OutputPublisher:
             )
 
             state_entries[output.market.paypal_market_code] = self._build_state_entry(
-                output, content_hash, existing_state, diagnostics
+                output, content_hash, existing_state
             )
 
         index = CountryIndex(generated_at=run_generated_at, countries=index_entries)
@@ -546,14 +538,6 @@ class OutputPublisher:
 
         self._write_crawler_revision(staging, crawler_revision)
         self.publish_change_report(staging, change_report)
-
-        if shadow_runs:
-            _write_json(
-                meta_dir / "classification-shadow.json",
-                _normalize_public_output(
-                    {"schema_version": 2, "generated_at": run_generated_at, "countries": _to_jsonable(shadow_runs)}
-                ),
-            )
 
         return staging != self.output_dir, staging
 

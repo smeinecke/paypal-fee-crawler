@@ -23,7 +23,6 @@ from paypal_fee_crawler.classify import (
     _resolve_reference,
     _variant_for_withdrawals,
 )
-from paypal_fee_crawler.comparison import ComparisonResult, compare_runs
 from paypal_fee_crawler.models import Cell, Row, Source, Table, TableHeader, TransactionFeeRule
 from paypal_fee_crawler.pricing_tokens import tokenize_text
 
@@ -249,10 +248,6 @@ def test_condition_score_penalises_all_other_markets() -> None:
     )
     source = {"applies_to_markets": ["ES"], "transaction_region": "domestic"}
     assert _condition_score(specific, source) > _condition_score(all_other, source)
-
-
-def test_compare_runs_returns_empty_legacy_result() -> None:
-    assert compare_runs() == ComparisonResult()
 
 
 def _row(cells: list[str]) -> Row:

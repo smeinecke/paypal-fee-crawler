@@ -1010,6 +1010,13 @@ def _norm(text: str | None) -> str:
     return clean_text(text or "").lower()
 
 
+# Pre-normalized product aliases avoid re-normalizing the same static strings on
+# every product classification call.
+_NORMALIZED_PRODUCT_ALIASES: dict[str, tuple[str, ...]] = {
+    product: tuple(_norm(alias) for alias in aliases) for product, aliases in _PRODUCT_ALIASES.items()
+}
+
+
 def _keyword_in_text(text: str, keyword: str) -> bool:
     """Return True when ``keyword`` appears as a whole word/phrase in ``text``."""
     # Use word boundaries to avoid matching the keyword as a substring inside a
@@ -1030,10 +1037,6 @@ def _table_context_original(table: Table) -> str:
     """Return original-case table heading context for applicability parsing."""
     parts = list(table.section_path or []) + [table.caption or ""]
     return " ".join(p for p in parts if p)
-
-
-def _row_text(row: Row) -> str:
-    return _norm(" ".join(c.text for c in row.cells))
 
 
 def _row_cells_text(row: Row) -> list[str]:
@@ -1089,27 +1092,6 @@ def _cell_money(cell: Any) -> tuple[str, str] | None:
         if token.kind == "money" and token.amount and token.currency:
             return token.currency, token.amount
     return None
-
-
-def _first_money_text(row: Row) -> str | None:
-    for cell in row.cells:
-        for token in cell.tokens:
-            if token.kind == "money" and token.amount and token.currency:
-                return f"{token.amount} {token.currency}"
-    return None
-
-
-def _extract_all_money(row: Row) -> list[tuple[str, str]]:
-    out: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for cell in row.cells:
-        for token in cell.tokens:
-            if token.kind == "money" and token.amount and token.currency:
-                key = (token.currency, token.amount)
-                if key not in seen:
-                    out.append(key)
-                    seen.add(key)
-    return out
 
 
 def _row_has_percentage(row: Row) -> bool:
@@ -1400,22 +1382,21 @@ def _has_likely_numeric_fee_candidate(row: Row, table: Table) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _score_label_against_product(label: str, aliases: tuple[str, ...]) -> int:
+def _score_label_against_product(label: str, normalized_aliases: tuple[str, ...]) -> int:
     normalized = _norm(label)
     best = 0
-    for alias in aliases:
-        alias_norm = _norm(alias)
-        if alias_norm == normalized:
-            return max(best, len(alias_norm) * 10)
-        if alias_norm in normalized:
-            best = max(best, len(alias_norm))
+    for alias in normalized_aliases:
+        if alias == normalized:
+            return max(best, len(alias) * 10)
+        if alias in normalized:
+            best = max(best, len(alias))
     return best
 
 
 def _classify_product(label: str) -> tuple[str | None, list[str]]:
     """Return the best matching product ID and any ambiguous alternatives."""
     scores: dict[str, int] = {}
-    for product_id, aliases in _PRODUCT_ALIASES.items():
+    for product_id, aliases in _NORMALIZED_PRODUCT_ALIASES.items():
         score = _score_label_against_product(label, aliases)
         if score:
             scores[product_id] = score
@@ -5154,10 +5135,8 @@ def _reference_candidates(rules: list[TransactionFeeRule | None], target_id: str
     """Find candidate rules matching a reference target id or label aliases."""
     candidates = [r for r in rules if r is not None and r.id == target_id and r.percentage is not None]
     if not candidates:
-        aliases = _PRODUCT_ALIASES.get(target_id, ())
-        candidates = [
-            r for r in rules if r is not None and r.label and any(_norm(a) in _norm(r.label) for a in aliases)
-        ]
+        aliases = _NORMALIZED_PRODUCT_ALIASES.get(target_id, ())
+        candidates = [r for r in rules if r is not None and r.label and any(a in _norm(r.label) for a in aliases)]
     return candidates
 
 
@@ -5678,7 +5657,8 @@ def _extract_rules_from_rate_table(
     for idx, row in enumerate(table.rows):
         label = _row_label(row)
         fee_text = _row_fee_cell(row)
-        if _has_likely_numeric_fee_candidate(row, table) and not _is_limit_or_cap_row(label, fee_text):
+        is_limit_or_cap = _is_limit_or_cap_row(label, fee_text)
+        if _has_likely_numeric_fee_candidate(row, table) and not is_limit_or_cap:
             numeric_fee_candidates += 1
         if not label:
             ignored.append(_ignored_rate_row(row, idx, label, table, source, "empty label"))
@@ -5699,7 +5679,7 @@ def _extract_rules_from_rate_table(
         if product_id is None:
             continue
 
-        if _is_limit_or_cap_row(label, fee_text):
+        if is_limit_or_cap:
             ignored.append(_ignored_rate_row(row, idx, label, table, source, "limit or cap"))
             continue
 
@@ -6126,6 +6106,7 @@ def _collect_maximum_fee_table(
 def _collect_schedules(
     tables: list[Table],
     source: Source | None = None,
+    table_categories: dict[int, str | None] | None = None,
 ) -> tuple[
     dict[str, FixedFeeSchedule],
     dict[str, InternationalSurchargeSchedule],
@@ -6148,7 +6129,7 @@ def _collect_schedules(
     direct_products = set(_DIRECT_FIXED_FEE_SCHEDULE_PRODUCTS.values())
 
     for table in tables:
-        category = _classify_table_category(table)
+        category = table_categories[id(table)] if table_categories else _classify_table_category(table)
         if category == "fixed_fee_table":
             diagnostics.extend(_collect_fixed_fee_table(table, source, fixed, direct_products))
         elif category == "international_surcharge_table":
@@ -7071,8 +7052,9 @@ def _build_coverage_summary(
 
 def classify_tables(tables: list[Table], source: Source | None = None) -> DerivedFeeResult:
     """Derive product-specific transaction fee rules from normalized tables."""
+    table_categories: dict[int, str | None] = {id(table): _classify_table_category(table) for table in tables}
     fixed_schedules, international_schedules, maximum_fee_schedules, schedule_diagnostics = _collect_schedules(
-        tables, source=source
+        tables, source=source, table_categories=table_categories
     )
     diagnostics: list[Diagnostic] = list(schedule_diagnostics)
 
@@ -7084,7 +7066,7 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
     total_unclassified_fee_candidates = 0
 
     for table in tables:
-        category = _classify_table_category(table)
+        category = table_categories[id(table)]
         if category in _TABLE_CATEGORY_SCHEDULE or category in {
             "commercial_rate_table",
             "online_card_rate_table",
@@ -7226,7 +7208,7 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
     # Currency conversion.
     currency_conversion = None
     for table in tables:
-        if _classify_table_category(table) == "currency_conversion_table":
+        if table_categories[id(table)] == "currency_conversion_table":
             for row in table.rows:
                 pct = _first_percentage(row)
                 if pct:

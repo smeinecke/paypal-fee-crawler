@@ -46,15 +46,6 @@ def _validate_currency_codes(data: Any, errors: list[str]) -> None:
         for key, value in data.items():
             if key == "currency" and isinstance(value, str) and value.upper() not in CURRENCY_CODES:
                 errors.append(f"Invalid currency code: {value}")
-            # Fixed-fee schedules use currency codes as extra object keys.
-            if (
-                isinstance(value, str)
-                and len(key) == 3
-                and key.upper() not in CURRENCY_CODES
-                and key.lower() not in {"id", "eur", "usd"}
-            ):
-                # Heuristic: a 3-letter uppercase key inside a schedule dict.
-                pass
             _validate_currency_codes(value, errors)
     elif isinstance(data, list):
         for item in data:

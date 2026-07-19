@@ -787,16 +787,6 @@ class ChangeSeverity(StrEnum):
     REGRESSION = "regression"
 
 
-class ChangeKind(StrEnum):
-    """Classified change kinds for cross-run and cross-classifier differences."""
-
-    CLASSIFICATION_CHANGED = "classification_changed"
-    NEW_DOCUMENT_ID = "new_document_id"
-    PUBLISHED_VALUE_CHANGED = "published_value_changed"
-    UNSUPPORTED_VALUE_CHANGED = "unsupported_value_changed"
-    REGRESSION = "regression"
-
-
 class AcceptedRegression(PublicModel):
     """A reviewed regression that the guard may downgrade to a warning."""
 

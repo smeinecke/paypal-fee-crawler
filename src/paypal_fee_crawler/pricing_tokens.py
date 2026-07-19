@@ -220,25 +220,6 @@ def _to_canonical_string(value: Decimal) -> str:
     return f"{normalized:f}"
 
 
-_PLAIN_NUMBER_RE = re.compile(r"^[+\-]?[0-9]+(?:[.,][0-9]+)?$")
-
-
-def is_numeric_amount(text: str) -> bool:
-    """Return True if *text* is a plain numeric amount (no currency or %)."""
-    return bool(_PLAIN_NUMBER_RE.match(text.strip()))
-
-
-def parse_amount(text: str) -> str | None:
-    """Normalize a plain numeric amount to a canonical decimal string."""
-    match = _PLAIN_NUMBER_RE.match(text.strip())
-    if not match:
-        return None
-    try:
-        return _to_canonical_string(_normalize_decimal(match.group(0)))
-    except (InvalidOperation, ValueError):
-        return None
-
-
 def _looks_like_percentage(text: str) -> bool:
     return "%" in text
 
