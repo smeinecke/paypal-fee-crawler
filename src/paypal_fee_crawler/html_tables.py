@@ -114,22 +114,32 @@ def _extract_sections(html_tree: html.HtmlElement) -> list[Section]:
     return sections
 
 
+def _parse_html_tree(html_text: str) -> html.HtmlElement | None:
+    """Return a parsed lxml tree or None on failure."""
+    try:
+        return html.fromstring(html_text)
+    except Exception:
+        return None
+
+
 def extract_html_tables(
     html_text: str,
     page_url: str | None = None,
+    tree: html.HtmlElement | None = None,
 ) -> tuple[list[Section], list[Table], list[ParserWarning]]:
     """Parse *html_text* and extract normalized tables and sections.
 
     Returns the same ``(sections, tables, warnings)`` tuple as the CMS
     ``ComponentsExtractor``, making it a drop-in fallback when the CMS render
-    context is absent.
+    context is absent.  A pre-parsed ``tree`` may be supplied to avoid
+    re-parsing the same HTML.
     """
     warnings: list[ParserWarning] = []
-    try:
-        tree = html.fromstring(html_text)
-    except Exception as exc:
-        logger.warning("Failed to parse HTML: %s", exc)
-        warnings.append(ParserWarning(code="html_parse_error", message=f"Failed to parse HTML: {exc}"))
+    if tree is None:
+        tree = _parse_html_tree(html_text)
+    if tree is None:
+        logger.warning("Failed to parse HTML")
+        warnings.append(ParserWarning(code="html_parse_error", message="Failed to parse HTML"))
         return [], [], warnings
 
     sections = _extract_sections(tree)
@@ -166,11 +176,11 @@ def extract_html_tables(
     return sections, tables, warnings
 
 
-def extract_html_pdf_url(html_text: str) -> str | None:
+def extract_html_pdf_url(html_text: str, tree: html.HtmlElement | None = None) -> str | None:
     """Find a printable PDF fee schedule link in the raw HTML."""
-    try:
-        tree = html.fromstring(html_text)
-    except Exception:
+    if tree is None:
+        tree = _parse_html_tree(html_text)
+    if tree is None:
         return None
     for anchor in tree.iter("a"):
         href = anchor.get("href")
@@ -179,11 +189,11 @@ def extract_html_pdf_url(html_text: str) -> str | None:
     return None
 
 
-def extract_html_locale(html_text: str) -> str | None:
+def extract_html_locale(html_text: str, tree: html.HtmlElement | None = None) -> str | None:
     """Return the page locale from the HTML ``lang`` attribute if present."""
-    try:
-        tree = html.fromstring(html_text)
-    except Exception:
+    if tree is None:
+        tree = _parse_html_tree(html_text)
+    if tree is None:
         return None
     lang = tree.get("lang")
     if isinstance(lang, str) and lang.strip():

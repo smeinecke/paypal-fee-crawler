@@ -11,11 +11,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from .classify import _fee_components_for_rule
 from .constants import MANAGED_ROOTS
 from .exceptions import ValidationError as CrawlerValidationError
+from .hashing import _country_output_hash
 from .models import (
     CoreFees,
     CountryIndex,
@@ -27,7 +28,6 @@ from .models import (
     UnsupportedCountry,
 )
 from .normalize import CURRENCY_CODES, normalize_decimal_string
-from .regression import _country_output_hash
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +218,23 @@ def _require_all_complete_errors(derived: Any, label: str) -> list[str]:
     return []
 
 
+def _schema_errors(model: type[BaseModel], data: dict[str, Any]) -> list[str]:
+    """Validate ``data`` against ``model`` and return formatted schema errors."""
+    try:
+        model.model_validate(data)
+    except ValidationError as exc:
+        return [f"Schema validation: {error['loc']}: {error['msg']}" for error in exc.errors()]
+    return []
+
+
+def _generate_schema(model: type[BaseModel], filename: str) -> dict[str, Any]:
+    """Generate a JSON schema dict for ``model`` with standard crawler metadata."""
+    schema = model.model_json_schema(mode="serialization")
+    schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+    schema["$id"] = f"https://github.com/smeinecke/paypal-fee-data/schemas/{filename}"
+    return schema
+
+
 def _complete_derived_errors(derived: Any, label: str) -> list[str]:
     """Return consistency errors for a derived-fee result.
 
@@ -262,14 +279,11 @@ def validate_country_output(
     require_all_complete: bool = False,
 ) -> list[str]:
     """Validate an internal per-country JSON object (allows classifier fields)."""
-    errors: list[str] = []
-    try:
-        output = CountryOutput.model_validate(data)
-    except ValidationError as exc:
-        for error in exc.errors():
-            errors.append(f"Schema validation: {error['loc']}: {error['msg']}")
+    errors = _schema_errors(CountryOutput, data)
+    if errors:
         return errors
 
+    output = CountryOutput.model_validate(data)
     _validate_currency_codes(data, errors)
     errors.extend(_complete_derived_errors(output.derived, f"Country {output.market.paypal_market_code}"))
     if strict:
@@ -288,14 +302,11 @@ def validate_public_country_output(
     require_all_complete: bool = False,
 ) -> list[str]:
     """Validate a public per-country JSON object (rejects internal fields)."""
-    errors: list[str] = []
-    try:
-        output = PublicCountryOutput.model_validate(data)
-    except ValidationError as exc:
-        for error in exc.errors():
-            errors.append(f"Schema validation: {error['loc']}: {error['msg']}")
+    errors = _schema_errors(PublicCountryOutput, data)
+    if errors:
         return errors
 
+    output = PublicCountryOutput.model_validate(data)
     if not schema_only:
         _validate_currency_codes(data, errors)
         errors.extend(_complete_derived_errors(output.derived, f"Country {output.market.paypal_market_code}"))
@@ -307,23 +318,15 @@ def validate_public_country_output(
 
 
 def validate_country_index(data: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
-    try:
-        CountryIndex.model_validate(data)
-    except ValidationError as exc:
-        for error in exc.errors():
-            errors.append(f"Schema validation: {error['loc']}: {error['msg']}")
-    return errors
+    return _schema_errors(CountryIndex, data)
 
 
 def validate_core_fees(data: dict[str, Any], strict: bool = False, require_all_complete: bool = False) -> list[str]:
-    errors: list[str] = []
-    try:
-        core = CoreFees.model_validate(data)
-    except ValidationError as exc:
-        for error in exc.errors():
-            errors.append(f"Schema validation: {error['loc']}: {error['msg']}")
+    errors = _schema_errors(CoreFees, data)
+    if errors:
         return errors
+
+    core = CoreFees.model_validate(data)
     for entry in core.countries:
         errors.extend(_complete_derived_errors(entry.derived, f"Core-fee entry {entry.paypal_market_code}"))
         if strict:
@@ -334,13 +337,7 @@ def validate_core_fees(data: dict[str, Any], strict: bool = False, require_all_c
 
 
 def validate_country_manifest(data: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
-    try:
-        CountryManifest.model_validate(data)
-    except ValidationError as exc:
-        for error in exc.errors():
-            errors.append(f"Schema validation: {error['loc']}: {error['msg']}")
-    return errors
+    return _schema_errors(CountryManifest, data)
 
 
 def validate_file(
@@ -372,34 +369,22 @@ def validate_file(
 
 def generate_country_schema() -> dict[str, Any]:
     """Generate the JSON schema for per-country output."""
-    schema = PublicCountryOutput.model_json_schema(mode="serialization")
-    schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/paypal-fees-v1.schema.json"
-    return schema
+    return _generate_schema(PublicCountryOutput, "paypal-fees-v1.schema.json")
 
 
 def generate_core_fees_schema() -> dict[str, Any]:
     """Generate the JSON schema for the consolidated core fees file."""
-    schema = CoreFees.model_json_schema(mode="serialization")
-    schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/core-fees-v1.schema.json"
-    return schema
+    return _generate_schema(CoreFees, "core-fees-v1.schema.json")
 
 
 def generate_index_schema() -> dict[str, Any]:
     """Generate the JSON schema for the country index file."""
-    schema = CountryIndex.model_json_schema(mode="serialization")
-    schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/index-v1.schema.json"
-    return schema
+    return _generate_schema(CountryIndex, "index-v1.schema.json")
 
 
 def generate_manifest_schema() -> dict[str, Any]:
     """Generate the JSON schema for the country manifest file."""
-    schema = CountryManifest.model_json_schema(mode="serialization")
-    schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/smeinecke/paypal-fee-data/schemas/manifest-v1.schema.json"
-    return schema
+    return _generate_schema(CountryManifest, "manifest-v1.schema.json")
 
 
 def validate_all_output(

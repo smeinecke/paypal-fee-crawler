@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
+from .constants import LEGACY_FEE_PAGE_PATHS, PAYPAL_HOST_ALLOWLIST
 from .exceptions import ExitCode
 from .market_mapping import normalize_paypal_market_code
 
@@ -43,30 +44,11 @@ class PublicModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
-class Language(PublicModel):
-    """A supported language for a market."""
-
-    code: str
-    name: str | None = None
-
-
-class Market(PublicModel):
-    """A discovered PayPal market/country.
-
-    PayPal market codes (e.g. ``C2`` for China) are kept separate from ISO
-    3166-1 alpha-2 country codes. The ``country_code`` property is preserved
-    for backward compatibility and returns the ISO code when known, otherwise
-    the raw PayPal market code.
-    """
+class MarketCodeMixin(PublicModel):
+    """Shared PayPal/ISO market-code validation and computed helpers."""
 
     paypal_market_code: str
-    country_name: str
     iso_country_code: str | None = None
-    region: str | None = None
-    locale: str | None = None
-    languages: list[Language] = Field(default_factory=list)
-    url_prefix: str | None = None
-    preferred_language: str | None = None
 
     @field_validator("paypal_market_code")
     @classmethod
@@ -87,15 +69,39 @@ class Market(PublicModel):
     def country_code(self) -> str:
         return self.iso_country_code or self.paypal_market_code
 
-    @computed_field
-    @property
-    def url_slug(self) -> str:
-        return self.paypal_market_code.lower()
-
     @model_validator(mode="before")
     @classmethod
     def _migrate_legacy(cls, data: Any) -> Any:
         return _migrate_legacy_country_code(data)
+
+
+class Language(PublicModel):
+    """A supported language for a market."""
+
+    code: str
+    name: str | None = None
+
+
+class Market(MarketCodeMixin):
+    """A discovered PayPal market/country.
+
+    PayPal market codes (e.g. ``C2`` for China) are kept separate from ISO
+    3166-1 alpha-2 country codes. The ``country_code`` property is preserved
+    for backward compatibility and returns the ISO code when known, otherwise
+    the raw PayPal market code.
+    """
+
+    country_name: str
+    region: str | None = None
+    locale: str | None = None
+    languages: list[Language] = Field(default_factory=list)
+    url_prefix: str | None = None
+    preferred_language: str | None = None
+
+    @computed_field
+    @property
+    def url_slug(self) -> str:
+        return self.paypal_market_code.lower()
 
 
 class Source(BaseModel):
@@ -240,7 +246,20 @@ class Provenance(PublicModel):
     classifier_version: str | None = None
 
 
-class FixedFeeSchedule(PublicModel):
+class OriginValidatorMixin(PublicModel):
+    """Shared origin validator for schedule-like models."""
+
+    origin: str = "direct"
+
+    @field_validator("origin")
+    @classmethod
+    def _validate_origin(cls, value: str) -> str:
+        if value not in {"direct", "inherited"}:
+            raise ValueError("origin must be 'direct' or 'inherited'")
+        return value
+
+
+class FixedFeeSchedule(OriginValidatorMixin):
     """Fixed fees by received currency for a single product schedule.
 
     ``entries`` maps ISO 4217 currency codes to decimal strings.  ``sources``
@@ -253,17 +272,9 @@ class FixedFeeSchedule(PublicModel):
 
     entries: dict[str, str] = Field(default_factory=dict)
     sources: list[Provenance] = Field(default_factory=list)
-    origin: str = "direct"
     inherited_from: str | None = None
     inheritance_reason: str | None = None
     inherited_sources: list[Provenance] = Field(default_factory=list)
-
-    @field_validator("origin")
-    @classmethod
-    def _validate_origin(cls, value: str) -> str:
-        if value not in {"direct", "inherited"}:
-            raise ValueError("origin must be 'direct' or 'inherited'")
-        return value
 
 
 class InternationalSurchargeScheduleEntry(PublicModel):
@@ -273,7 +284,7 @@ class InternationalSurchargeScheduleEntry(PublicModel):
     percentage_points: str | None = None
 
 
-class InternationalSurchargeSchedule(PublicModel):
+class InternationalSurchargeSchedule(OriginValidatorMixin):
     """International surcharge schedule for a single product or product family.
 
     Like ``FixedFeeSchedule``, inherited surcharge schedules expose provenance
@@ -282,17 +293,9 @@ class InternationalSurchargeSchedule(PublicModel):
 
     entries: list[InternationalSurchargeScheduleEntry] = Field(default_factory=list)
     sources: list[Provenance] = Field(default_factory=list)
-    origin: str = "direct"
     inherited_from: str | None = None
     inheritance_reason: str | None = None
     inherited_sources: list[Provenance] = Field(default_factory=list)
-
-    @field_validator("origin")
-    @classmethod
-    def _validate_origin(cls, value: str) -> str:
-        if value not in {"direct", "inherited"}:
-            raise ValueError("origin must be 'direct' or 'inherited'")
-        return value
 
 
 class ResolvedRate(PublicModel):
@@ -477,27 +480,11 @@ class CountryOutput(BaseModel):
     warnings: list[ParserWarning] = Field(default_factory=list)
 
 
-class PublicMarket(PublicModel):
+class PublicMarket(MarketCodeMixin):
     """Consumer-facing market identity for a country fee result."""
 
-    paypal_market_code: str
-    iso_country_code: str | None = None
     country_name: str
     locale: str | None = None
-
-    @field_validator("paypal_market_code")
-    @classmethod
-    def _validate_paypal_market_code(cls, value: str) -> str:
-        return normalize_paypal_market_code(value)
-
-    @field_validator("iso_country_code")
-    @classmethod
-    def _validate_iso_country_code(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str) or len(value) != 2 or not value.isalpha():
-            raise ValueError(f"Invalid ISO country code: {value!r}")
-        return value.upper()
 
     @classmethod
     def from_internal(cls, market: Market) -> PublicMarket:
@@ -571,11 +558,9 @@ class CrawlState(PublicModel):
     markets: dict[str, CrawlStateEntry] = Field(default_factory=dict)
 
 
-class CountryIndexEntry(PublicModel):
+class CountryIndexEntry(MarketCodeMixin):
     """Compact entry in the country index."""
 
-    paypal_market_code: str
-    iso_country_code: str | None = None
     locale: str | None = None
     data_url: str
     source_url: str
@@ -583,30 +568,6 @@ class CountryIndexEntry(PublicModel):
     crawled_at: str | None = None
     derived_status: str | None = None
     content_sha256: str | None = None
-
-    @field_validator("paypal_market_code")
-    @classmethod
-    def _validate_paypal_market_code(cls, value: str) -> str:
-        return normalize_paypal_market_code(value)
-
-    @field_validator("iso_country_code")
-    @classmethod
-    def _validate_iso_country_code(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str) or len(value) != 2 or not value.isalpha():
-            raise ValueError(f"Invalid ISO country code: {value!r}")
-        return value.upper()
-
-    @computed_field
-    @property
-    def country_code(self) -> str:
-        return self.iso_country_code or self.paypal_market_code
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy(cls, data: Any) -> Any:
-        return _migrate_legacy_country_code(data)
 
 
 class CountryIndex(PublicModel):
@@ -617,11 +578,9 @@ class CountryIndex(PublicModel):
     countries: list[CountryIndexEntry] = Field(default_factory=list)
 
 
-class UnsupportedCountry(PublicModel):
+class UnsupportedCountry(MarketCodeMixin):
     """A market without a discoverable public fee page."""
 
-    paypal_market_code: str
-    iso_country_code: str | None = None
     country_name: str | None = None
     tested_urls: list[str] = Field(default_factory=list)
     reason: str | None = None
@@ -629,30 +588,6 @@ class UnsupportedCountry(PublicModel):
     last_confirmed_at: str | None = None
     last_status: int | None = None
     temporary: bool = False
-
-    @field_validator("paypal_market_code")
-    @classmethod
-    def _validate_paypal_market_code(cls, value: str) -> str:
-        return normalize_paypal_market_code(value)
-
-    @field_validator("iso_country_code")
-    @classmethod
-    def _validate_iso_country_code(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str) or len(value) != 2 or not value.isalpha():
-            raise ValueError(f"Invalid ISO country code: {value!r}")
-        return value.upper()
-
-    @computed_field
-    @property
-    def country_code(self) -> str:
-        return self.iso_country_code or self.paypal_market_code
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy(cls, data: Any) -> Any:
-        return _migrate_legacy_country_code(data)
 
 
 class CountryManifest(PublicModel):
@@ -722,37 +657,11 @@ class CoreFeeDerived(PublicModel):
     currency_conversion: CurrencyConversion | None = None
 
 
-class PublicCoreFeeEntry(PublicModel):
+class PublicCoreFeeEntry(MarketCodeMixin):
     """A single country's confidently derived core fees (public)."""
 
-    paypal_market_code: str
-    iso_country_code: str | None = None
     derived_status: str
     derived: CoreFeeDerived
-
-    @field_validator("paypal_market_code")
-    @classmethod
-    def _validate_paypal_market_code(cls, value: str) -> str:
-        return normalize_paypal_market_code(value)
-
-    @field_validator("iso_country_code")
-    @classmethod
-    def _validate_iso_country_code(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str) or len(value) != 2 or not value.isalpha():
-            raise ValueError(f"Invalid ISO country code: {value!r}")
-        return value.upper()
-
-    @computed_field
-    @property
-    def country_code(self) -> str:
-        return self.iso_country_code or self.paypal_market_code
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy(cls, data: Any) -> Any:
-        return _migrate_legacy_country_code(data)
 
 
 class CoreFees(PublicModel):
@@ -944,15 +853,8 @@ class CrawlConfiguration(BaseModel):
     verbose: bool = False
     transient_policy: str = "fail"
     max_response_size: int = 10 * 1024 * 1024  # 10 MB
-    allowed_domains: list[str] = Field(default_factory=lambda: ["www.paypal.com", "www.paypalobjects.com"])
-    legacy_fee_paths: list[str] = Field(
-        default_factory=lambda: [
-            "business/paypal-business-fees",
-            "merchant/paypal-merchant-fees",
-            "business/fees",
-            "seller-fees",
-        ]
-    )
+    allowed_domains: list[str] = Field(default_factory=lambda: list(PAYPAL_HOST_ALLOWLIST))
+    legacy_fee_paths: list[str] = Field(default_factory=lambda: list(LEGACY_FEE_PAGE_PATHS))
     country_manifest_path: str | None = None
     cache_dir: str | None = None
     cache_ttl_hours: float = 24.0

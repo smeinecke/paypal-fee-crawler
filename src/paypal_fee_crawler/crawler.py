@@ -6,12 +6,14 @@ import asyncio
 import logging
 import re
 import subprocess  # nosec B404
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .classify import classify_tables
 from .cms_context import extract_cms_context
 from .components import ComponentsExtractor, iter_components
+from .constants import CLASSIFIER_MODE, CLASSIFIER_VERSION, DEFAULT_DISCOVERY_URL
 from .discovery import discover_countries, discover_fee_page, get_bootstrap_markets, get_canonical_page_id
 from .exceptions import (
     CountryDiscoveryError,
@@ -25,7 +27,7 @@ from .exceptions import (
 from .exceptions import (
     ValidationError as CrawlerValidationError,
 )
-from .html_tables import extract_html_locale, extract_html_pdf_url, extract_html_tables
+from .html_tables import _parse_html_tree, extract_html_locale, extract_html_pdf_url, extract_html_tables
 from .http import CachedSource, HttpClient, HttpResponse
 from .models import (
     ChangeReport,
@@ -46,6 +48,21 @@ from .regression import PreviousState, RegressionLimits, check_regression, enfor
 from .validation import validate_all_output, validate_country_output
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PageContent:
+    """Structured content extracted from a PayPal fee page."""
+
+    sections: list[Any]
+    tables: list[Any]
+    warnings: list[Any]
+    page_id: str
+    page_title: str
+    page_updated_at: str | None
+    cms_updated_at: str | None
+    page_locale: str | None
+    pdf_url: str | None
 
 
 def _crawler_revision(crawler_dir: Path | None = None) -> str | None:
@@ -123,7 +140,7 @@ class Crawler:
             markets = await discover_countries(
                 self.http_client,
                 self.config,
-                discovery_url="https://www.paypal.com/de/business/paypal-business-fees",
+                discovery_url=DEFAULT_DISCOVERY_URL,
             )
             if not markets:
                 raise CountryDiscoveryError("No markets discovered")
@@ -415,17 +432,7 @@ class Crawler:
         self,
         response: HttpResponse,
         market: Market,
-    ) -> tuple[
-        list[Any],
-        list[Any],
-        list[Any],
-        str,
-        str,
-        str | None,
-        str | None,
-        str | None,
-        str | None,
-    ]:
+    ) -> PageContent:
         try:
             cms = extract_cms_context(response.text)
         except ParserError as exc:
@@ -446,24 +453,25 @@ class Crawler:
             page_locale = self._extract_locale(cms)
             pdf_url = self._extract_pdf_url(cms)
         else:
-            sections, tables, warnings = extract_html_tables(response.text, str(response.url))
+            html_tree = _parse_html_tree(response.text)
+            sections, tables, warnings = extract_html_tables(response.text, str(response.url), tree=html_tree)
             page_id = str(response.url).rstrip("/").split("/")[-1] or "unknown"
             page_title = self._extract_page_title(response.text, {})
             page_updated = self._extract_update_date({}, sections)
             cms_updated = None
-            page_locale = extract_html_locale(response.text) or market.locale
-            pdf_url = extract_html_pdf_url(response.text)
+            page_locale = extract_html_locale(response.text, tree=html_tree) or market.locale
+            pdf_url = extract_html_pdf_url(response.text, tree=html_tree)
 
-        return (
-            sections,
-            tables,
-            warnings,
-            page_id,
-            page_title,
-            page_updated,
-            cms_updated,
-            page_locale,
-            pdf_url,
+        return PageContent(
+            sections=sections,
+            tables=tables,
+            warnings=warnings,
+            page_id=page_id,
+            page_title=page_title,
+            page_updated_at=page_updated,
+            cms_updated_at=cms_updated,
+            page_locale=page_locale,
+            pdf_url=pdf_url,
         )
 
     def _classify_output(
@@ -493,44 +501,34 @@ class Crawler:
         if response.status_code == 304 and cached and cached.content_sha256 and previous is not None:
             return previous, None, False
 
-        (
-            sections,
-            tables,
-            warnings,
-            page_id,
-            page_title,
-            page_updated,
-            cms_updated,
-            page_locale,
-            pdf_url,
-        ) = self._extract_page_content(response, market)
-        self.warnings.extend(warnings)
-        if page_locale and not market.locale:
-            market = market.model_copy(update={"locale": page_locale})
+        page = self._extract_page_content(response, market)
+        self.warnings.extend(page.warnings)
+        if page.page_locale and not market.locale:
+            market = market.model_copy(update={"locale": page.page_locale})
 
         source = Source(
             requested_url=fee_url,
             canonical_url=str(response.url),
-            page_id=str(page_id),
-            page_title=page_title,
-            page_updated_at=page_updated,
-            cms_updated_at=cms_updated,
-            pdf_url=pdf_url,
+            page_id=str(page.page_id),
+            page_title=page.page_title,
+            page_updated_at=page.page_updated_at,
+            cms_updated_at=page.cms_updated_at,
+            pdf_url=page.pdf_url,
             etag=response.etag,
             last_modified=response.last_modified,
             content_sha256=response.content_sha256,
         )
-        derived = await asyncio.to_thread(self._classify_output, tables, source)
+        derived = await asyncio.to_thread(self._classify_output, page.tables, source)
 
         output = CountryOutput(
             schema_version=1,
             generated_at=self._stable_timestamp(),
             market=market,
             source=source,
-            sections=sections,
-            tables=tables,
+            sections=page.sections,
+            tables=page.tables,
             derived=derived,
-            warnings=warnings,
+            warnings=page.warnings,
         )
         return output, None, False
 
@@ -624,8 +622,8 @@ class Crawler:
         current_unsupported = {u.paypal_market_code for u in unsupported}
         current_transient = set(failed)
         classifier_metadata = ClassifierMetadata(
-            classifier_mode="rules",
-            classifier_version="rules-v1",
+            classifier_mode=CLASSIFIER_MODE,
+            classifier_version=CLASSIFIER_VERSION,
         )
         return check_regression(
             previous_state,
@@ -678,8 +676,8 @@ class Crawler:
                 unsupported,
                 change_report,
                 classifier_metadata=ClassifierMetadata(
-                    classifier_mode="rules",
-                    classifier_version="rules-v1",
+                    classifier_mode=CLASSIFIER_MODE,
+                    classifier_version=CLASSIFIER_VERSION,
                 ),
                 crawler_revision=crawler_revision,
                 transient_failures=transient_failures,

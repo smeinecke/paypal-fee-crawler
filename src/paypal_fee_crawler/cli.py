@@ -38,6 +38,39 @@ def _configure_logging(verbose: bool) -> None:
     )
 
 
+def _http_options(f: Any) -> Any:
+    """Composite decorator for HTTP-related CLI options."""
+    f = click.option("--timeout", default=30.0, type=float, help="HTTP timeout in seconds.")(f)
+    f = click.option("--max-workers", default=3, type=int, help="Maximum concurrent requests.")(f)
+    f = click.option("--request-delay", default=0.5, type=float, help="Delay between requests in seconds.")(f)
+    f = click.option("--user-agent", help="Custom user agent string.")(f)
+    return f
+
+
+def _cache_options(f: Any) -> Any:
+    """Composite decorator for HTTP-cache CLI options."""
+    f = click.option(
+        "--cache-dir", type=click.Path(), envvar="PAYPAL_FEE_CRAWLER_CACHE_DIR", help="HTTP cache directory."
+    )(f)
+    f = click.option(
+        "--cache-ttl-hours",
+        default=24.0,
+        type=float,
+        envvar="PAYPAL_FEE_CRAWLER_CACHE_TTL_HOURS",
+        help="Cache entry TTL in hours.",
+    )(f)
+    f = click.option(
+        "--no-cache", is_flag=True, envvar="PAYPAL_FEE_CRAWLER_NO_CACHE", help="Bypass HTTP cache reads and writes."
+    )(f)
+    f = click.option(
+        "--refresh-cache",
+        is_flag=True,
+        envvar="PAYPAL_FEE_CRAWLER_REFRESH_CACHE",
+        help="Force network revalidation/download and update cached entries.",
+    )(f)
+    return f
+
+
 def _resolve_cache_dir(no_cache: bool, cache_dir: str | None) -> str | None:
     if no_cache:
         return None
@@ -46,61 +79,36 @@ def _resolve_cache_dir(no_cache: bool, cache_dir: str | None) -> str | None:
     return str(Path.cwd() / ".cache" / "paypal-fee-crawler" / "http")
 
 
-def _build_config(
-    output: str | None,
-    staging_dir: str | None,
-    country: tuple[str, ...],
-    countries: str | None,
-    timeout: float,
-    max_workers: int,
-    user_agent: str | None,
-    atomic: bool,
-    fail_on_regression: bool,
-    fail_on_warning: bool,
-    allow_country_drop: bool,
-    refresh_country_manifest: bool,
-    keep_diagnostics: bool,
-    verbose: bool,
-    request_delay: float,
-    timestamp: str | None,
-    transient_policy: str = "fail",
-    cache_dir: str | None = None,
-    cache_ttl_hours: float = 24.0,
-    no_cache: bool = False,
-    refresh_cache: bool = False,
-) -> CrawlConfiguration:
-    if not atomic:
+def _build_config(**kwargs: Any) -> CrawlConfiguration:
+    """Build a ``CrawlConfiguration`` from CLI option kwargs."""
+    if not kwargs.get("atomic", True):
         logger.warning("--no-atomic is deprecated and has no effect; atomic publication is always used.")
-    if refresh_country_manifest:
+    if kwargs.get("refresh_country_manifest"):
         logger.warning("--refresh-country-manifest is deprecated and has no effect.")
 
+    country: tuple[str, ...] = kwargs.pop("country", ())
+    countries: str | None = kwargs.pop("countries", None)
     selected_countries: list[str] | None = None
     if country:
         selected_countries = list(country)
     if countries:
         selected_countries = [c.strip().upper() for c in countries.split(",") if c.strip()]
-    return CrawlConfiguration(
-        output_dir=output,
-        staging_dir=staging_dir,
-        timestamp=timestamp,
-        countries=selected_countries,
-        timeout=timeout,
-        max_workers=max_workers,
-        user_agent=user_agent,
-        atomic=atomic,
-        fail_on_regression=fail_on_regression,
-        fail_on_warning=fail_on_warning,
-        allow_country_drop=allow_country_drop,
-        refresh_country_manifest=refresh_country_manifest,
-        keep_diagnostics=keep_diagnostics,
-        verbose=verbose,
-        request_delay=request_delay,
-        transient_policy=transient_policy,
-        cache_dir=_resolve_cache_dir(no_cache, cache_dir),
-        cache_ttl_hours=cache_ttl_hours,
-        no_cache=no_cache,
-        refresh_cache=refresh_cache,
-    )
+
+    no_cache: bool = kwargs.get("no_cache", False)
+    cache_dir: str | None = kwargs.pop("cache_dir", None)
+    output: str | None = kwargs.pop("output", None)
+    staging_dir: str | None = kwargs.pop("staging_dir", None)
+    timestamp: str | None = kwargs.pop("timestamp", None)
+
+    config_kwargs = {
+        "output_dir": output,
+        "staging_dir": staging_dir,
+        "timestamp": timestamp,
+        "countries": selected_countries,
+        "cache_dir": _resolve_cache_dir(no_cache, cache_dir),
+    }
+    config_kwargs.update({k: v for k, v in kwargs.items() if k in CrawlConfiguration.model_fields})
+    return CrawlConfiguration(**config_kwargs)
 
 
 @click.group()
@@ -115,10 +123,7 @@ def main() -> None:
 @click.option("--staging-dir", type=click.Path(), help="Staging directory (default: temp dir).")
 @click.option("--country", multiple=True, help="Country code to crawl (can be repeated).")
 @click.option("--countries", help="Comma-separated list of country codes to crawl.")
-@click.option("--timeout", default=30.0, type=float, help="HTTP timeout in seconds.")
-@click.option("--max-workers", default=3, type=int, help="Maximum concurrent requests.")
-@click.option("--request-delay", default=0.5, type=float, help="Delay between requests in seconds.")
-@click.option("--user-agent", help="Custom user agent string.")
+@_http_options
 @click.option("--atomic/--no-atomic", default=True, help="Publish atomically.")
 @click.option("--fail-on-regression/--no-fail-on-regression", default=False, help="Fail on regression.")
 @click.option("--fail-on-warning", is_flag=True, help="Fail on parser warnings.")
@@ -134,23 +139,7 @@ def main() -> None:
     default="fail",
     help="Behavior when a previously supported country cannot be refreshed.",
 )
-@click.option("--cache-dir", type=click.Path(), envvar="PAYPAL_FEE_CRAWLER_CACHE_DIR", help="HTTP cache directory.")
-@click.option(
-    "--cache-ttl-hours",
-    default=24.0,
-    type=float,
-    envvar="PAYPAL_FEE_CRAWLER_CACHE_TTL_HOURS",
-    help="Cache entry TTL in hours.",
-)
-@click.option(
-    "--no-cache", is_flag=True, envvar="PAYPAL_FEE_CRAWLER_NO_CACHE", help="Bypass HTTP cache reads and writes."
-)
-@click.option(
-    "--refresh-cache",
-    is_flag=True,
-    envvar="PAYPAL_FEE_CRAWLER_REFRESH_CACHE",
-    help="Force network revalidation/download and update cached entries.",
-)
+@_cache_options
 def crawl(
     output: str,
     staging_dir: str | None,
@@ -177,29 +166,11 @@ def crawl(
 ) -> None:
     """Crawl PayPal fee pages and publish deterministic JSON output."""
     _configure_logging(verbose)
-    config = _build_config(
-        output=output,
-        staging_dir=staging_dir,
-        country=country,
-        countries=countries,
-        timeout=timeout,
-        max_workers=max_workers,
-        user_agent=user_agent,
-        atomic=atomic,
-        fail_on_regression=fail_on_regression,
-        fail_on_warning=fail_on_warning,
-        allow_country_drop=allow_country_drop,
-        refresh_country_manifest=refresh_country_manifest,
-        keep_diagnostics=keep_diagnostics,
-        verbose=verbose,
-        request_delay=request_delay,
-        timestamp=timestamp,
-        transient_policy=transient_policy,
-        cache_dir=cache_dir,
-        cache_ttl_hours=cache_ttl_hours,
-        no_cache=no_cache,
-        refresh_cache=refresh_cache,
-    )
+    # ``atomic`` and ``refresh_country_manifest`` are deprecated flags consumed
+    # by ``_build_config``; keep them referenced so static analysers see usage.
+    _ = atomic, refresh_country_manifest
+    config_kwargs = {k: v for k, v in locals().items() if k != "report"}
+    config = _build_config(**config_kwargs)
 
     async def _run() -> CrawlReport:
         async with Crawler(config) as crawler:
@@ -244,28 +215,9 @@ def crawl(
 
 
 @main.command()
-@click.option("--timeout", default=30.0, type=float, help="HTTP timeout in seconds.")
-@click.option("--max-workers", default=3, type=int, help="Maximum concurrent requests.")
-@click.option("--request-delay", default=0.5, type=float, help="Delay between requests in seconds.")
-@click.option("--user-agent", help="Custom user agent string.")
+@_http_options
 @click.option("--verbose", is_flag=True, help="Enable verbose logging.")
-@click.option("--cache-dir", type=click.Path(), envvar="PAYPAL_FEE_CRAWLER_CACHE_DIR", help="HTTP cache directory.")
-@click.option(
-    "--cache-ttl-hours",
-    default=24.0,
-    type=float,
-    envvar="PAYPAL_FEE_CRAWLER_CACHE_TTL_HOURS",
-    help="Cache entry TTL in hours.",
-)
-@click.option(
-    "--no-cache", is_flag=True, envvar="PAYPAL_FEE_CRAWLER_NO_CACHE", help="Bypass HTTP cache reads and writes."
-)
-@click.option(
-    "--refresh-cache",
-    is_flag=True,
-    envvar="PAYPAL_FEE_CRAWLER_REFRESH_CACHE",
-    help="Force network revalidation/download and update cached entries.",
-)
+@_cache_options
 def discover_countries(
     timeout: float,
     max_workers: int,
@@ -279,13 +231,13 @@ def discover_countries(
 ) -> None:
     """Discover and print the PayPal country/market manifest."""
     _configure_logging(verbose)
-    config = CrawlConfiguration(
+    config = _build_config(
         timeout=timeout,
         max_workers=max_workers,
         user_agent=user_agent,
         request_delay=request_delay,
         verbose=verbose,
-        cache_dir=_resolve_cache_dir(no_cache, cache_dir),
+        cache_dir=cache_dir,
         cache_ttl_hours=cache_ttl_hours,
         no_cache=no_cache,
         refresh_cache=refresh_cache,
@@ -307,32 +259,15 @@ def discover_countries(
 @main.command()
 @click.argument("country_code")
 @click.option("--output", type=click.Path(), help="Output directory to write the single country JSON.")
-@click.option("--timeout", default=30.0, type=float, help="HTTP timeout in seconds.")
-@click.option("--request-delay", default=0.5, type=float, help="Delay between requests in seconds.")
-@click.option("--user-agent", help="Custom user agent string.")
+@_http_options
 @click.option("--verbose", is_flag=True, help="Enable verbose logging.")
 @click.option("--timestamp", help="Deterministic timestamp for generated output (ISO 8601).")
-@click.option("--cache-dir", type=click.Path(), envvar="PAYPAL_FEE_CRAWLER_CACHE_DIR", help="HTTP cache directory.")
-@click.option(
-    "--cache-ttl-hours",
-    default=24.0,
-    type=float,
-    envvar="PAYPAL_FEE_CRAWLER_CACHE_TTL_HOURS",
-    help="Cache entry TTL in hours.",
-)
-@click.option(
-    "--no-cache", is_flag=True, envvar="PAYPAL_FEE_CRAWLER_NO_CACHE", help="Bypass HTTP cache reads and writes."
-)
-@click.option(
-    "--refresh-cache",
-    is_flag=True,
-    envvar="PAYPAL_FEE_CRAWLER_REFRESH_CACHE",
-    help="Force network revalidation/download and update cached entries.",
-)
+@_cache_options
 def crawl_country(
     country_code: str,
     output: str | None,
     timeout: float,
+    max_workers: int,
     request_delay: float,
     user_agent: str | None,
     verbose: bool,
@@ -344,15 +279,16 @@ def crawl_country(
 ) -> None:
     """Crawl a single PayPal market and print or save the result."""
     _configure_logging(verbose)
-    config = CrawlConfiguration(
-        countries=[country_code.upper()],
-        output_dir=output or "./out",
+    config = _build_config(
+        countries=country_code.upper(),
+        output=output or "./out",
         timestamp=timestamp,
         timeout=timeout,
+        max_workers=max_workers,
         request_delay=request_delay,
         user_agent=user_agent,
         verbose=verbose,
-        cache_dir=_resolve_cache_dir(no_cache, cache_dir),
+        cache_dir=cache_dir,
         cache_ttl_hours=cache_ttl_hours,
         no_cache=no_cache,
         refresh_cache=refresh_cache,

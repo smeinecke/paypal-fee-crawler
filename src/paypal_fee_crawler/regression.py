@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .derived_categories import _selected_categories_from_derived
 from .exceptions import RegressionError
+from .hashing import _country_output_hash  # noqa: F401  re-exported for backwards compatibility
 from .models import (
+    _CHANGE_SEVERITY_BY_KIND,
     AcceptedRegressions,
     ChangeReport,
+    ChangeSeverity,
     ChangeType,
     ClassifierMetadata,
     CountryIndex,
@@ -72,92 +75,75 @@ class PreviousState:
         return state
 
 
-def _load_manifest(state: PreviousState, manifest_path: Path) -> None:
-    if not manifest_path.exists():
-        return
+def _safe_load[T](
+    path: Path,
+    loader: Callable[[str], T],
+    description: str,
+) -> T | None:
+    """Load and parse a file, returning None if it is missing or fails."""
+    if not path.exists():
+        return None
     try:
-        manifest = CountryManifest.model_validate_json(manifest_path.read_text())
-        state.discovered_countries = {m.paypal_market_code for m in manifest.markets}
-        state.unsupported_countries = {u.paypal_market_code for u in manifest.unsupported}
-        state.transient_countries = {u.paypal_market_code for u in manifest.unsupported if u.temporary}
-        state.unsupported_records = {u.paypal_market_code: u for u in manifest.unsupported}
+        return loader(path.read_text(encoding="utf-8"))
     except Exception as exc:  # nosec B112 # noqa: S112
-        logger.warning("Could not load previous country manifest: %s", exc)
+        logger.warning("Could not load previous %s: %s", description, exc)
+        return None
+
+
+def _load_manifest(state: PreviousState, manifest_path: Path) -> None:
+    manifest = _safe_load(manifest_path, CountryManifest.model_validate_json, "country manifest")
+    if manifest is None:
+        return
+    state.discovered_countries = {m.paypal_market_code for m in manifest.markets}
+    state.unsupported_countries = {u.paypal_market_code for u in manifest.unsupported}
+    state.transient_countries = {u.paypal_market_code for u in manifest.unsupported if u.temporary}
+    state.unsupported_records = {u.paypal_market_code: u for u in manifest.unsupported}
 
 
 def _load_unsupported(state: PreviousState, unsupported_path: Path) -> None:
-    if not unsupported_path.exists():
+    data = _safe_load(
+        unsupported_path,
+        lambda text: json.loads(text),
+        "unsupported metadata",
+    )
+    if data is None:
         return
-    try:
-        data = json.loads(unsupported_path.read_text(encoding="utf-8"))
-        for item in data.get("unsupported", []):
-            u = UnsupportedCountry.model_validate(item)
-            state.unsupported_records[u.paypal_market_code] = u
-            state.unsupported_countries.add(u.paypal_market_code)
-            if u.temporary:
-                state.transient_countries.add(u.paypal_market_code)
-    except Exception as exc:  # nosec B112 # noqa: S112
-        logger.warning("Could not load previous unsupported metadata: %s", exc)
+    for item in data.get("unsupported", []):
+        u = UnsupportedCountry.model_validate(item)
+        state.unsupported_records[u.paypal_market_code] = u
+        state.unsupported_countries.add(u.paypal_market_code)
+        if u.temporary:
+            state.transient_countries.add(u.paypal_market_code)
 
 
 def _load_accepted_regressions(state: PreviousState, accepted_path: Path) -> None:
-    if not accepted_path.exists():
-        return
-    try:
-        state.accepted_regressions = AcceptedRegressions.model_validate_json(accepted_path.read_text())
-    except Exception as exc:  # nosec B112 # noqa: S112
-        logger.warning("Could not load accepted regressions: %s", exc)
+    accepted = _safe_load(accepted_path, AcceptedRegressions.model_validate_json, "accepted regressions")
+    if accepted is not None:
+        state.accepted_regressions = accepted
 
 
 def _load_classifier(state: PreviousState, classifier_path: Path) -> None:
-    if not classifier_path.exists():
-        return
-    try:
-        state.classifier_metadata = ClassifierMetadata.model_validate_json(classifier_path.read_text())
-    except Exception as exc:  # nosec B112 # noqa: S112
-        logger.warning("Could not load previous classifier metadata: %s", exc)
+    metadata = _safe_load(classifier_path, ClassifierMetadata.model_validate_json, "classifier metadata")
+    if metadata is not None:
+        state.classifier_metadata = metadata
 
 
 def _load_index(state: PreviousState, index_path: Path) -> None:
-    if not index_path.exists():
+    index = _safe_load(index_path, CountryIndex.model_validate_json, "country index")
+    if index is None:
         return
-    try:
-        index = CountryIndex.model_validate_json(index_path.read_text())
-        state.supported_countries = {entry.paypal_market_code for entry in index.countries}
-    except Exception as exc:  # nosec B112 # noqa: S112
-        logger.warning("Could not load previous country index: %s", exc)
+    state.supported_countries = {entry.paypal_market_code for entry in index.countries}
 
 
 def _load_crawl_state(state: PreviousState, state_path: Path) -> None:
-    if not state_path.exists():
+    crawl_state = _safe_load(state_path, CrawlState.model_validate_json, "crawl state")
+    if crawl_state is None:
         return
-    try:
-        crawl_state = CrawlState.model_validate_json(state_path.read_text())
-        for cc, entry in crawl_state.markets.items():
-            state.country_tables[cc] = entry.table_count
-            state.country_rows[cc] = entry.row_count
-            state.derived_status[cc] = entry.derived_status or "unclassified"
-            state.core_categories[cc] = set(entry.selected_categories)
-    except Exception as exc:  # nosec B112 # noqa: S112
-        logger.warning("Could not load previous crawl state: %s", exc)
-
-
-def _country_output_hash(data: dict[str, Any]) -> str:
-    """Return a deterministic hash of the public business content of a country output."""
-    canonical = {
-        "market": data.get("market"),
-        "source": {
-            k: v
-            for k, v in (data.get("source") or {}).items()
-            if k not in {"etag", "last_modified", "content_sha256", "artifact_sha256"}
-        },
-        "sections": data.get("sections"),
-        "tables": data.get("tables"),
-        "derived": data.get("derived"),
-    }
-    return hashlib.sha256(
-        json.dumps(canonical, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
-    ).hexdigest()
+    for cc, entry in crawl_state.markets.items():
+        state.country_tables[cc] = entry.table_count
+        state.country_rows[cc] = entry.row_count
+        state.derived_status[cc] = entry.derived_status or "unclassified"
+        state.core_categories[cc] = set(entry.selected_categories)
 
 
 def _is_accepted(
@@ -518,6 +504,15 @@ def check_regression(
     return ChangeReport(schema_version=1, changes=changes)
 
 
+def _regression_kind_allowlist() -> set[str]:
+    """Return the set of change kinds treated as regressions.
+
+    Derived from ``models._CHANGE_SEVERITY_BY_KIND`` so the regression guard
+    and the severity model stay in sync.
+    """
+    return {kind for kind, severity in _CHANGE_SEVERITY_BY_KIND.items() if severity == ChangeSeverity.REGRESSION}
+
+
 def enforce_regression(
     report: ChangeReport,
     fail_on_regression: bool = False,
@@ -526,26 +521,9 @@ def enforce_regression(
     if not report.has_regression:
         return
     if fail_on_regression:
+        regression_kinds = _regression_kind_allowlist()
         raise RegressionError(
             "Regression detected:\n"
-            + "\n".join(
-                f"- {c.kind}: {c.message}"
-                for c in report.changes
-                if c.kind
-                in {
-                    "removed_country",
-                    "discovered_to_missing",
-                    "supported_to_transient",
-                    "supported_to_unsupported",
-                    "removed_table",
-                    "removed_all_tables",
-                    "lost_core_category",
-                    "structural_regression",
-                    "sharp_table_drop",
-                    "sharp_row_drop",
-                    "sharp_country_drop",
-                    "classified_to_unclassified",
-                }
-            )
+            + "\n".join(f"- {c.kind}: {c.message}" for c in report.changes if c.kind in regression_kinds)
         )
     logger.warning("Regression detected but not enforced: %d changes", len(report.changes))

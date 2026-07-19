@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from .constants import MANAGED_PATHS
 from .derived_categories import _selected_categories_from_derived
 from .exceptions import ValidationError as CrawlerValidationError
+from .hashing import _country_output_hash
 from .models import (
     ChangeReport,
     ClassifierMetadata,
@@ -45,7 +46,6 @@ from .models import (
     SchemaVersionInfo,
     UnsupportedCountry,
 )
-from .regression import _country_output_hash
 from .validation import (
     generate_core_fees_schema,
     generate_country_schema,

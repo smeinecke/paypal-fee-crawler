@@ -3,177 +3,11 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
-from decimal import Decimal, InvalidOperation
+from decimal import InvalidOperation
 from typing import Any
 
 from .models import Cell, FeeToken, Link
-
-# ISO 4217 currency codes (selected common set; not exhaustive).
-CURRENCY_CODES = {
-    "AED",
-    "AFN",
-    "ALL",
-    "AMD",
-    "ANG",
-    "AOA",
-    "ARS",
-    "AUD",
-    "AWG",
-    "AZN",
-    "BAM",
-    "BBD",
-    "BDT",
-    "BGN",
-    "BHD",
-    "BIF",
-    "BMD",
-    "BND",
-    "BOB",
-    "BRL",
-    "BSD",
-    "BTN",
-    "BWP",
-    "BYN",
-    "BZD",
-    "CAD",
-    "CDF",
-    "CHF",
-    "CLP",
-    "CNY",
-    "COP",
-    "CRC",
-    "CUP",
-    "CVE",
-    "CZK",
-    "DJF",
-    "DKK",
-    "DOP",
-    "DZD",
-    "EGP",
-    "ERN",
-    "ETB",
-    "EUR",
-    "FJD",
-    "FKP",
-    "FOK",
-    "GBP",
-    "GEL",
-    "GGP",
-    "GHS",
-    "GIP",
-    "GMD",
-    "GNF",
-    "GTQ",
-    "GYD",
-    "HKD",
-    "HNL",
-    "HRK",
-    "HTG",
-    "HUF",
-    "IDR",
-    "ILS",
-    "IMP",
-    "INR",
-    "IQD",
-    "IRR",
-    "ISK",
-    "JEP",
-    "JMD",
-    "JOD",
-    "JPY",
-    "KES",
-    "KGS",
-    "KHR",
-    "KID",
-    "KMF",
-    "KRW",
-    "KWD",
-    "KYD",
-    "KZT",
-    "LAK",
-    "LBP",
-    "LKR",
-    "LRD",
-    "LSL",
-    "LYD",
-    "MAD",
-    "MDL",
-    "MGA",
-    "MKD",
-    "MMK",
-    "MNT",
-    "MOP",
-    "MRU",
-    "MUR",
-    "MVR",
-    "MWK",
-    "MXN",
-    "MYR",
-    "MZN",
-    "NAD",
-    "NGN",
-    "NIO",
-    "NOK",
-    "NPR",
-    "NZD",
-    "OMR",
-    "PAB",
-    "PEN",
-    "PGK",
-    "PHP",
-    "PKR",
-    "PLN",
-    "PYG",
-    "QAR",
-    "RON",
-    "RSD",
-    "RUB",
-    "RWF",
-    "SAR",
-    "SBD",
-    "SCR",
-    "SDG",
-    "SEK",
-    "SGD",
-    "SHP",
-    "SLE",
-    "SLL",
-    "SOS",
-    "SRD",
-    "SSP",
-    "STN",
-    "SYP",
-    "SZL",
-    "THB",
-    "TJS",
-    "TMT",
-    "TND",
-    "TOP",
-    "TRY",
-    "TTD",
-    "TVD",
-    "TWD",
-    "TZS",
-    "UAH",
-    "UGX",
-    "USD",
-    "UYU",
-    "UZS",
-    "VED",
-    "VES",
-    "VND",
-    "VUV",
-    "WST",
-    "XAF",
-    "XCD",
-    "XOF",
-    "XPF",
-    "YER",
-    "ZAR",
-    "ZMW",
-    "ZWL",
-}
+from .normalize import CURRENCY_CODES, _normalize_decimal, _to_canonical_string
 
 # Regex for numeric tokens with optional sign and decimal comma/point.
 _NUMBER_RE = re.compile(r"^(?P<operator>[+\-])?(?P<value>[0-9]+(?:[.,][0-9]+)?)(?P<suffix>%|\s*%)?$")
@@ -181,43 +15,13 @@ _MONEY_RE = re.compile(r"^(?P<operator>[+\-])?(?P<amount>[0-9]+(?:[.,][0-9]+)?)\
 _RANGE_RE = re.compile(r"^(?P<from>[0-9]+(?:[.,][0-9]+)?)\s*[-\u2013\u2014]\s*(?P<to>[0-9]+(?:[.,][0-9]+)?)$")
 
 
-def _normalize_decimal(value: str) -> Decimal:
-    """Parse a decimal string that may use comma or point as decimal separator."""
-    cleaned = value.replace("\u00a0", "").replace(" ", "").replace("\u202f", "")
-    # Strip currency symbols, percent signs and other decoration while keeping
-    # digits, separators and a leading sign.
-    cleaned = re.sub(r"[^\d+.,\-]", "", cleaned)
-    has_dot = "." in cleaned
-    has_comma = "," in cleaned
-    if not has_dot and not has_comma:
-        return Decimal(cleaned)
-
-    if has_dot and not has_comma:
-        # "1234.56" or "1.234.56" (unusual). Use dot as decimal; remove thousands dots.
-        if cleaned.count(".") > 1:
-            cleaned = cleaned.replace(".", "")
-        return Decimal(cleaned)
-
-    if has_comma and not has_dot:
-        if cleaned.count(",") == 1:
-            cleaned = cleaned.replace(",", ".")
-        else:
-            # Keep the last comma as decimal separator, remove the rest.
-            parts = cleaned.split(",")
-            cleaned = "".join(parts[:-1]) + "." + parts[-1]
-        return Decimal(cleaned)
-
-    # Both comma and dot present. Use the last separator as the decimal marker.
-    last_dot = cleaned.rfind(".")
-    last_comma = cleaned.rfind(",")
-    cleaned = cleaned.replace(",", "") if last_dot > last_comma else cleaned.replace(".", "").replace(",", ".")
-    return Decimal(cleaned)
-
-
-def _to_canonical_string(value: Decimal) -> str:
-    """Return a canonical decimal string without exponent notation."""
-    normalized = value.normalize()
-    return f"{normalized:f}"
+def _operator_name(operator: str | None) -> str | None:
+    """Map an operator character to its canonical name."""
+    if operator == "+":
+        return "add"
+    if operator == "-":
+        return "subtract"
+    return None
 
 
 def _looks_like_percentage(text: str) -> bool:
@@ -248,7 +52,7 @@ def _parse_number_token(text: str) -> FeeToken | None:
         except (InvalidOperation, ValueError):
             pass
 
-    # Percentage token.
+    # Percentage/number token.
     number_match = _NUMBER_RE.match(text)
     if number_match:
         value_str = number_match.group("value")
@@ -259,24 +63,12 @@ def _parse_number_token(text: str) -> FeeToken | None:
         except (InvalidOperation, ValueError):
             return None
         kind = "percentage" if suffix or _looks_like_percentage(text) else "number"
-        operator_name = None
-        if operator == "+":
-            operator_name = "add"
-        elif operator == "-":
-            operator_name = "subtract"
-        token = FeeToken(
+        return FeeToken(
             raw=text,
             kind=kind,
             value=_to_canonical_string(value),
+            operator=_operator_name(operator),
         )
-        if operator_name:
-            token = FeeToken(
-                raw=token.raw,
-                kind=token.kind,
-                value=token.value,
-                operator=operator_name,
-            )
-        return token
 
     # Money token.
     money_match = _MONEY_RE.match(text)
@@ -287,18 +79,12 @@ def _parse_number_token(text: str) -> FeeToken | None:
                 amount = _normalize_decimal(money_match.group("amount"))
             except (InvalidOperation, ValueError):
                 return None
-            operator = money_match.group("operator")
-            operator_name = None
-            if operator == "+":
-                operator_name = "add"
-            elif operator == "-":
-                operator_name = "subtract"
             return FeeToken(
                 raw=text,
                 kind="money",
                 amount=_to_canonical_string(amount),
                 currency=currency,
-                operator=operator_name,
+                operator=_operator_name(money_match.group("operator")),
             )
 
     return None
@@ -494,50 +280,6 @@ _CHILD_CATEGORY = {
 }
 
 
-def _render_text_child(child: dict[str, Any]) -> tuple[str, list[FeeToken], list[Link]]:
-    return _render_text_node(child)
-
-
-def _render_link_child(child: dict[str, Any]) -> tuple[str, list[FeeToken], list[Link]]:
-    rendered = render_rich_text_node(child)
-    text = rendered.text
-    if not text.strip():
-        return "", [], []
-    links: list[Link] = []
-    if rendered.links:
-        links = [Link(text=text, uri=link.uri) for link in rendered.links]
-    else:
-        uri = child.get("data", {}).get("uri") or child.get("data", {}).get("href")
-        if uri:
-            links = [Link(text=text, uri=uri)]
-    return text, rendered.tokens, links
-
-
-def _render_paragraph_child(child: dict[str, Any]) -> tuple[str, list[FeeToken], list[Link]]:
-    rendered = render_rich_text_node(child)
-    if rendered.text.strip():
-        return rendered.text, rendered.tokens, rendered.links
-    return "", [], []
-
-
-def _render_linebreak_child(child: dict[str, Any]) -> tuple[str, list[FeeToken], list[Link]]:
-    return "\n", [], []
-
-
-def _render_embedded_child(child: dict[str, Any]) -> tuple[str, list[FeeToken], list[Link]]:
-    rendered = render_rich_text_node(child)
-    if rendered.text.strip():
-        return rendered.text, rendered.tokens, rendered.links
-    return "", [], []
-
-
-def _render_default_child(child: dict[str, Any]) -> tuple[str, list[FeeToken], list[Link]]:
-    rendered = render_rich_text_node(child)
-    if rendered.text.strip():
-        return rendered.text, rendered.tokens, rendered.links
-    return "", [], []
-
-
 def _render_single_value_node(node: dict[str, Any]) -> Cell:
     value = node.get("value") or node.get("text") or node.get("displayValue") or ""
     if isinstance(value, dict):
@@ -545,22 +287,34 @@ def _render_single_value_node(node: dict[str, Any]) -> Cell:
     return Cell(text=str(value).strip())
 
 
-_CHILD_RENDERERS: dict[str, Callable[[dict[str, Any]], tuple[str, list[FeeToken], list[Link]]]] = {
-    "text": _render_text_child,
-    "link": _render_link_child,
-    "paragraph": _render_paragraph_child,
-    "linebreak": _render_linebreak_child,
-    "embedded": _render_embedded_child,
-    "default": _render_default_child,
-}
-
-
 def _render_child(child: Any) -> tuple[str, list[FeeToken], list[Link]]:
+    """Render a single child node and return its text, tokens and links."""
     if not isinstance(child, dict):
         return str(child), [], []
+
     child_type = child.get("nodeType") or child.get("type") or ""
     category = _CHILD_CATEGORY.get(child_type, "default")
-    return _CHILD_RENDERERS[category](child)
+
+    if category == "linebreak":
+        return "\n", [], []
+
+    if category == "text":
+        return _render_text_node(child)
+
+    rendered = render_rich_text_node(child)
+    text = rendered.text
+    if not text.strip():
+        return "", [], []
+
+    if category == "link":
+        links = rendered.links or []
+        if not links:
+            uri = child.get("data", {}).get("uri") or child.get("data", {}).get("href")
+            if uri:
+                links = [Link(text=text, uri=uri)]
+        return text, rendered.tokens, links
+
+    return rendered.text, rendered.tokens, rendered.links
 
 
 def _render_children(content: list[Any]) -> tuple[list[str], list[FeeToken], list[Link]]:

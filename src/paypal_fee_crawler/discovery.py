@@ -12,6 +12,7 @@ from .cms_context import (
     extract_cms_context,
     find_global_json_assignments,
 )
+from .constants import DEFAULT_DISCOVERY_URL, FEE_PAGE_PATH_TEMPLATE, PAYPAL_BASE_URL
 from .exceptions import (
     AccessChallengeError,
     ContentSecurityError,
@@ -35,11 +36,12 @@ logger = logging.getLogger(__name__)
 # Markets that don't have their own fee page but redirect to another market's
 # fee page.  PayPal serves these markets from the alias target's page, so we
 # use that URL directly instead of following a redirect to a non-fee page.
+_UK_FEE_PAGE = FEE_PAGE_PATH_TEMPLATE.format(base=PAYPAL_BASE_URL, market="uk")
 FEE_PAGE_ALIASES: dict[str, str] = {
-    "GI": "https://www.paypal.com/uk/business/paypal-business-fees",
-    "GG": "https://www.paypal.com/uk/business/paypal-business-fees",
-    "IM": "https://www.paypal.com/uk/business/paypal-business-fees",
-    "JE": "https://www.paypal.com/uk/business/paypal-business-fees",
+    "GI": _UK_FEE_PAGE,
+    "GG": _UK_FEE_PAGE,
+    "IM": _UK_FEE_PAGE,
+    "JE": _UK_FEE_PAGE,
 }
 
 BOOTSTRAP_MARKETS: list[Market] = [
@@ -50,7 +52,7 @@ BOOTSTRAP_MARKETS: list[Market] = [
         region="europe",
         locale="de_DE",
         languages=[Language(code="de", name="Deutsch")],
-        url_prefix="https://www.paypal.com/de",
+        url_prefix=f"{PAYPAL_BASE_URL}/de",
         preferred_language="de",
     ),
     Market(
@@ -60,7 +62,7 @@ BOOTSTRAP_MARKETS: list[Market] = [
         region="north_america",
         locale="en_US",
         languages=[Language(code="en", name="English")],
-        url_prefix="https://www.paypal.com/us",
+        url_prefix=f"{PAYPAL_BASE_URL}/us",
         preferred_language="en",
     ),
     Market(
@@ -70,7 +72,7 @@ BOOTSTRAP_MARKETS: list[Market] = [
         region="europe",
         locale="en_GB",
         languages=[Language(code="en", name="English")],
-        url_prefix="https://www.paypal.com/gb",
+        url_prefix=f"{PAYPAL_BASE_URL}/gb",
         preferred_language="en",
     ),
 ]
@@ -125,7 +127,7 @@ def _build_market(country: dict[str, Any], region_name: str, seen: set[str]) -> 
         region=str(region_name).lower().replace(" ", "_"),
         locale=default_locale,
         languages=languages,
-        url_prefix=f"https://www.paypal.com/{paypal_code.lower()}",
+        url_prefix=f"{PAYPAL_BASE_URL}/{paypal_code.lower()}",
         preferred_language=preferred,
     )
 
@@ -153,7 +155,7 @@ def _normalize_markets(selectors: list[dict[str, Any]]) -> list[Market]:
 async def discover_countries(
     http_client: HttpClient,
     config: CrawlConfiguration,
-    discovery_url: str = "https://www.paypal.com/de/business/paypal-business-fees",
+    discovery_url: str = DEFAULT_DISCOVERY_URL,
 ) -> list[Market]:
     """Discover PayPal markets from the country selector embedded in a page.
 
@@ -426,15 +428,15 @@ async def discover_fee_page(
     if alias_result:
         return alias_result
 
-    candidates = [f"https://www.paypal.com/{slug}/business/paypal-business-fees"]
+    candidates = [FEE_PAGE_PATH_TEMPLATE.format(base=PAYPAL_BASE_URL, market=slug)]
     for legacy in config.legacy_fee_paths:
-        candidates.append(f"https://www.paypal.com/{slug}/{legacy}")
+        candidates.append(f"{PAYPAL_BASE_URL}/{slug}/{legacy}")
 
     confirmed, tested, transient_failure, parser_failure = await _try_candidates(http_client, candidates, slug, code)
     if confirmed:
         return confirmed
 
-    homepage = f"https://www.paypal.com/{slug}"
+    homepage = f"{PAYPAL_BASE_URL}/{slug}"
     tested.append(homepage)
     response = await _fetch_homepage(http_client, homepage, code)
 

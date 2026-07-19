@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from paypal_fee_crawler.classify import classify_tables
 from paypal_fee_crawler.cms_context import extract_cms_context
 from paypal_fee_crawler.components import ComponentsExtractor
-from paypal_fee_crawler.crawler import Crawler
+from paypal_fee_crawler.constants import CLASSIFIER_MODE, CLASSIFIER_VERSION, FEE_PAGE_PATH_TEMPLATE, PAYPAL_BASE_URL
+from paypal_fee_crawler.crawler import Crawler, _crawler_revision
 from paypal_fee_crawler.discovery import get_bootstrap_markets
 from paypal_fee_crawler.models import (
     ChangeReport,
@@ -28,6 +29,7 @@ from paypal_fee_crawler.models import (
     CountryOutput,
     CrawlCache,
     CrawlConfiguration,
+    CrawlReport,
     CrawlState,
     Market,
     Source,
@@ -135,7 +137,7 @@ def _build_output(code: str, html: str, existing: CountryOutput | None) -> Count
     cms_updated_at = cms.get("cmsUpdatedAt")
     page_updated_at = cms.get("pageUpdatedAt")
     content_sha256 = _compute_content_sha256(html)
-    requested_url = f"https://www.paypal.com/{code.lower()}/business/paypal-business-fees"
+    requested_url = FEE_PAGE_PATH_TEMPLATE.format(base=PAYPAL_BASE_URL, market=code.lower())
     canonical_url = requested_url
 
     if existing is not None:
@@ -203,8 +205,8 @@ def _build_change_report(
         outputs,
         RegressionLimits(),
         current_classifier_metadata=ClassifierMetadata(
-            classifier_mode="rules",
-            classifier_version="rules-v1",
+            classifier_mode=CLASSIFIER_MODE,
+            classifier_version=CLASSIFIER_VERSION,
         ),
     )
 
@@ -232,6 +234,7 @@ def main() -> int:
     unsupported: list = []
 
     change_report = _build_change_report(outputs, OUTPUT_DIR)
+    crawler_revision = _crawler_revision(OUTPUT_DIR / "crawler" if (OUTPUT_DIR / "crawler").exists() else None)
 
     publisher = OutputPublisher(OUTPUT_DIR, timestamp=timestamp)
     _, staging = publisher.publish(
@@ -240,12 +243,22 @@ def main() -> int:
         unsupported=unsupported,
         change_report=change_report,
         classifier_metadata=ClassifierMetadata(
-            classifier_mode="rules",
-            classifier_version="rules-v1",
+            classifier_mode=CLASSIFIER_MODE,
+            classifier_version=CLASSIFIER_VERSION,
         ),
+        crawler_revision=crawler_revision,
     )
+    publisher.generate_readme(staging)
     changed, changed_files = publisher.commit(staging)
     publisher.rollback(staging)
+
+    report = CrawlReport(
+        exit_code=0,
+        changed=changed,
+        countries_processed=len(outputs),
+        countries_unsupported=[u.paypal_market_code for u in unsupported],
+    )
+    publisher.write_crawl_report(OUTPUT_DIR, report)
 
     errors = validate_all_output(OUTPUT_DIR)
     if errors:
