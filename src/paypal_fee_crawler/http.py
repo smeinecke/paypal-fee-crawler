@@ -128,9 +128,13 @@ class HttpClient:
         cookies can never leak between markets or between discovery and page
         fetch steps.
         """
+        connect_timeout = (
+            self.config.connect_timeout if self.config.connect_timeout is not None else self.config.timeout
+        )
+        read_timeout = self.config.read_timeout if self.config.read_timeout is not None else self.config.timeout
         timeout = httpx.Timeout(
-            connect=self.config.connect_timeout,
-            read=self.config.read_timeout,
+            connect=connect_timeout,
+            read=read_timeout,
             write=10.0,
             pool=10.0,
         )

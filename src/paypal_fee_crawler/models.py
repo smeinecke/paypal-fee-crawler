@@ -929,8 +929,8 @@ class CrawlConfiguration(BaseModel):
     timestamp: str | None = None
     countries: list[str] | None = None
     timeout: float = 30.0
-    connect_timeout: float = 10.0
-    read_timeout: float = 30.0
+    connect_timeout: float | None = None
+    read_timeout: float | None = None
     max_workers: int = 3
     request_delay: float = 0.5
     max_retries: int = 3
@@ -970,6 +970,13 @@ class CrawlConfiguration(BaseModel):
     @classmethod
     def _timeout_positive(cls, value: float) -> float:
         if value <= 0:
+            raise ValueError("timeout must be positive")
+        return value
+
+    @field_validator("connect_timeout", "read_timeout")
+    @classmethod
+    def _optional_timeout_positive(cls, value: float | None) -> float | None:
+        if value is not None and value <= 0:
             raise ValueError("timeout must be positive")
         return value
 

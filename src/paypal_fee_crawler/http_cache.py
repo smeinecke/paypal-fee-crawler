@@ -296,30 +296,33 @@ class HttpCache:
 
         return (time.time() - entry.fetched_at) < self._ttl_seconds
 
-    def _read_entry(self, key: str) -> _CacheEntry | None:
+    def _read_entry(self, key: str) -> tuple[_CacheEntry | None, int]:
+        """Return the cached entry (if any) and the number of cache errors encountered."""
+        errors = 0
         if self._cache_dir is None:
-            return None
+            return None, errors
         path = self._entry_path(key)
         if not path.exists():
-            return None
+            return None, errors
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             logger.debug("Corrupt cache entry at %s; ignoring", path)
-            self.stats.cache_errors += 1
-            return None
+            errors += 1
+            return None, errors
         entry = _CacheEntry.from_json(data)
         if entry is None:
             logger.debug("Stale or invalid cache entry at %s; ignoring", path)
-            self.stats.cache_errors += 1
+            errors += 1
             with contextlib.suppress(OSError):
                 path.unlink(missing_ok=True)
-            return None
-        return entry
+            return None, errors
+        return entry, errors
 
-    def _write_entry(self, entry: _CacheEntry) -> None:
+    def _write_entry(self, entry: _CacheEntry) -> int:
+        """Persist an entry and return the number of cache errors encountered."""
         if self._cache_dir is None:
-            return
+            return 0
         path = self._entry_path(entry.key)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f".tmp.{path.name}.{os.getpid()}.{time.monotonic_ns()}")
@@ -328,16 +331,19 @@ class HttpCache:
             os.replace(tmp, path)
         except Exception as exc:
             logger.warning("Failed to write cache entry %s: %s", path, exc)
-            self.stats.cache_errors += 1
             with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
+            return 1
+        return 0
 
-    def _remove_entry(self, key: str) -> None:
+    def _remove_entry(self, key: str) -> int:
+        """Remove a cached entry and return the number of cache errors encountered."""
         if self._cache_dir is None:
-            return
+            return 0
         path = self._entry_path(key)
         with contextlib.suppress(OSError):
             path.unlink(missing_ok=True)
+        return 0
 
     async def _acquire_file_lock(self, key: str) -> Any:
         lock = self._file_lock(key)
@@ -407,7 +413,8 @@ class HttpCache:
         async with self._key_lock(key):
             lock = await self._acquire_file_lock(key)
             try:
-                entry = await asyncio.to_thread(self._read_entry, key)
+                entry, read_errors = await asyncio.to_thread(self._read_entry, key)
+                self.stats.cache_errors += read_errors
 
                 if entry is not None and not self._refresh and self._is_fresh(entry):
                     self.stats.cache_hits += 1
@@ -425,7 +432,8 @@ class HttpCache:
                 if response.status_code == 304:
                     if entry is not None:
                         entry.fetched_at = time.time()
-                        await asyncio.to_thread(self._write_entry, entry)
+                        write_errors = await asyncio.to_thread(self._write_entry, entry)
+                        self.stats.cache_errors += write_errors
                         self.stats.cache_304_responses += 1
                         self.stats.bytes_avoided += len(entry.content)
                         return entry.to_httpx_response(method), True
@@ -438,7 +446,8 @@ class HttpCache:
                 # and any previously stored copy for the same resource is removed
                 # so it cannot be served again.
                 if "no-store" in directives or "private" in directives:
-                    await asyncio.to_thread(self._remove_entry, key)
+                    remove_errors = await asyncio.to_thread(self._remove_entry, key)
+                    self.stats.cache_errors += remove_errors
                     self.stats.cache_misses += 1
                     return response, False
 
@@ -459,7 +468,8 @@ class HttpCache:
                         locale=locale,
                         cache_control=response.headers.get("cache-control"),
                     )
-                    await asyncio.to_thread(self._write_entry, entry)
+                    write_errors = await asyncio.to_thread(self._write_entry, entry)
+                    self.stats.cache_errors += write_errors
                     self.stats.cache_writes += 1
                     self.stats.cache_misses += 1
                     return response, False

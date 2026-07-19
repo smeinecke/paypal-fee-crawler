@@ -69,6 +69,11 @@ def _build_config(
     no_cache: bool = False,
     refresh_cache: bool = False,
 ) -> CrawlConfiguration:
+    if not atomic:
+        logger.warning("--no-atomic is deprecated and has no effect; atomic publication is always used.")
+    if refresh_country_manifest:
+        logger.warning("--refresh-country-manifest is deprecated and has no effect.")
+
     selected_countries: list[str] | None = None
     if country:
         selected_countries = list(country)
@@ -347,7 +352,6 @@ def crawl_country(
         request_delay=request_delay,
         user_agent=user_agent,
         verbose=verbose,
-        atomic=False,
         cache_dir=_resolve_cache_dir(no_cache, cache_dir),
         cache_ttl_hours=cache_ttl_hours,
         no_cache=no_cache,
