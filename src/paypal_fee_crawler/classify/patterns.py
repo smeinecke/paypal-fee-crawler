@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 import re
 
-logger = logging.getLogger(__name__)
+from ..constants import CLASSIFIER_VERSION
 
-CLASSIFIER_VERSION = "rules-v1"
+logger = logging.getLogger(__name__)
 
 _CLASSIFIER_VERSION = CLASSIFIER_VERSION
 

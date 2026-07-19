@@ -19,8 +19,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from paypal_fee_crawler.classify import classify_tables
 from paypal_fee_crawler.cms_context import extract_cms_context
 from paypal_fee_crawler.components import ComponentsExtractor
-from paypal_fee_crawler.constants import CLASSIFIER_MODE, CLASSIFIER_VERSION, FEE_PAGE_PATH_TEMPLATE, PAYPAL_BASE_URL
-from paypal_fee_crawler.crawler import Crawler, _crawler_revision
+from paypal_fee_crawler.constants import FEE_PAGE_PATH_TEMPLATE, PAYPAL_BASE_URL
+from paypal_fee_crawler.crawler import Crawler
 from paypal_fee_crawler.discovery import get_bootstrap_markets
 from paypal_fee_crawler.models import (
     ChangeReport,
@@ -34,7 +34,6 @@ from paypal_fee_crawler.models import (
     Market,
     Source,
 )
-from paypal_fee_crawler.output import OutputPublisher
 from paypal_fee_crawler.regression import PreviousState, RegressionLimits, check_regression
 from paypal_fee_crawler.validation import validate_all_output
 
@@ -204,10 +203,7 @@ def _build_change_report(
         current_transient,
         outputs,
         RegressionLimits(),
-        current_classifier_metadata=ClassifierMetadata(
-            classifier_mode=CLASSIFIER_MODE,
-            classifier_version=CLASSIFIER_VERSION,
-        ),
+        current_classifier_metadata=ClassifierMetadata.default(),
     )
 
 
@@ -234,23 +230,16 @@ def main() -> int:
     unsupported: list = []
 
     change_report = _build_change_report(outputs, OUTPUT_DIR)
-    crawler_revision = _crawler_revision(OUTPUT_DIR / "crawler" if (OUTPUT_DIR / "crawler").exists() else None)
 
-    publisher = OutputPublisher(OUTPUT_DIR, timestamp=timestamp)
-    _, staging = publisher.publish(
+    crawler = Crawler(CrawlConfiguration(output_dir=str(OUTPUT_DIR), timestamp=timestamp))
+    changed, changed_files, publisher = crawler.publish_outputs(
+        OUTPUT_DIR,
         outputs,
-        markets=markets,
-        unsupported=unsupported,
-        change_report=change_report,
-        classifier_metadata=ClassifierMetadata(
-            classifier_mode=CLASSIFIER_MODE,
-            classifier_version=CLASSIFIER_VERSION,
-        ),
-        crawler_revision=crawler_revision,
+        markets,
+        unsupported,
+        change_report,
+        [],
     )
-    publisher.generate_readme(staging)
-    changed, changed_files = publisher.commit(staging)
-    publisher.rollback(staging)
 
     report = CrawlReport(
         exit_code=0,

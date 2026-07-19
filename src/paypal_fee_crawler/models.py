@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
-from .constants import LEGACY_FEE_PAGE_PATHS, PAYPAL_HOST_ALLOWLIST
+from .constants import CLASSIFIER_MODE, CLASSIFIER_VERSION, LEGACY_FEE_PAGE_PATHS, PAYPAL_HOST_ALLOWLIST
 from .exceptions import ExitCode
 from .market_mapping import normalize_paypal_market_code
 
@@ -724,6 +724,11 @@ class ClassifierMetadata(PublicModel):
     schema_version: int = 1
     classifier_mode: str | None = None
     classifier_version: str | None = None
+
+    @classmethod
+    def default(cls) -> Self:
+        """Return the canonical classifier metadata for this crawler version."""
+        return cls(classifier_mode=CLASSIFIER_MODE, classifier_version=CLASSIFIER_VERSION)
 
 
 _CHANGE_SEVERITY_BY_KIND: dict[str, ChangeSeverity] = {

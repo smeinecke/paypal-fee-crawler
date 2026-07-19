@@ -13,7 +13,7 @@ from typing import Any
 from .classify import classify_tables
 from .cms_context import extract_cms_context
 from .components import ComponentsExtractor, iter_components
-from .constants import CLASSIFIER_MODE, CLASSIFIER_VERSION, DEFAULT_DISCOVERY_URL
+from .constants import DEFAULT_DISCOVERY_URL
 from .discovery import discover_countries, discover_fee_page, get_bootstrap_markets, get_canonical_page_id
 from .exceptions import (
     CountryDiscoveryError,
@@ -621,10 +621,7 @@ class Crawler:
         current_supported = set(outputs.keys())
         current_unsupported = {u.paypal_market_code for u in unsupported}
         current_transient = set(failed)
-        classifier_metadata = ClassifierMetadata(
-            classifier_mode=CLASSIFIER_MODE,
-            classifier_version=CLASSIFIER_VERSION,
-        )
+        classifier_metadata = ClassifierMetadata.default()
         return check_regression(
             previous_state,
             current_discovered,
@@ -636,7 +633,7 @@ class Crawler:
             current_classifier_metadata=classifier_metadata,
         )
 
-    async def _publish_outputs(
+    def publish_outputs(
         self,
         output_dir: Path,
         outputs: dict[str, CountryOutput],
@@ -644,7 +641,7 @@ class Crawler:
         unsupported: list[UnsupportedCountry],
         change_report: ChangeReport,
         failed: list[str],
-    ) -> tuple[bool, OutputPublisher]:
+    ) -> tuple[bool, list[str], OutputPublisher]:
         publisher = OutputPublisher(
             output_dir=output_dir,
             staging_dir=self.config.staging_dir,
@@ -675,20 +672,17 @@ class Crawler:
                 markets,
                 unsupported,
                 change_report,
-                classifier_metadata=ClassifierMetadata(
-                    classifier_mode=CLASSIFIER_MODE,
-                    classifier_version=CLASSIFIER_VERSION,
-                ),
+                classifier_metadata=ClassifierMetadata.default(),
                 crawler_revision=crawler_revision,
                 transient_failures=transient_failures,
             )
             publisher.generate_readme(staging)
-            changed, _ = publisher.commit(staging)
+            changed, changed_files = publisher.commit(staging)
         except Exception as exc:
             if staging is not None:
                 publisher.rollback(staging)
             raise CrawlerValidationError(f"Failed to publish output: {exc}") from exc
-        return changed, publisher
+        return changed, changed_files, publisher
 
     def _determine_exit_code(self, failed: list[str]) -> ExitCode:
         if self.config.fail_on_warning and self.warnings:
@@ -734,7 +728,7 @@ class Crawler:
             logger.error("Regression guard failed: %s", exc)
             raise
 
-        changed, publisher = await self._publish_outputs(
+        changed, _, publisher = self.publish_outputs(
             output_dir,
             outputs,
             markets,
