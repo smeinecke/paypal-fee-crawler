@@ -122,12 +122,12 @@ def _write_json(path: Path, data: Any) -> None:
     path.write_text(_serialize(data), encoding="utf-8")
 
 
-def _is_same_file(path: Path, content: str) -> bool:
-    if not path.exists():
+def _is_same_file(dst: Path, src: Path) -> bool:
+    if not dst.exists():
         return False
-    if path.stat().st_size != len(content.encode("utf-8")):
+    if dst.stat().st_size != src.stat().st_size:
         return False
-    return path.read_text(encoding="utf-8") == content
+    return dst.read_text(encoding="utf-8") == src.read_text(encoding="utf-8")
 
 
 @dataclass
@@ -713,14 +713,12 @@ class OutputPublisher:
                         continue
                     rel = src_file.relative_to(staging)
                     dst = self.output_dir / rel
-                    content = src_file.read_text(encoding="utf-8")
-                    if not _is_same_file(dst, content):
+                    if not _is_same_file(dst, src_file):
                         changed.append(str(rel))
             else:
                 rel = src.relative_to(staging)
                 dst = self.output_dir / rel
-                content = src.read_text(encoding="utf-8")
-                if not _is_same_file(dst, content):
+                if not _is_same_file(dst, src):
                     changed.append(str(rel))
 
         if self.output_dir.exists():

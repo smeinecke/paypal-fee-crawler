@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from typing import Any
 
 from lxml import html
@@ -37,22 +38,27 @@ def _strip_assignment(text: str, name: str) -> str:
     return after
 
 
+def _iter_script_texts(html_text: str) -> Iterator[str]:
+    """Parse *html_text* once and yield the text of every ``<script>`` tag."""
+    try:
+        tree = html.fromstring(html_text)
+    except Exception as exc:
+        raise ParserError(f"Failed to parse HTML: {exc}") from exc
+    for script in tree.xpath("//script"):
+        text = script.text or ""
+        if text:
+            yield text
+
+
 def extract_cms_context(html_text: str) -> dict[str, Any]:
     """Parse the HTML and return exactly one CMS render context object.
 
     Raises:
         ParserError: if zero or multiple contexts are found or if the JSON is invalid.
     """
-    try:
-        tree = html.fromstring(html_text)
-    except Exception as exc:
-        raise ParserError(f"Failed to parse HTML: {exc}") from exc
-
-    scripts = tree.xpath("//script")
     contexts: list[dict[str, Any]] = []
-    for script in scripts:
-        text = script.text or ""
-        if not text or TARGET_ASSIGNMENT not in text:
+    for text in _iter_script_texts(html_text):
+        if TARGET_ASSIGNMENT not in text:
             continue
         # Find the assignment and strip the wrapper, keeping only the JSON object.
         try:
@@ -82,13 +88,11 @@ def find_global_json_assignments(html_text: str, variable_names: list[str]) -> d
     """
     results: dict[str, Any] = {}
     try:
-        tree = html.fromstring(html_text)
-    except Exception:
+        script_texts = list(_iter_script_texts(html_text))
+    except ParserError:
         return results
 
-    scripts = tree.xpath("//script")
-    for script in scripts:
-        text = script.text or ""
+    for text in script_texts:
         for name in variable_names:
             if name not in text:
                 continue
@@ -113,14 +117,7 @@ def extract_all_contexts(html_text: str) -> dict[str, Any]:
     """
     results: dict[str, Any] = {}
     warnings: list[str] = []
-    try:
-        tree = html.fromstring(html_text)
-    except Exception as exc:
-        raise ParserError(f"Failed to parse HTML: {exc}") from exc
-
-    scripts = tree.xpath("//script")
-    for script in scripts:
-        text = script.text or ""
+    for text in _iter_script_texts(html_text):
         for name in ALLOWLISTED_GLOBAL_CONTEXTS:
             if name not in text or name in results:
                 continue

@@ -12,7 +12,12 @@ from .cms_context import (
     extract_cms_context,
     find_global_json_assignments,
 )
-from .constants import DEFAULT_DISCOVERY_URL, FEE_PAGE_PATH_TEMPLATE, PAYPAL_BASE_URL
+from .constants import (
+    DEFAULT_DISCOVERY_URL,
+    FEE_PAGE_PATH_TEMPLATE,
+    LEGACY_FEE_PAGE_PATHS,
+    PAYPAL_BASE_URL,
+)
 from .exceptions import (
     AccessChallengeError,
     ContentSecurityError,
@@ -228,7 +233,7 @@ def _is_fee_url_path(url: str) -> bool:
     a CMS render context.
     """
     path = urlparse(url).path.lower().rstrip("/")
-    return path.endswith("/business/paypal-business-fees") or path.endswith("/business/fees")
+    return any(path.endswith(f"/{legacy}") for legacy in LEGACY_FEE_PAGE_PATHS)
 
 
 def _is_fee_page(page_data: dict[str, Any], response: HttpResponse) -> bool:

@@ -7,7 +7,7 @@ from decimal import InvalidOperation
 from typing import Any
 
 from .models import Cell, FeeToken, Link
-from .normalize import CURRENCY_CODES, _normalize_decimal, _to_canonical_string
+from .normalize import CURRENCY_CODES, _normalize_decimal, _to_canonical_string, clean_text
 
 # Regex for numeric tokens with optional sign and decimal comma/point.
 _NUMBER_RE = re.compile(r"^(?P<operator>[+\-])?(?P<value>[0-9]+(?:[.,][0-9]+)?)(?P<suffix>%|\s*%)?$")
@@ -349,6 +349,5 @@ def render_rich_text_node(node: Any) -> Cell:
         return _render_single_value_node(node)
 
     text_parts, tokens, links = _render_children(content)
-    full_text = "".join(text_parts)
-    full_text = full_text.replace("\u00a0", " ").replace("\u202f", " ")
-    return Cell(text=full_text.strip(), tokens=tokens, links=links)
+    full_text = clean_text("".join(text_parts))
+    return Cell(text=full_text, tokens=tokens, links=links)

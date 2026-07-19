@@ -186,7 +186,12 @@ class HttpClient:
         if response.status_code >= 400:
             raise PermanentHttpError(f"HTTP {response.status_code} for {response.url}", response.status_code)
 
-        title, challenge_score, login_score = self._parse_challenge_signals(response.text)
+        try:
+            tree = html.fromstring(response.text)
+        except Exception:
+            return
+
+        title, challenge_score, login_score = self._parse_challenge_signals(tree)
 
         # Strong evidence: challenge title phrase plus at least one structural signal.
         if title and self._is_challenge_title(title) and challenge_score >= 1:
@@ -197,22 +202,17 @@ class HttpClient:
             raise AccessChallengeError(f"CAPTCHA/interstitial detected: {response.url}")
 
         # Login pages are classified separately.
-        if login_score >= 2 and self._looks_like_login_page(response.text):
+        if login_score >= 2 and self._looks_like_login_page(tree):
             raise AccessChallengeError(f"Login page detected: {response.url}")
 
-    def _parse_challenge_signals(self, text: str) -> tuple[str | None, int, int]:
-        """Parse HTML and return (title, challenge_score, login_score).
+    def _parse_challenge_signals(self, tree: Any) -> tuple[str | None, int, int]:
+        """Parse an already-parsed HTML tree and return (title, challenge_score, login_score).
 
         The challenge score counts independent structural signals:
         - a known CAPTCHA form, iframe, or container
         - a challenge-specific page identifier (class/id)
         - a missing CMS context while the page title is suspicious
         """
-        try:
-            tree = html.fromstring(text)
-        except Exception:
-            return None, 0, 0
-
         title = None
         title_node = tree.find(".//title")
         if title_node is not None and title_node.text:
@@ -292,12 +292,8 @@ class HttpClient:
             )
         )
 
-    def _looks_like_login_page(self, text: str) -> bool:
+    def _looks_like_login_page(self, tree: Any) -> bool:
         """Return True if the page contains a PayPal login form."""
-        try:
-            tree = html.fromstring(text)
-        except Exception:
-            return False
         return bool(
             tree.xpath(
                 "//form[.//input[@type='password']]"

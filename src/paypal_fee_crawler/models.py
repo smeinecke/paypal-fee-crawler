@@ -726,15 +726,6 @@ class ClassifierMetadata(PublicModel):
     classifier_version: str | None = None
 
 
-class ClassifierMode(StrEnum):
-    """Deprecated classifier mode enum kept for config parsing compatibility."""
-
-    LEGACY = "legacy"
-    SHADOW = "shadow"
-    STRUCTURAL = "structural"
-    RULES = "rules"
-
-
 _CHANGE_SEVERITY_BY_KIND: dict[str, ChangeSeverity] = {
     "structural_regression": ChangeSeverity.REGRESSION,
     "supported_to_transient": ChangeSeverity.REGRESSION,
@@ -832,7 +823,7 @@ class CrawlConfiguration(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    classifier_mode: ClassifierMode = ClassifierMode.RULES
+    classifier_mode: str = "rules"
     output_dir: str | None = None
     staging_dir: str | None = None
     timestamp: str | None = None
