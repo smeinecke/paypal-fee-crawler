@@ -6224,6 +6224,57 @@ def _source_schedule_id(source_base: str, intended_id: str, schedules: dict[str,
     return source_base if source_base in schedules else None
 
 
+def _inheritance_map_for(schedule_type: str) -> dict[str, str]:
+    """Return the inheritance map for the given schedule type."""
+    if schedule_type == "fixed_fee":
+        return _FIXED_FEE_INHERITANCE
+    if schedule_type == "international_surcharge":
+        return _INTERNATIONAL_SURCHARGE_INHERITANCE
+    return {}
+
+
+def _source_text_of(extracted: _ExtractedRule | None) -> str:
+    """Return the lowercased fixed-fee expression from the extracted row, if any."""
+    return (extracted.fixed_expr or "").lower() if extracted else ""
+
+
+def _source_text_evidence(source_text: str, source_base: str) -> str | None:
+    """Return an evidence string when the row text names the source schedule."""
+    if not source_text:
+        return None
+    if (
+        source_base == "commercial"
+        and "commercial" in source_text
+        and ("transaction" in source_text or "fixed fee" in source_text)
+    ):
+        return "source text references commercial fixed fee"
+    if source_base == "online_card_payments" and "online card" in source_text:
+        return "source text references online card fixed fee"
+    return None
+
+
+def _schedule_heading_text(schedules: dict[str, Any], source_schedule_id: str) -> str:
+    """Return the lowercased section heading of the source schedule, if available."""
+    source_schedule = schedules.get(source_schedule_id)
+    if source_schedule and source_schedule.sources:
+        return (source_schedule.sources[0].section_heading or "").lower()
+    return ""
+
+
+def _table_context_evidence(
+    source_base: str,
+    schedules: dict[str, Any],
+    source_schedule_id: str,
+) -> str | None:
+    """Return an evidence string when the source schedule's table context supports inheritance."""
+    heading = _schedule_heading_text(schedules, source_schedule_id)
+    if source_base == "online_card_payments" and "online card" in heading:
+        return "table context references online card fixed fee"
+    if source_base == "commercial" and "commercial transactions" in heading:
+        return "table context references commercial fixed fee"
+    return None
+
+
 def _inheritance_evidence(
     rule: TransactionFeeRule,
     extracted: _ExtractedRule | None,
@@ -6233,12 +6284,7 @@ def _inheritance_evidence(
     schedules: dict[str, Any],
 ) -> str | None:
     """Return a human-readable evidence string when inheritance is allowed."""
-    if schedule_type == "fixed_fee":
-        inheritance_map = _FIXED_FEE_INHERITANCE
-    elif schedule_type == "international_surcharge":
-        inheritance_map = _INTERNATIONAL_SURCHARGE_INHERITANCE
-    else:
-        inheritance_map = {}
+    inheritance_map = _inheritance_map_for(schedule_type)
 
     # The inheritance map is itself an explicit documented product rule.  Even
     # for mapped products we still require corroborating source text or table
@@ -6252,37 +6298,15 @@ def _inheritance_evidence(
     if schedule_type == "maximum_fee" and source_base:
         return f"explicit maximum-fee fallback from {source_base}"
 
-    # Source text from the requesting row can explicitly name the source schedule.
-    source_text = (extracted.fixed_expr or "").lower() if extracted else ""
-    if source_text:
-        if (
-            source_base == "commercial"
-            and "commercial" in source_text
-            and ("transaction" in source_text or "fixed fee" in source_text)
-        ):
-            return "source text references commercial fixed fee"
-        if source_base == "online_card_payments" and "online card" in source_text:
-            return "source text references online card fixed fee"
+    source_text = _source_text_of(extracted)
 
-    # Table context from the source schedule or the requesting row can
-    # document inheritance (e.g. an Advanced Card row in an Online Card
-    # Payment Services section).
-    if source_base == "online_card_payments":
-        if "online card" in source_text:
-            return "table context references online card fixed fee"
-        source_schedule = schedules.get(source_schedule_id)
-        if source_schedule and source_schedule.sources:
-            heading = (source_schedule.sources[0].section_heading or "").lower()
-            if "online card" in heading:
-                return "table context references online card fixed fee"
-    if source_base == "commercial":
-        if "commercial" in source_text and ("transaction" in source_text or "fixed fee" in source_text):
-            return "source text references commercial fixed fee"
-        source_schedule = schedules.get(source_schedule_id)
-        if source_schedule and source_schedule.sources:
-            heading = (source_schedule.sources[0].section_heading or "").lower()
-            if "commercial transactions" in heading:
-                return "table context references commercial fixed fee"
+    reason = _source_text_evidence(source_text, source_base)
+    if reason:
+        return reason
+
+    reason = _table_context_evidence(source_base, schedules, source_schedule_id)
+    if reason:
+        return reason
 
     # When the product is explicitly mapped and no contradictory evidence
     # exists, the map itself documents the inheritance.
