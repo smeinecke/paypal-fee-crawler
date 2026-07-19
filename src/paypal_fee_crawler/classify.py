@@ -1531,43 +1531,162 @@ def _table_has_fixed_fee_rate(table: Table) -> bool:
     return False
 
 
+_FIXED_FEE_KEYWORDS = (
+    "festgebühr",
+    "fixed fee",
+    "fast gebyr",
+    "fast avgift",
+    "tarifa fija",
+    "comisión fija",
+    "comissão fixa",
+    "tarifa fixa",
+    "taxa fixa",
+    "vast bedrag",
+    "vaste kosten",
+    "tariffa fissa",
+    "paušální poplatek",
+    "pevný poplatek",
+    "opłata stała",
+    "frais fixe",
+    "commission fixe",
+    "kiinteä palkkio",
+    "kiinteä maksu",
+    "fixný poplatok",
+    "pevný poplatok",
+    "fiksna naknada",
+    "fiksna provizija",
+    "comision fixa",
+    "σταθερή χρέωση",
+    "ค่าธรรมเนียมคงที่",
+    "อัตราคงที่",
+    "rögzített díja",
+    "rögzített díj",
+    "fix díj",
+    "固定費用",
+)
+
+
+_MIN_MAX_FEE_KEYWORDS = (
+    "mindest",
+    "höchst",
+    "minimum",
+    "maximum",
+    "minim",
+    "maxim",
+    "mínim",
+    "máxim",
+    "massim",
+    "minsta",
+    "största",
+    "minste",
+    "maks",
+    "lavest",
+    "højest",
+    "obergrenze",
+    "obergr",
+    "limit",
+    "cap",
+    "ceiling",
+    "floor",
+    "payout maximum",
+    "withdrawal limit",
+    "transaction limit",
+    "send limit",
+    "receive limit",
+    "mindestbetrag",
+    "höchstbetrag",
+    "max cap",
+    "max limit",
+    "maximum cap",
+)
+
+
+_DIRECT_FIXED_FEE_KEYWORDS = (
+    "chargeback",
+    "rückbuchung",
+    "rückbuchungs",
+    "dispute",
+    "streit",
+    "claim",
+    "withdrawal",
+    "auszahlung",
+    "auszahlungen",
+    "payout",
+    "verification",
+    "verifizierung",
+    "authorization",
+    "autorisierung",
+    "refund",
+    "rückerstattung",
+    "rückerstattungen",
+    "erstattung",
+    "terugbetaling",
+)
+
+
+_INTERNATIONAL_SURCHARGE_KEYWORDS = (
+    "prozentuale zusatzgebühr",
+    "zusätzliche prozentuale gebühr",
+    "international surcharge",
+    "receiving international transactions",
+    "sending international transactions",
+    "additional percentage fee",
+    "additional percentage-based fee",
+    "additional percentage based fee",
+    "additional percentage",
+    "international payments",
+    "ekstra procentbaseret gebyr",
+    "yderligere procentdel af gebyr",
+    "extra procentuell avgift",
+    "extra procentbaserad avgift",
+    "lisäprosenttimaksu",
+    "prosenttiperusteinen lisäpalkkio",
+    "supplément de commission",
+    "sobretasa internacional",
+    "extra percentage",
+    "service fee",
+    "servicegebühr",
+    "servicegebyr",
+    "serviceavgift",
+    "service charge",
+    "servicekosten",
+    "servicekostnad",
+    "servicekostnader",
+    "yderligere servicegebyr",
+    "ytterligare serviceavgift",
+    "tarifa de servicio adicional",
+    "comissão de serviço adicional",
+    "tariffa di servizio aggiuntiva",
+    "frais de service supplémentaires",
+    "dodatkowa opłata za usługę",
+    "dodatečný poplatek za služby",
+    "dodatočný poplatok za služby",
+    "πρόσθετη χρέωση υπηρεσίας",
+    "további szolgáltatási díj",
+    "tarifa adicional porcentual",
+    "comisión porcentual adicional",
+    "comisión adicional con base en un porcentaje",
+    "tarifa adicional baseada em porcentagem",
+    "comissão percentual adicional",
+    "tariffa percentuale aggiuntiva",
+    "op een percentage gebaseerde",
+    "dodatkowa opłata procentowa",
+    "dodatečný procentní poplatek",
+    "dodatočný percentuálny poplatok",
+    "százalékos kiegészítő díja",
+    "dodatni postotak",
+    "dodatni odstotek",
+    "πρόσθετη χρέωση βάσει ποσοστού",
+    "additional service",
+    "additional service fee",
+)
+
+
 def _classify_table_category(table: Table) -> str | None:
     text = _table_text(table)
     # Explicit schedule-type captions are authoritative and win over product
     # rate-table keywords such as "commercial transactions" or "donations".
-    fixed_fee_keywords = (
-        "festgebühr",
-        "fixed fee",
-        "fast gebyr",
-        "fast avgift",
-        "tarifa fija",
-        "comisión fija",
-        "comissão fixa",
-        "tarifa fixa",
-        "taxa fixa",
-        "vast bedrag",
-        "vaste kosten",
-        "tariffa fissa",
-        "paušální poplatek",
-        "pevný poplatek",
-        "opłata stała",
-        "frais fixe",
-        "commission fixe",
-        "kiinteä palkkio",
-        "kiinteä maksu",
-        "fixný poplatok",
-        "pevný poplatok",
-        "fiksna naknada",
-        "fiksna provizija",
-        "comision fixa",
-        "σταθερή χρέωση",
-        "ค่าธรรมเนียมคงที่",
-        "อัตราคงที่",
-        "rögzített díja",
-        "rögzített díj",
-        "fix díj",
-        "固定費用",
-    )
+    fixed_fee_keywords = _FIXED_FEE_KEYWORDS
     if any(kw in text for kw in fixed_fee_keywords):
         return "fixed_fee_table"
 
@@ -1578,39 +1697,7 @@ def _classify_table_category(table: Table) -> str | None:
 
     # Limits, caps, min/max and ceiling/floor tables are not transaction fees
     # and must be detected before direct fixed or rate-table keywords.
-    min_max_fee_keywords = (
-        "mindest",
-        "höchst",
-        "minimum",
-        "maximum",
-        "minim",
-        "maxim",
-        "mínim",
-        "máxim",
-        "massim",
-        "minsta",
-        "största",
-        "minste",
-        "maks",
-        "lavest",
-        "højest",
-        "obergrenze",
-        "obergr",
-        "limit",
-        "cap",
-        "ceiling",
-        "floor",
-        "payout maximum",
-        "withdrawal limit",
-        "transaction limit",
-        "send limit",
-        "receive limit",
-        "mindestbetrag",
-        "höchstbetrag",
-        "max cap",
-        "max limit",
-        "maximum cap",
-    )
+    min_max_fee_keywords = _MIN_MAX_FEE_KEYWORDS
     if any(kw in text for kw in min_max_fee_keywords):
         return "min_max_fee_table"
 
@@ -1632,86 +1719,11 @@ def _classify_table_category(table: Table) -> str | None:
     # Direct monetary fee tables (chargebacks, disputes, withdrawals, refunds,
     # card verification, authorisation) are not generic fixed-fee schedules and
     # must be identified separately.
-    direct_fixed_fee_keywords = (
-        "chargeback",
-        "rückbuchung",
-        "rückbuchungs",
-        "dispute",
-        "streit",
-        "claim",
-        "withdrawal",
-        "auszahlung",
-        "auszahlungen",
-        "payout",
-        "verification",
-        "verifizierung",
-        "authorization",
-        "autorisierung",
-        "refund",
-        "rückerstattung",
-        "rückerstattungen",
-        "erstattung",
-        "terugbetaling",
-    )
+    direct_fixed_fee_keywords = _DIRECT_FIXED_FEE_KEYWORDS
     if any(kw in text for kw in direct_fixed_fee_keywords):
         return "fixed_fee_table"
 
-    international_surcharge_keywords = (
-        "prozentuale zusatzgebühr",
-        "zusätzliche prozentuale gebühr",
-        "international surcharge",
-        "receiving international transactions",
-        "sending international transactions",
-        "additional percentage fee",
-        "additional percentage-based fee",
-        "additional percentage based fee",
-        "additional percentage",
-        "international payments",
-        "ekstra procentbaseret gebyr",
-        "yderligere procentdel af gebyr",
-        "extra procentuell avgift",
-        "extra procentbaserad avgift",
-        "lisäprosenttimaksu",
-        "prosenttiperusteinen lisäpalkkio",
-        "supplément de commission",
-        "sobretasa internacional",
-        "extra percentage",
-        "service fee",
-        "servicegebühr",
-        "servicegebyr",
-        "serviceavgift",
-        "service charge",
-        "servicekosten",
-        "servicekostnad",
-        "servicekostnader",
-        "yderligere servicegebyr",
-        "ytterligare serviceavgift",
-        "tarifa de servicio adicional",
-        "comissão de serviço adicional",
-        "tariffa di servizio aggiuntiva",
-        "frais de service supplémentaires",
-        "dodatkowa opłata za usługę",
-        "dodatečný poplatek za služby",
-        "dodatočný poplatok za služby",
-        "πρόσθετη χρέωση υπηρεσίας",
-        "további szolgáltatási díj",
-        "tarifa adicional porcentual",
-        "comisión porcentual adicional",
-        "comisión adicional con base en un porcentaje",
-        "tarifa adicional baseada em porcentagem",
-        "comissão percentual adicional",
-        "tariffa percentuale aggiuntiva",
-        "op een percentage gebaseerde",
-        "dodatkowa opłata procentowa",
-        "dodatečný procentní poplatek",
-        "dodatočný percentuálny poplatok",
-        "százalékos kiegészítő díja",
-        "dodatni postotak",
-        "dodatni odstotek",
-        "πρόσθετη χρέωση βάσει ποσοστού",
-        "additional service",
-        "additional service fee",
-    )
+    international_surcharge_keywords = _INTERNATIONAL_SURCHARGE_KEYWORDS
     if any(kw in text for kw in international_surcharge_keywords):
         return "international_surcharge_table"
     if _is_currency_conversion_text(text):
@@ -3899,462 +3911,465 @@ _ADVANCED_CARD_SCHEDULE_KEYWORDS: tuple[str, ...] = (
 )
 
 
+_SCHEDULE_NAME_FROM_TABLE_MAPPING = {
+    "goods_and_services": (
+        "geld für waren und dienstleistungen",
+        "waren und dienstleistungen",
+        "goods and services",
+        "varer og tjenesteydelser",
+        "varer og tjenester",
+        "bienes y servicios",
+        "beni e servizi",
+        "goederen en diensten",
+        "produkter och tjänster",
+        "produkter og tjenester",
+    ),
+    "donations": (
+        "spende",
+        "donation",
+        "donationer",
+        "donations",
+        "donaties",
+        "donativos",
+        "donativas",
+        "doações",
+        "donazioni",
+        "lahjoitukset",
+        "darowizn",
+        "príspevkov",
+        "príspevky",
+        "adományok",
+        "δωρεές",
+        "δωρεες",
+        "donatii",
+        "дарения",
+        "donacije",
+        "donacijo",
+        "příspěvky",
+        "příspěvků",
+    ),
+    "nonprofit": (
+        "gemeinnützig",
+        "nonprofit",
+        "non-profit",
+        "velgørende",
+        "charity",
+        "charitable",
+        "charitat",
+        "caridad",
+        "caridade",
+        "caritative",
+        "organizaciones sin fines de lucro",
+        "organizaciones benéficas",
+        "organización benéfica",
+        "benéfica",
+        "benéficas",
+        "organizzazioni senza scopo di lucro",
+        "organisasjoner",
+        "organizacja non-profit",
+        "organizacje charytatywne",
+        "charitatívnych",
+        "charitativních",
+        "charitativní",
+        "jótékonysági",
+        "välgörenhetsorganisationer",
+        "välgörenhet",
+        "φιλανθρωπικές",
+        "φιλανθρωπικά",
+        "φιλανθρωπικού",
+        "instituições de solidariedade",
+        "instituição de caridade",
+        "institución de solidaridad",
+        "entidades sin ánimo de lucro",
+        "associazioni di volontariato",
+        "enti benefici",
+        "ente benefico",
+        "a favore di enti benefici",
+        "liefdadigheid",
+    ),
+    "micropayments": (
+        "mikrozahlung",
+        "micropayment",
+        "mikrobetaling",
+        "mikrobetalinger",
+        "microbetaling",
+        "microbetalingen",
+        "mikromaksu",
+        "mikromaksut",
+        "mikropłatność",
+        "mikropłatności",
+        "micropagos",
+        "micropaiement",
+        "micropaiements",
+        "micropagamentos",
+        "mikrobetalning",
+        "mikrobetalningar",
+        "mikroplatby",
+        "mikroπληρωμές",
+        "μικροπληρωμές",
+        "μικροπληρωμες",
+        "mikrotransakciók",
+        "mikrotransakcije",
+        "mikrokifizetés",
+        "mikrokifizetések",
+        "micropagamenti",
+        "小額付款",
+        "小额付款",
+        "小額支付",
+        "小额支付",
+    ),
+    "alternative_payment_methods": (
+        "alternative zahlungsmethode",
+        "alternative payment",
+        "apm",
+        "alternativ betalingsmetode",
+        "alternative betalingsmetode",
+        "alternative betaalmethode",
+        "métodos de pago alternativos",
+        "metodi di pagamento alternativi",
+        "metodo di pagamento alternativo",
+        "andere betaalmethode",
+        "autre moyen de paiement",
+        "autre mode de paiement",
+        "alternatív fizetési",
+        "alternatívny spôsob platby",
+        "alternativní způsob platby",
+        "alternatywna forma płatności",
+        "alternativ betalningsmetod",
+        "alternativ betalingsmåte",
+        "vaihtoehtoinen maksutapa",
+        "vmt",
+        "abm",
+        "εναλλακτικός τρόπος πληρωμής",
+        "εναλλακτικος τροπος πληρωμης",
+        "συναλλαγές με εμπ",
+        "συναλλαγες με εμπ",
+    ),
+    "online_card_payments": (
+        "online-kartenzahlungen",
+        "online card",
+        "online card payments",
+        "online-kortbetaling",
+        "online kort",
+        "online kortbetalingstjenester",
+        "kortbetalingstjenester",
+        "kortbetalningstjänster",
+        "kortbetalning",
+        "tarjetas de crédito y débito",
+        "kredit- och debitkort",
+        "kredit- og betalingskort",
+        "credit and debit card",
+        "servizi di pagamento con carta",
+        "services de paiement par carte",
+        "serviços de pagamento com cartão",
+        "servicios de pago con tarjeta",
+        "online platby kartou",
+        "online kártyás",
+        "online betaalservices",
+        "transacties ontvangen via online betaalservices",
+        "pago por internet",
+        "servicios de pago por internet",
+        "płatności online kartą",
+        "usług płatności online kartą",
+        "verkkokorttimaksupalvelut",
+        "verkkokorttimaksu",
+        "ηλεκτρονικές πληρωμές με κάρτα",
+        "ηλεκτρονικες πληρωμες με καρτα",
+        "υπηρεσιών paypal για ηλεκτρονικές",
+        "υπηρεσιων paypal για ηλεκτρονικες",
+    ),
+    "pos_transactions": (
+        "point of sale",
+        "präsenter karte",
+        "kortforevisning",
+        "card present",
+        "ponto de venda",
+        "punto de venta",
+        "punto vendita",
+        "punkty sprzedaży",
+    ),
+    "qr_code_payments": (
+        "qr",
+        "qr-code",
+        "qr code",
+        "qr code payments",
+        "qr-code-transaktionen",
+        "qr-code-transaktion",
+        "qr-code-zahlungen",
+        "qr-code-zahlung",
+        "qr-code-betalinger",
+        "qr kode",
+        "qr-kode",
+        "qr kode-betalinger",
+        "qr-kode-betalinger",
+        "kódů qr",
+        "qr kódů",
+        "kódy qr",
+        "qr kódy",
+        "código qr",
+        "códigos qr",
+    ),
+    "invoice_pay_later": (
+        "invoicing",
+        "invoicing transaction",
+        "invoice",
+        "rechnung",
+        "rechnungen",
+        "facture",
+        "facturas",
+        "fattura",
+        "fatture",
+        "factuur",
+        "faktura",
+        "faktury",
+        "faktur",
+        "számla",
+        "fakturor",
+    ),
+    "advanced_card_payments": (
+        "advanced credit and debit card payments",
+        "advanced credit",
+        "advanced debit",
+        "payments advanced",
+        "payments pro",
+        "pasarela integral",
+        "virtual terminal",
+        "eterminal",
+        "e-terminal",
+        "paypal intégral évolution",
+        "intégral évolution",
+        "pago por teléfono",
+        "pagos por teléfono",
+        "pagamento telefonico",
+        "pagamenti telefonici",
+        "servizi telefonici",
+        "telefónico",
+        "telefónica",
+        "telefonisch",
+        "telefonische",
+        "téléphonique",
+        "téléphoniques",
+        "telefonico",
+        "telefonica",
+        "paypal pro",
+        "interchange plus plus",
+        "interchange plus",
+        "payPal card payment services",
+        "card payment services",
+        "erweiterte kredit- und debitkartenzahlungen",
+        "zahlungen mit kredit- und debitkarten mit erweiterten funktionen",
+        "kredit- und debitkarten mit erweiterten funktionen",
+        "advanced card",
+        "erweiterte kartenzahlung",
+        "kredit- og betalingskort",
+        "kredit- og debitkort",
+        "kredit- och debitkort",
+        "kreditkort",
+        "credit and debit card",
+        "servizi di pagamento con carta",
+        "services de paiement par carte",
+        "serviços de pagamento com cartão",
+        "servicios de pago con tarjeta",
+        "online platby kartou",
+        "online kártyás",
+        "verkkokorttimaksupalvelut",
+        "verkkokorttimaksu",
+        "ηλεκτρονικές πληρωμές με κάρτα",
+        "ηλεκτρονικες πληρωμες με καρτα",
+    ),
+    "recipient_service": (
+        "recipient service",
+        "recipients of eea",
+        "recipients of",
+        "recipient of",
+        "eea based",
+        "empfänger",
+        "empfängerinnen",
+        "ontvanger",
+        "destinatario",
+        "destinataire",
+        "grand-bretagne",
+        "großbritannien",
+        "united kingdom",
+        "in großbritannien ansässig",
+        "british recipient",
+        "uk recipient",
+        "příjemce",
+        "příjemců",
+        "příjemci",
+        "příjemcům",
+        "príjemca",
+        "príjemcov",
+        "príjemcom",
+        "odběratel",
+        "odběratele",
+        "velké británii",
+        "velká británie",
+        "velká británia",
+        "wielka brytania",
+        "wielkiej brytanii",
+        "regatul unit",
+        "marea britanie",
+        "wielkiej brytanii",
+        "fogadó",
+        "fogadó felek",
+        "címzett",
+        "egyesült királyság",
+        "egyesült királyságban",
+        "mottagare",
+        "mottakere",
+        "mottaker",
+        "storbritannien",
+        "storbritannia",
+        "regno unito",
+        "destinatari",
+        "παραλήπτες",
+        "παραλήπτης",
+        "ηνωμένο βασίλειο",
+        "ηνωμένου βασιλείου",
+        "spojeného kráľovstva",
+        "spojené kráľovstvo",
+        "für empfänger",
+        "für empfängerinnen",
+        "aus großbritannien",
+        "from the united kingdom",
+        "united kingdom based",
+        "united kingdom-based",
+    ),
+    "withdrawals": (
+        "withdrawal",
+        "withdrawals",
+        "withdraw",
+        "auszahlung",
+        "auszahlungen",
+        "payout",
+        "payouts",
+        "uttag",
+        "uitoog",
+        "wypłata",
+        "retrait",
+        "retiro",
+        "ritiro",
+        "bank transfer",
+        "bank transfer withdrawal",
+        "transfer to card",
+        "transfer to a card",
+        "μεταφορά σε κάρτα",
+        "transfert sur carte",
+        "transferencia a tarjeta",
+        "trasferimento su carta",
+        "überweisung auf karte",
+        "przelew na kartę",
+        "převod na kartu",
+        "prevod na kartu",
+        "transfer do karty",
+        "kártyára történő átutalás",
+        "transfer till kort",
+        "overførsel til kort",
+        "disbursement",
+        "disbursements",
+        "wire transfer",
+        "wire transfer disbursement",
+        "abbuchen",
+        "guthaben von einem paypal-geschäftskonto abbuchen",
+    ),
+    "chargebacks": (
+        "chargeback",
+        "chargebacks",
+        "rückbuchung",
+        "rückbuchungen",
+        "rückbuchungsgebühr",
+        "contra reembolso",
+        "chargeback fee",
+        "chargeback fees",
+    ),
+    "refunds": (
+        "refund",
+        "refunds",
+        "rückerstattung",
+        "rückerstattungen",
+        "erstattung",
+        "erstattungen",
+        "terugbetaling",
+        "remboursement",
+        "rimborso",
+        "reembolso",
+    ),
+    "disputes": (
+        "dispute",
+        "disputes",
+        "streit",
+        "claim",
+        "claims",
+        "disputed",
+        "klage",
+        "beschwerde",
+        "geschil",
+        "litige",
+        "controversia",
+        "contestazione",
+    ),
+    "card_verification": (
+        "card verification",
+        "kartenverifizierung",
+        "kartenbestätigung",
+        "kreditkartenbestätigung",
+        "credit card verification",
+        "debit card verification",
+        "3d secure",
+        "verification",
+        "verifizierung",
+    ),
+    "commercial": (
+        "geschäftlichen transaktionen",
+        "commercial transaction",
+        "commercial",
+        "erhvervsbetalinger",
+        "erhverv",
+        "business payments",
+        "standardgebyr",
+        "standardavgift",
+        "standaardtarief",
+        "tarifa estándar",
+        "tarifa standard",
+        "tarifa padrão",
+        "tariffa standard",
+        "tarification standard",
+        "standard fee",
+        "standard rate",
+        "standardní sazba",
+        "štandardná sadzba",
+        "szokásos díja",
+        "szokásos díj",
+        "standardowa stawka",
+        "standardtaxa",
+        "standardsats",
+        "standard taxa",
+        "εμπορικές συναλλαγές",
+        "εμπορικες συναλλαγες",
+        "commerciale",
+        "commerciële",
+        "commerciale",
+        "kommersielle",
+        "kommercielle",
+        "kommersiella",
+        "komercyjne",
+        "komerčních",
+        "komerčných",
+        "kereskedelmi",
+        "comerciale",
+        "obchodní transakce",
+        "obchodné transakcie",
+        "emporia",
+    ),
+}
+
+
 def _schedule_name_from_table(table: Table, default: str | None) -> str:
     text = _table_text(table)
     if any(kw in text for kw in _ADVANCED_CARD_SCHEDULE_KEYWORDS):
         return "advanced_card_payments"
-    mapping = {
-        "goods_and_services": (
-            "geld für waren und dienstleistungen",
-            "waren und dienstleistungen",
-            "goods and services",
-            "varer og tjenesteydelser",
-            "varer og tjenester",
-            "bienes y servicios",
-            "beni e servizi",
-            "goederen en diensten",
-            "produkter och tjänster",
-            "produkter og tjenester",
-        ),
-        "donations": (
-            "spende",
-            "donation",
-            "donationer",
-            "donations",
-            "donaties",
-            "donativos",
-            "donativas",
-            "doações",
-            "donazioni",
-            "lahjoitukset",
-            "darowizn",
-            "príspevkov",
-            "príspevky",
-            "adományok",
-            "δωρεές",
-            "δωρεες",
-            "donatii",
-            "дарения",
-            "donacije",
-            "donacijo",
-            "příspěvky",
-            "příspěvků",
-        ),
-        "nonprofit": (
-            "gemeinnützig",
-            "nonprofit",
-            "non-profit",
-            "velgørende",
-            "charity",
-            "charitable",
-            "charitat",
-            "caridad",
-            "caridade",
-            "caritative",
-            "organizaciones sin fines de lucro",
-            "organizaciones benéficas",
-            "organización benéfica",
-            "benéfica",
-            "benéficas",
-            "organizzazioni senza scopo di lucro",
-            "organisasjoner",
-            "organizacja non-profit",
-            "organizacje charytatywne",
-            "charitatívnych",
-            "charitativních",
-            "charitativní",
-            "jótékonysági",
-            "välgörenhetsorganisationer",
-            "välgörenhet",
-            "φιλανθρωπικές",
-            "φιλανθρωπικά",
-            "φιλανθρωπικού",
-            "instituições de solidariedade",
-            "instituição de caridade",
-            "institución de solidaridad",
-            "entidades sin ánimo de lucro",
-            "associazioni di volontariato",
-            "enti benefici",
-            "ente benefico",
-            "a favore di enti benefici",
-            "liefdadigheid",
-        ),
-        "micropayments": (
-            "mikrozahlung",
-            "micropayment",
-            "mikrobetaling",
-            "mikrobetalinger",
-            "microbetaling",
-            "microbetalingen",
-            "mikromaksu",
-            "mikromaksut",
-            "mikropłatność",
-            "mikropłatności",
-            "micropagos",
-            "micropaiement",
-            "micropaiements",
-            "micropagamentos",
-            "mikrobetalning",
-            "mikrobetalningar",
-            "mikroplatby",
-            "mikroπληρωμές",
-            "μικροπληρωμές",
-            "μικροπληρωμες",
-            "mikrotransakciók",
-            "mikrotransakcije",
-            "mikrokifizetés",
-            "mikrokifizetések",
-            "micropagamenti",
-            "小額付款",
-            "小额付款",
-            "小額支付",
-            "小额支付",
-        ),
-        "alternative_payment_methods": (
-            "alternative zahlungsmethode",
-            "alternative payment",
-            "apm",
-            "alternativ betalingsmetode",
-            "alternative betalingsmetode",
-            "alternative betaalmethode",
-            "métodos de pago alternativos",
-            "metodi di pagamento alternativi",
-            "metodo di pagamento alternativo",
-            "andere betaalmethode",
-            "autre moyen de paiement",
-            "autre mode de paiement",
-            "alternatív fizetési",
-            "alternatívny spôsob platby",
-            "alternativní způsob platby",
-            "alternatywna forma płatności",
-            "alternativ betalningsmetod",
-            "alternativ betalingsmåte",
-            "vaihtoehtoinen maksutapa",
-            "vmt",
-            "abm",
-            "εναλλακτικός τρόπος πληρωμής",
-            "εναλλακτικος τροπος πληρωμης",
-            "συναλλαγές με εμπ",
-            "συναλλαγες με εμπ",
-        ),
-        "online_card_payments": (
-            "online-kartenzahlungen",
-            "online card",
-            "online card payments",
-            "online-kortbetaling",
-            "online kort",
-            "online kortbetalingstjenester",
-            "kortbetalingstjenester",
-            "kortbetalningstjänster",
-            "kortbetalning",
-            "tarjetas de crédito y débito",
-            "kredit- och debitkort",
-            "kredit- og betalingskort",
-            "credit and debit card",
-            "servizi di pagamento con carta",
-            "services de paiement par carte",
-            "serviços de pagamento com cartão",
-            "servicios de pago con tarjeta",
-            "online platby kartou",
-            "online kártyás",
-            "online betaalservices",
-            "transacties ontvangen via online betaalservices",
-            "pago por internet",
-            "servicios de pago por internet",
-            "płatności online kartą",
-            "usług płatności online kartą",
-            "verkkokorttimaksupalvelut",
-            "verkkokorttimaksu",
-            "ηλεκτρονικές πληρωμές με κάρτα",
-            "ηλεκτρονικες πληρωμες με καρτα",
-            "υπηρεσιών paypal για ηλεκτρονικές",
-            "υπηρεσιων paypal για ηλεκτρονικες",
-        ),
-        "pos_transactions": (
-            "point of sale",
-            "präsenter karte",
-            "kortforevisning",
-            "card present",
-            "ponto de venda",
-            "punto de venta",
-            "punto vendita",
-            "punkty sprzedaży",
-        ),
-        "qr_code_payments": (
-            "qr",
-            "qr-code",
-            "qr code",
-            "qr code payments",
-            "qr-code-transaktionen",
-            "qr-code-transaktion",
-            "qr-code-zahlungen",
-            "qr-code-zahlung",
-            "qr-code-betalinger",
-            "qr kode",
-            "qr-kode",
-            "qr kode-betalinger",
-            "qr-kode-betalinger",
-            "kódů qr",
-            "qr kódů",
-            "kódy qr",
-            "qr kódy",
-            "código qr",
-            "códigos qr",
-        ),
-        "invoice_pay_later": (
-            "invoicing",
-            "invoicing transaction",
-            "invoice",
-            "rechnung",
-            "rechnungen",
-            "facture",
-            "facturas",
-            "fattura",
-            "fatture",
-            "factuur",
-            "faktura",
-            "faktury",
-            "faktur",
-            "számla",
-            "fakturor",
-        ),
-        "advanced_card_payments": (
-            "advanced credit and debit card payments",
-            "advanced credit",
-            "advanced debit",
-            "payments advanced",
-            "payments pro",
-            "pasarela integral",
-            "virtual terminal",
-            "eterminal",
-            "e-terminal",
-            "paypal intégral évolution",
-            "intégral évolution",
-            "pago por teléfono",
-            "pagos por teléfono",
-            "pagamento telefonico",
-            "pagamenti telefonici",
-            "servizi telefonici",
-            "telefónico",
-            "telefónica",
-            "telefonisch",
-            "telefonische",
-            "téléphonique",
-            "téléphoniques",
-            "telefonico",
-            "telefonica",
-            "paypal pro",
-            "interchange plus plus",
-            "interchange plus",
-            "payPal card payment services",
-            "card payment services",
-            "erweiterte kredit- und debitkartenzahlungen",
-            "zahlungen mit kredit- und debitkarten mit erweiterten funktionen",
-            "kredit- und debitkarten mit erweiterten funktionen",
-            "advanced card",
-            "erweiterte kartenzahlung",
-            "kredit- og betalingskort",
-            "kredit- og debitkort",
-            "kredit- och debitkort",
-            "kreditkort",
-            "credit and debit card",
-            "servizi di pagamento con carta",
-            "services de paiement par carte",
-            "serviços de pagamento com cartão",
-            "servicios de pago con tarjeta",
-            "online platby kartou",
-            "online kártyás",
-            "verkkokorttimaksupalvelut",
-            "verkkokorttimaksu",
-            "ηλεκτρονικές πληρωμές με κάρτα",
-            "ηλεκτρονικες πληρωμες με καρτα",
-        ),
-        "recipient_service": (
-            "recipient service",
-            "recipients of eea",
-            "recipients of",
-            "recipient of",
-            "eea based",
-            "empfänger",
-            "empfängerinnen",
-            "ontvanger",
-            "destinatario",
-            "destinataire",
-            "grand-bretagne",
-            "großbritannien",
-            "united kingdom",
-            "in großbritannien ansässig",
-            "british recipient",
-            "uk recipient",
-            "příjemce",
-            "příjemců",
-            "příjemci",
-            "příjemcům",
-            "príjemca",
-            "príjemcov",
-            "príjemcom",
-            "odběratel",
-            "odběratele",
-            "velké británii",
-            "velká británie",
-            "velká británia",
-            "wielka brytania",
-            "wielkiej brytanii",
-            "regatul unit",
-            "marea britanie",
-            "wielkiej brytanii",
-            "fogadó",
-            "fogadó felek",
-            "címzett",
-            "egyesült királyság",
-            "egyesült királyságban",
-            "mottagare",
-            "mottakere",
-            "mottaker",
-            "storbritannien",
-            "storbritannia",
-            "regno unito",
-            "destinatari",
-            "παραλήπτες",
-            "παραλήπτης",
-            "ηνωμένο βασίλειο",
-            "ηνωμένου βασιλείου",
-            "spojeného kráľovstva",
-            "spojené kráľovstvo",
-            "für empfänger",
-            "für empfängerinnen",
-            "aus großbritannien",
-            "from the united kingdom",
-            "united kingdom based",
-            "united kingdom-based",
-        ),
-        "withdrawals": (
-            "withdrawal",
-            "withdrawals",
-            "withdraw",
-            "auszahlung",
-            "auszahlungen",
-            "payout",
-            "payouts",
-            "uttag",
-            "uitoog",
-            "wypłata",
-            "retrait",
-            "retiro",
-            "ritiro",
-            "bank transfer",
-            "bank transfer withdrawal",
-            "transfer to card",
-            "transfer to a card",
-            "μεταφορά σε κάρτα",
-            "transfert sur carte",
-            "transferencia a tarjeta",
-            "trasferimento su carta",
-            "überweisung auf karte",
-            "przelew na kartę",
-            "převod na kartu",
-            "prevod na kartu",
-            "transfer do karty",
-            "kártyára történő átutalás",
-            "transfer till kort",
-            "overførsel til kort",
-            "disbursement",
-            "disbursements",
-            "wire transfer",
-            "wire transfer disbursement",
-            "abbuchen",
-            "guthaben von einem paypal-geschäftskonto abbuchen",
-        ),
-        "chargebacks": (
-            "chargeback",
-            "chargebacks",
-            "rückbuchung",
-            "rückbuchungen",
-            "rückbuchungsgebühr",
-            "contra reembolso",
-            "chargeback fee",
-            "chargeback fees",
-        ),
-        "refunds": (
-            "refund",
-            "refunds",
-            "rückerstattung",
-            "rückerstattungen",
-            "erstattung",
-            "erstattungen",
-            "terugbetaling",
-            "remboursement",
-            "rimborso",
-            "reembolso",
-        ),
-        "disputes": (
-            "dispute",
-            "disputes",
-            "streit",
-            "claim",
-            "claims",
-            "disputed",
-            "klage",
-            "beschwerde",
-            "geschil",
-            "litige",
-            "controversia",
-            "contestazione",
-        ),
-        "card_verification": (
-            "card verification",
-            "kartenverifizierung",
-            "kartenbestätigung",
-            "kreditkartenbestätigung",
-            "credit card verification",
-            "debit card verification",
-            "3d secure",
-            "verification",
-            "verifizierung",
-        ),
-        "commercial": (
-            "geschäftlichen transaktionen",
-            "commercial transaction",
-            "commercial",
-            "erhvervsbetalinger",
-            "erhverv",
-            "business payments",
-            "standardgebyr",
-            "standardavgift",
-            "standaardtarief",
-            "tarifa estándar",
-            "tarifa standard",
-            "tarifa padrão",
-            "tariffa standard",
-            "tarification standard",
-            "standard fee",
-            "standard rate",
-            "standardní sazba",
-            "štandardná sadzba",
-            "szokásos díja",
-            "szokásos díj",
-            "standardowa stawka",
-            "standardtaxa",
-            "standardsats",
-            "standard taxa",
-            "εμπορικές συναλλαγές",
-            "εμπορικες συναλλαγες",
-            "commerciale",
-            "commerciële",
-            "commerciale",
-            "kommersielle",
-            "kommercielle",
-            "kommersiella",
-            "komercyjne",
-            "komerčních",
-            "komerčných",
-            "kereskedelmi",
-            "comerciale",
-            "obchodní transakce",
-            "obchodné transakcie",
-            "emporia",
-        ),
-    }
+    mapping = _SCHEDULE_NAME_FROM_TABLE_MAPPING
     for name, keywords in mapping.items():
         for kw in keywords:
             if _norm(kw) in text:
@@ -6199,6 +6214,144 @@ def _create_direct_fixed_fee_rules(
     return rules
 
 
+def _source_schedule_id(source_base: str, intended_id: str, schedules: dict[str, Any]) -> str | None:
+    """Choose the most specific source schedule matching the intended id's suffix."""
+    if "__" in intended_id:
+        suffix = intended_id.split("__", 1)[1]
+        suffixed = f"{source_base}__{suffix}"
+        if suffixed in schedules:
+            return suffixed
+    return source_base if source_base in schedules else None
+
+
+def _inheritance_evidence(
+    rule: TransactionFeeRule,
+    extracted: _ExtractedRule | None,
+    source_base: str,
+    source_schedule_id: str,
+    schedule_type: str,
+    schedules: dict[str, Any],
+) -> str | None:
+    """Return a human-readable evidence string when inheritance is allowed."""
+    if schedule_type == "fixed_fee":
+        inheritance_map = _FIXED_FEE_INHERITANCE
+    elif schedule_type == "international_surcharge":
+        inheritance_map = _INTERNATIONAL_SURCHARGE_INHERITANCE
+    else:
+        inheritance_map = {}
+
+    # The inheritance map is itself an explicit documented product rule.  Even
+    # for mapped products we still require corroborating source text or table
+    # context so there is no implicit cross-product fallback.
+    mapped_source = inheritance_map.get(rule.id)
+    if mapped_source and mapped_source != source_base:
+        return None
+
+    # Maximum-fee schedules have their own explicit fallback map and do not
+    # require source-text corroboration.
+    if schedule_type == "maximum_fee" and source_base:
+        return f"explicit maximum-fee fallback from {source_base}"
+
+    # Source text from the requesting row can explicitly name the source schedule.
+    source_text = (extracted.fixed_expr or "").lower() if extracted else ""
+    if source_text:
+        if (
+            source_base == "commercial"
+            and "commercial" in source_text
+            and ("transaction" in source_text or "fixed fee" in source_text)
+        ):
+            return "source text references commercial fixed fee"
+        if source_base == "online_card_payments" and "online card" in source_text:
+            return "source text references online card fixed fee"
+
+    # Table context from the source schedule or the requesting row can
+    # document inheritance (e.g. an Advanced Card row in an Online Card
+    # Payment Services section).
+    if source_base == "online_card_payments":
+        if "online card" in source_text:
+            return "table context references online card fixed fee"
+        source_schedule = schedules.get(source_schedule_id)
+        if source_schedule and source_schedule.sources:
+            heading = (source_schedule.sources[0].section_heading or "").lower()
+            if "online card" in heading:
+                return "table context references online card fixed fee"
+    if source_base == "commercial":
+        if "commercial" in source_text and ("transaction" in source_text or "fixed fee" in source_text):
+            return "source text references commercial fixed fee"
+        source_schedule = schedules.get(source_schedule_id)
+        if source_schedule and source_schedule.sources:
+            heading = (source_schedule.sources[0].section_heading or "").lower()
+            if "commercial transactions" in heading:
+                return "table context references commercial fixed fee"
+
+    # When the product is explicitly mapped and no contradictory evidence
+    # exists, the map itself documents the inheritance.
+    if mapped_source == source_base:
+        return f"explicit product inheritance from {source_base}"
+
+    return None
+
+
+def _create_inherited_schedule(
+    schedule_id: str,
+    source_schedule_id: str,
+    schedules: dict[str, Any],
+    rule_source: Provenance | None,
+    reason: str,
+) -> None:
+    source = schedules[source_schedule_id]
+    inherited_sources = list(source.sources)
+    sources = list(source.sources)
+    if rule_source and rule_source not in sources:
+        sources.append(rule_source)
+    schedules[schedule_id] = source.model_copy(
+        update={
+            "origin": "inherited",
+            "inherited_from": source_schedule_id,
+            "inheritance_reason": reason,
+            "inherited_sources": inherited_sources,
+            "sources": sources,
+        }
+    )
+
+
+def _resolve_schedule(
+    schedule_id: str,
+    source_id: str | None,
+    schedule_type: str,
+    schedules: dict[str, Any],
+    inheritance_map: dict[str, str],
+    rule: TransactionFeeRule,
+    extracted: _ExtractedRule | None,
+    diagnostics: list[Diagnostic],
+) -> str | None:
+    """Return the actual source schedule id if inheritance is allowed, else None."""
+    if not source_id:
+        return None
+    source_base = source_id.split("__", 1)[0]
+    expected_source = inheritance_map.get(rule.id)
+    if expected_source and source_base != expected_source:
+        return None
+    actual_source = _source_schedule_id(source_base, schedule_id, schedules)
+    if not actual_source:
+        return None
+    reason = _inheritance_evidence(rule, extracted, source_base, actual_source, schedule_type, schedules)
+    if not reason:
+        return None
+    _create_inherited_schedule(schedule_id, actual_source, schedules, rule.source, reason)
+    diagnostics.append(
+        Diagnostic(
+            type="inherited_schedule",
+            rule_id=rule.id,
+            schedule_type=schedule_type,
+            expected_schedule=schedule_id,
+            inherited_from=actual_source,
+            sources=[rule.source] if rule.source else [],
+        )
+    )
+    return actual_source
+
+
 def _resolve_schedule_inheritance(
     extracted_rules: list[_ExtractedRule],
     rules: list[TransactionFeeRule],
@@ -6221,139 +6374,6 @@ def _resolve_schedule_inheritance(
         ("international_surcharge", international_schedules, _INTERNATIONAL_SURCHARGE_INHERITANCE),
         ("maximum_fee", maximum_fee_schedules, {}),
     ]
-
-    def _source_schedule_id(source_base: str, intended_id: str, schedules: dict[str, Any]) -> str | None:
-        """Choose the most specific source schedule matching the intended id's suffix."""
-        if "__" in intended_id:
-            suffix = intended_id.split("__", 1)[1]
-            suffixed = f"{source_base}__{suffix}"
-            if suffixed in schedules:
-                return suffixed
-        return source_base if source_base in schedules else None
-
-    def _inheritance_evidence(
-        rule: TransactionFeeRule,
-        extracted: _ExtractedRule | None,
-        source_base: str,
-        source_schedule_id: str,
-        schedule_type: str,
-        schedules: dict[str, Any],
-    ) -> str | None:
-        """Return a human-readable evidence string when inheritance is allowed."""
-        if schedule_type == "fixed_fee":
-            inheritance_map = _FIXED_FEE_INHERITANCE
-        elif schedule_type == "international_surcharge":
-            inheritance_map = _INTERNATIONAL_SURCHARGE_INHERITANCE
-        else:
-            inheritance_map = {}
-
-        # The inheritance map is itself an explicit documented product rule.  Even
-        # for mapped products we still require corroborating source text or table
-        # context so there is no implicit cross-product fallback.
-        mapped_source = inheritance_map.get(rule.id)
-        if mapped_source and mapped_source != source_base:
-            return None
-
-        # Maximum-fee schedules have their own explicit fallback map and do not
-        # require source-text corroboration.
-        if schedule_type == "maximum_fee" and source_base:
-            return f"explicit maximum-fee fallback from {source_base}"
-
-        # Source text from the requesting row can explicitly name the source schedule.
-        source_text = (extracted.fixed_expr or "").lower() if extracted else ""
-        if source_text:
-            if (
-                source_base == "commercial"
-                and "commercial" in source_text
-                and ("transaction" in source_text or "fixed fee" in source_text)
-            ):
-                return "source text references commercial fixed fee"
-            if source_base == "online_card_payments" and "online card" in source_text:
-                return "source text references online card fixed fee"
-
-        # Table context from the source schedule or the requesting row can
-        # document inheritance (e.g. an Advanced Card row in an Online Card
-        # Payment Services section).
-        if source_base == "online_card_payments":
-            if "online card" in source_text:
-                return "table context references online card fixed fee"
-            source_schedule = schedules.get(source_schedule_id)
-            if source_schedule and source_schedule.sources:
-                heading = (source_schedule.sources[0].section_heading or "").lower()
-                if "online card" in heading:
-                    return "table context references online card fixed fee"
-        if source_base == "commercial":
-            if "commercial" in source_text and ("transaction" in source_text or "fixed fee" in source_text):
-                return "source text references commercial fixed fee"
-            source_schedule = schedules.get(source_schedule_id)
-            if source_schedule and source_schedule.sources:
-                heading = (source_schedule.sources[0].section_heading or "").lower()
-                if "commercial transactions" in heading:
-                    return "table context references commercial fixed fee"
-
-        # When the product is explicitly mapped and no contradictory evidence
-        # exists, the map itself documents the inheritance.
-        if mapped_source == source_base:
-            return f"explicit product inheritance from {source_base}"
-
-        return None
-
-    def _create_inherited_schedule(
-        schedule_id: str,
-        source_schedule_id: str,
-        schedules: dict[str, Any],
-        rule_source: Provenance | None,
-        reason: str,
-    ) -> None:
-        source = schedules[source_schedule_id]
-        inherited_sources = list(source.sources)
-        sources = list(source.sources)
-        if rule_source and rule_source not in sources:
-            sources.append(rule_source)
-        schedules[schedule_id] = source.model_copy(
-            update={
-                "origin": "inherited",
-                "inherited_from": source_schedule_id,
-                "inheritance_reason": reason,
-                "inherited_sources": inherited_sources,
-                "sources": sources,
-            }
-        )
-
-    def _resolve_schedule(
-        schedule_id: str,
-        source_id: str | None,
-        schedule_type: str,
-        schedules: dict[str, Any],
-        inheritance_map: dict[str, str],
-        rule: TransactionFeeRule,
-        extracted: _ExtractedRule | None,
-    ) -> str | None:
-        """Return the actual source schedule id if inheritance is allowed, else None."""
-        if not source_id:
-            return None
-        source_base = source_id.split("__", 1)[0]
-        expected_source = inheritance_map.get(rule.id)
-        if expected_source and source_base != expected_source:
-            return None
-        actual_source = _source_schedule_id(source_base, schedule_id, schedules)
-        if not actual_source:
-            return None
-        reason = _inheritance_evidence(rule, extracted, source_base, actual_source, schedule_type, schedules)
-        if not reason:
-            return None
-        _create_inherited_schedule(schedule_id, actual_source, schedules, rule.source, reason)
-        diagnostics.append(
-            Diagnostic(
-                type="inherited_schedule",
-                rule_id=rule.id,
-                schedule_type=schedule_type,
-                expected_schedule=schedule_id,
-                inherited_from=actual_source,
-                sources=[rule.source] if rule.source else [],
-            )
-        )
-        return actual_source
 
     # Collect all missing schedule references and create inherited schedules
     # before updating any rule.  Base schedules are created first (shorter ids)
@@ -6385,7 +6405,9 @@ def _resolve_schedule_inheritance(
     created: set[tuple[str, str]] = set()
     schedule_source: dict[tuple[str, str], str | None] = {}
     for schedule_id, source_id, schedule_type, schedules, inheritance_map, rule, extracted in unique_refs:
-        source = _resolve_schedule(schedule_id, source_id, schedule_type, schedules, inheritance_map, rule, extracted)
+        source = _resolve_schedule(
+            schedule_id, source_id, schedule_type, schedules, inheritance_map, rule, extracted, diagnostics
+        )
         if source:
             created.add((schedule_type, schedule_id))
         schedule_source[(schedule_type, schedule_id)] = source
