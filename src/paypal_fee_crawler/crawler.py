@@ -520,7 +520,7 @@ class Crawler:
             last_modified=response.last_modified,
             content_sha256=response.content_sha256,
         )
-        derived = self._classify_output(tables, source)
+        derived = await asyncio.to_thread(self._classify_output, tables, source)
 
         output = CountryOutput(
             schema_version=1,

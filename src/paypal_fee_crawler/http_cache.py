@@ -407,7 +407,7 @@ class HttpCache:
         async with self._key_lock(key):
             lock = await self._acquire_file_lock(key)
             try:
-                entry = self._read_entry(key)
+                entry = await asyncio.to_thread(self._read_entry, key)
 
                 if entry is not None and not self._refresh and self._is_fresh(entry):
                     self.stats.cache_hits += 1
@@ -425,7 +425,7 @@ class HttpCache:
                 if response.status_code == 304:
                     if entry is not None:
                         entry.fetched_at = time.time()
-                        self._write_entry(entry)
+                        await asyncio.to_thread(self._write_entry, entry)
                         self.stats.cache_304_responses += 1
                         self.stats.bytes_avoided += len(entry.content)
                         return entry.to_httpx_response(method), True
@@ -438,7 +438,7 @@ class HttpCache:
                 # and any previously stored copy for the same resource is removed
                 # so it cannot be served again.
                 if "no-store" in directives or "private" in directives:
-                    self._remove_entry(key)
+                    await asyncio.to_thread(self._remove_entry, key)
                     self.stats.cache_misses += 1
                     return response, False
 
@@ -459,7 +459,7 @@ class HttpCache:
                         locale=locale,
                         cache_control=response.headers.get("cache-control"),
                     )
-                    self._write_entry(entry)
+                    await asyncio.to_thread(self._write_entry, entry)
                     self.stats.cache_writes += 1
                     self.stats.cache_misses += 1
                     return response, False

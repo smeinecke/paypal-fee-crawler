@@ -124,6 +124,8 @@ def _write_json(path: Path, data: Any) -> None:
 def _is_same_file(path: Path, content: str) -> bool:
     if not path.exists():
         return False
+    if path.stat().st_size != len(content.encode("utf-8")):
+        return False
     return path.read_text(encoding="utf-8") == content
 
 

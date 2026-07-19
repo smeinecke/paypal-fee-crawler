@@ -1016,6 +1016,13 @@ _NORMALIZED_PRODUCT_ALIASES: dict[str, tuple[str, ...]] = {
     product: tuple(_norm(alias) for alias in aliases) for product, aliases in _PRODUCT_ALIASES.items()
 }
 
+# Pre-compiled regex for canonical amount validation.
+_CANONICAL_AMOUNT_RE = re.compile(r"[+-]?(?:\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)")
+
+# Pre-compiled regexes for rate expression parsing.
+_PERCENTAGE_RE = re.compile(r"([0-9]+(?:[.,][0-9]+)?)\s*%")
+_PLUS_FIXED_RE = re.compile(r"[+]\s*(.+)")
+
 
 def _keyword_in_text(text: str, keyword: str) -> bool:
     """Return True when ``keyword`` appears as a whole word/phrase in ``text``."""
@@ -1214,7 +1221,7 @@ def _parse_canonical_amount(amount_str: str) -> str | None:
     if not amount_str:
         return None
     # Reject non-numeric strings before trying to interpret separators.
-    if not re.fullmatch(r"[+-]?(?:\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)", amount_str):
+    if not _CANONICAL_AMOUNT_RE.fullmatch(amount_str):
         return None
     has_dot = "." in amount_str
     has_comma = "," in amount_str
@@ -1469,30 +1476,34 @@ def _is_currency_conversion_text(text: str) -> bool:
 
 
 def _is_maximum_fee_table(text: str) -> bool:
-    """Return True if the table is a payout/withdrawal maximum fee cap table."""
-    t = _norm(text)
-    return ("payout" in t or "withdrawal" in t or "withdraw" in t or "payouts" in t) and (
-        "maximum fee cap" in t
-        or "max fee cap" in t
-        or "maximum payout fee" in t
-        or "max payout fee" in t
-        or ("fee" in t and ("max cap" in t or "maximum cap" in t))
+    """Return True if the table is a payout/withdrawal maximum fee cap table.
+
+    ``text`` is expected to already be normalized.
+    """
+    return ("payout" in text or "withdrawal" in text or "withdraw" in text or "payouts" in text) and (
+        "maximum fee cap" in text
+        or "max fee cap" in text
+        or "maximum payout fee" in text
+        or "max payout fee" in text
+        or ("fee" in text and ("max cap" in text or "maximum cap" in text))
     )
 
 
 def _is_withdrawals_rate_table(table: Table, text: str) -> bool:
-    """Return True if the table is a withdrawals/payouts rate table."""
-    t = _norm(text)
+    """Return True if the table is a withdrawals/payouts rate table.
+
+    ``text`` is expected to already be normalized.
+    """
     if not (
-        "payout" in t
-        or "withdrawal" in t
-        or "withdraw" in t
-        or "payouts" in t
-        or "wypłaty" in t
-        or "wypłata" in t
-        or "výběry" in t
-        or "výběr" in t
-        or "výbery" in t
+        "payout" in text
+        or "withdrawal" in text
+        or "withdraw" in text
+        or "payouts" in text
+        or "wypłaty" in text
+        or "wypłata" in text
+        or "výběry" in text
+        or "výběr" in text
+        or "výbery" in text
     ):
         return False
     # Look for a Rate/% column. Tables that merely list limits or currencies are
@@ -2121,6 +2132,8 @@ _APM_SEPARATOR_RE = re.compile(
     r"(?:\s+(?:and|und|i|y|et|og|ja|oraz|och|e)\s+)",
     re.IGNORECASE,
 )
+_APM_PUNCTUATION_RE = re.compile(r"[^\w\s]")
+_APM_EXAMPLE_PHRASE_RE = re.compile(r"\b(z\s*\.\s*b\s*\.?|e\s*\.\s*g\s*\.?|np\.|ex\.?)\b")
 
 # Full phrases that indicate a label part is a generic APM header, not a method.
 _APM_HEADER_PHRASES: set[str] = {
@@ -2457,7 +2470,7 @@ def _tokenize_apm_label(part_norm: str) -> set[str]:
     single token so they can be matched with word boundaries.
     """
     # Normalize punctuation to spaces, then pre-join multi-word brand names.
-    joined = re.sub(r"[^\w\s]", " ", part_norm)
+    joined = _APM_PUNCTUATION_RE.sub(" ", part_norm)
     joined = (
         joined.replace("go pay", "gopay")
         .replace("ovo premium", "ovopremium")
@@ -2514,7 +2527,7 @@ def _extract_apm_methods(label: str) -> tuple[list[str], list[str]]:
             continue
 
         # Drop introductory phrases like "e.g." or "z.b.".
-        part_norm = re.sub(r"\b(z\s*\.\s*b\s*\.?|e\s*\.\s*g\s*\.?|np\.|ex\.?)\b", "", part_norm).strip()
+        part_norm = _APM_EXAMPLE_PHRASE_RE.sub("", part_norm).strip()
         if not part_norm:
             continue
 
@@ -5268,16 +5281,14 @@ def _parse_rate_expression(fee_text: str) -> tuple[str | None, str | None]:
 
     Returns (percentage, fixed_fee_currency_amount_text).
     """
-    import re as _re
-
     pct: str | None = None
     # Find a percentage token anywhere in the text.
-    for match in _re.finditer(r"([0-9]+(?:[.,][0-9]+)?)\s*%", fee_text):
+    for match in _PERCENTAGE_RE.finditer(fee_text):
         pct = normalize_decimal_string(match.group(1))
         break
     # Money amount is everything after the plus/extra token, if present.
     fixed: str | None = None
-    plus_match = _re.search(r"[+]\s*(.+)", fee_text)
+    plus_match = _PLUS_FIXED_RE.search(fee_text)
     if plus_match:
         fixed = plus_match.group(1).strip()
     return pct, fixed
