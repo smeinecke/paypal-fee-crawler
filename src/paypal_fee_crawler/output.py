@@ -18,6 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from .constants import MANAGED_PATHS
 from .derived_categories import _selected_categories_from_derived
 from .exceptions import ValidationError as CrawlerValidationError
 from .models import (
@@ -154,7 +155,7 @@ class OutputPublisher:
 
     # These are the only paths the crawler owns.  The output directory itself may
     # be the root of a git repository and must never be renamed or deleted.
-    MANAGED_PATHS = ("json", "meta", "schemas", "change-report.json", "README.md")
+    MANAGED_PATHS = MANAGED_PATHS
 
     # Paths that may legitimately differ between runs (e.g. the crawl report
     # records whether the run changed the data) and must not feed back into the

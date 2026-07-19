@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .classify import _fee_components_for_rule
+from .constants import MANAGED_ROOTS
 from .exceptions import ValidationError as CrawlerValidationError
 from .models import (
     CoreFees,
@@ -30,7 +31,7 @@ from .regression import _country_output_hash
 
 logger = logging.getLogger(__name__)
 
-_MANAGED_ROOTS = {"json", "meta", "schemas", "change-report.json"}
+_MANAGED_ROOTS = set(MANAGED_ROOTS)
 _PROTECTED_ROOTS = {".git", ".github", "crawler"}
 _PROTECTED_FILES = {"README.md", "README", "LICENSE", ".gitmodules"}
 
