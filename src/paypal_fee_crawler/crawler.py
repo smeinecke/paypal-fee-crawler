@@ -170,7 +170,7 @@ class Crawler:
             logger.warning("Could not load previous manifest: %s", exc)
             return None
 
-    def _load_previous_country_output(self, market: Market) -> CountryOutput | None:
+    def load_previous_country_output(self, market: Market) -> CountryOutput | None:
         """Load the previous country output from disk, if available and valid.
 
         Public v3 country files no longer contain the full internal structure, so
@@ -266,7 +266,7 @@ class Crawler:
         """
         return self.config.timestamp or None
 
-    def _extract_update_date(self, cms: dict[str, Any], sections: list[Any]) -> str | None:
+    def extract_update_date(self, cms: dict[str, Any], sections: list[Any]) -> str | None:
         """Find an explicit update date in the CMS sections or metadata."""
         # Try explicit metadata at the top level first.
         for key in ("pageUpdatedAt", "lastModified", "updatedAt", "publishedAt"):
@@ -311,7 +311,7 @@ class Crawler:
                     return match.group(1).strip()
         return None
 
-    def _extract_pdf_url(self, cms: dict[str, Any]) -> str | None:
+    def extract_pdf_url(self, cms: dict[str, Any]) -> str | None:
         """Find a printable PDF fee schedule link in the CMS components."""
         for component in iter_components(cms):
             if not isinstance(component, dict):
@@ -331,7 +331,7 @@ class Crawler:
                         return value
         return None
 
-    def _extract_page_title(self, response_text: str, cms: dict[str, Any]) -> str:
+    def extract_page_title(self, response_text: str, cms: dict[str, Any]) -> str:
         """Return a human-readable page title from the HTML or CMS context."""
         # Real PayPal pages store the title inside pageModel.metadata.page__title.
         page_model = cms.get("pageModel")
@@ -350,7 +350,7 @@ class Crawler:
             return title_match.group(1).strip()
         return "PayPal Merchant and Seller Fees"
 
-    def _extract_cms_updated_at(self, cms: dict[str, Any]) -> str | None:
+    def extract_cms_updated_at(self, cms: dict[str, Any]) -> str | None:
         """Return the CMS content update timestamp from the page model."""
         page_model = cms.get("pageModel")
         if isinstance(page_model, dict):
@@ -360,7 +360,7 @@ class Crawler:
                     return value.strip()
         return None
 
-    def _extract_locale(self, cms: dict[str, Any]) -> str | None:
+    def extract_locale(self, cms: dict[str, Any]) -> str | None:
         """Return the page locale from the CMS context."""
         page_context = cms.get("pageContext")
         if isinstance(page_context, dict):
@@ -451,17 +451,17 @@ class Crawler:
             extractor = ComponentsExtractor()
             sections, tables, warnings = extractor.extract(cms)
             page_id = get_canonical_page_id(cms) or "unknown"
-            page_title = self._extract_page_title(response.text, cms)
-            page_updated = self._extract_update_date(cms, sections)
-            cms_updated = self._extract_cms_updated_at(cms)
-            page_locale = self._extract_locale(cms)
-            pdf_url = self._extract_pdf_url(cms)
+            page_title = self.extract_page_title(response.text, cms)
+            page_updated = self.extract_update_date(cms, sections)
+            cms_updated = self.extract_cms_updated_at(cms)
+            page_locale = self.extract_locale(cms)
+            pdf_url = self.extract_pdf_url(cms)
         else:
             html_tree = _parse_html_tree(response.text)
             sections, tables, warnings = extract_html_tables(response.text, str(response.url), tree=html_tree)
             page_id = str(response.url).rstrip("/").split("/")[-1] or "unknown"
-            page_title = self._extract_page_title(response.text, {})
-            page_updated = self._extract_update_date({}, sections)
+            page_title = self.extract_page_title(response.text, {})
+            page_updated = self.extract_update_date({}, sections)
             cms_updated = None
             page_locale = extract_html_locale(response.text, tree=html_tree) or market.locale
             pdf_url = extract_html_pdf_url(response.text, tree=html_tree)
@@ -488,7 +488,7 @@ class Crawler:
     async def _crawl_country(self, market: Market) -> tuple[CountryOutput | None, UnsupportedCountry | None, bool]:
         """Crawl a single country and return its output, unsupported record, and transient flag."""
         code = market.paypal_market_code
-        previous = self._load_previous_country_output(market)
+        previous = self.load_previous_country_output(market)
         try:
             fee_url = await discover_fee_page(self.http_client, market, self.config)
         except UnsupportedCountryError as exc:
@@ -561,7 +561,7 @@ class Crawler:
                 return cc, None, unsup, False, False
             if transient:
                 if self.config.transient_policy == "reuse-previous" and cc in previous_state.supported_countries:
-                    previous_output = self._load_previous_country_output(market)
+                    previous_output = self.load_previous_country_output(market)
                     if previous_output is not None:
                         return cc, previous_output, None, True, False
                 return cc, None, None, False, True
@@ -607,7 +607,7 @@ class Crawler:
                 del outputs[cc]
         return validation_errors
 
-    def _build_change_report(
+    def build_change_report(
         self,
         previous_state: PreviousState,
         markets: list[Market],
@@ -725,7 +725,7 @@ class Crawler:
                 "Crawl failed on transient or validation errors (transient_policy=fail): " + ", ".join(sorted(failed))
             )
 
-        change_report = self._build_change_report(previous_state, markets, outputs, unsupported, failed)
+        change_report = self.build_change_report(previous_state, markets, outputs, unsupported, failed)
         try:
             enforce_regression(change_report, self.config.fail_on_regression)
         except RegressionError as exc:

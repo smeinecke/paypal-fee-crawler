@@ -83,15 +83,15 @@ def test_crawler_extracts_metadata_from_real_cms() -> None:
     html = _load_fixture("paypal-de-real.html")
     cms = extract_cms_context(html)
     crawler = Crawler(CrawlConfiguration())
-    assert crawler._extract_page_title("<html></html>", cms) is not None
-    assert crawler._extract_cms_updated_at(cms) is not None
-    assert crawler._extract_locale(cms) is not None
-    assert crawler._extract_update_date(cms, []) is not None
+    assert crawler.extract_page_title("<html></html>", cms) is not None
+    assert crawler.extract_cms_updated_at(cms) is not None
+    assert crawler.extract_locale(cms) is not None
+    assert crawler.extract_update_date(cms, []) is not None
 
 
 def test_crawler_extracts_title_from_html() -> None:
     crawler = Crawler(CrawlConfiguration())
-    assert crawler._extract_page_title("<title>Custom Title</title>", {}) == "Custom Title"
+    assert crawler.extract_page_title("<title>Custom Title</title>", {}) == "Custom Title"
 
 
 def test_crawl_is_deterministic_without_timestamp(tmp_path: Path) -> None:

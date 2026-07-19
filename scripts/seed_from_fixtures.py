@@ -23,8 +23,6 @@ from paypal_fee_crawler.constants import FEE_PAGE_PATH_TEMPLATE, PAYPAL_BASE_URL
 from paypal_fee_crawler.crawler import Crawler
 from paypal_fee_crawler.discovery import get_bootstrap_markets, get_canonical_page_id
 from paypal_fee_crawler.models import (
-    ChangeReport,
-    ClassifierMetadata,
     CountryManifest,
     CountryOutput,
     CrawlCache,
@@ -34,7 +32,7 @@ from paypal_fee_crawler.models import (
     Source,
     UnsupportedCountry,
 )
-from paypal_fee_crawler.regression import PreviousState, RegressionLimits, check_regression
+from paypal_fee_crawler.regression import PreviousState
 from paypal_fee_crawler.validation import validate_all_output
 
 FIXTURES = Path(__file__).parent.parent / "tests" / "fixtures"
@@ -86,7 +84,7 @@ def _load_existing_outputs(
 
     for market in manifest.markets:
         cc = market.paypal_market_code
-        output = crawler._load_previous_country_output(market)
+        output = crawler.load_previous_country_output(market)
         if output is None:
             continue
 
@@ -124,9 +122,9 @@ def _build_output(code: str, html: str, existing: CountryOutput | None, crawler:
         market = Market(paypal_market_code=code.upper(), iso_country_code=code.upper(), country_name=code.upper())
 
     page_id = get_canonical_page_id(cms) or "unknown"
-    page_title = crawler._extract_page_title(html, cms)
-    page_updated_at = crawler._extract_update_date(cms, sections)
-    cms_updated_at = crawler._extract_cms_updated_at(cms)
+    page_title = crawler.extract_page_title(html, cms)
+    page_updated_at = crawler.extract_update_date(cms, sections)
+    cms_updated_at = crawler.extract_cms_updated_at(cms)
     content_sha256 = _compute_content_sha256(html)
     requested_url = FEE_PAGE_PATH_TEMPLATE.format(base=PAYPAL_BASE_URL, market=code.lower())
     canonical_url = requested_url
@@ -170,29 +168,6 @@ def _build_output(code: str, html: str, existing: CountryOutput | None, crawler:
     )
 
 
-def _build_change_report(
-    outputs: dict[str, CountryOutput],
-    output_dir: Path,
-) -> ChangeReport:
-    """Compute a change report against the previous committed state."""
-    previous = PreviousState.load(output_dir)
-    current_discovered = set(outputs.keys()) | previous.discovered_countries
-    current_supported = set(outputs.keys())
-    current_unsupported = previous.unsupported_countries
-    current_transient: set[str] = set()
-
-    return check_regression(
-        previous,
-        current_discovered,
-        current_supported,
-        current_unsupported,
-        current_transient,
-        outputs,
-        RegressionLimits(),
-        current_classifier_metadata=ClassifierMetadata.default(),
-    )
-
-
 def main() -> int:
     crawler = Crawler(CrawlConfiguration(output_dir=str(OUTPUT_DIR)))
     outputs, markets, unsupported, transient_failures = _load_existing_outputs(OUTPUT_DIR, crawler)
@@ -207,7 +182,14 @@ def main() -> int:
         existing = outputs.get(code.upper())
         outputs[code.upper()] = _build_output(code, html, existing, crawler)
 
-    change_report = _build_change_report(outputs, OUTPUT_DIR)
+    previous = PreviousState.load(OUTPUT_DIR)
+    change_report = crawler.build_change_report(
+        previous,
+        markets,
+        outputs,
+        unsupported,
+        [u.paypal_market_code for u in transient_failures],
+    )
 
     existing_report: CrawlReport | None = None
     report_path = OUTPUT_DIR / "meta" / "crawl-report.json"

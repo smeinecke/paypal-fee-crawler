@@ -243,6 +243,7 @@ class OutputPublisher:
         output: CountryOutput,
         artifact_sha256: str,
         existing_state: CrawlState | None,
+        classifier_metadata: ClassifierMetadata | None = None,
     ) -> CrawlStateEntry:
         existing_entry = self._existing_state_entry(output, existing_state, artifact_sha256)
         if existing_entry is not None:
@@ -250,7 +251,7 @@ class OutputPublisher:
             classifier_version = existing_entry.classifier_version
         else:
             table_fingerprints = self._table_fingerprints_for_output(output)
-            classifier_version = None
+            classifier_version = classifier_metadata.classifier_version if classifier_metadata is not None else None
 
         return CrawlStateEntry(
             raw_content_sha256=output.source.content_sha256,
@@ -448,7 +449,7 @@ class OutputPublisher:
             )
 
             state_entries[output.market.paypal_market_code] = self._build_state_entry(
-                output, content_hash, existing_state
+                output, content_hash, existing_state, classifier_metadata
             )
 
         index = CountryIndex(generated_at=run_generated_at, countries=index_entries)
