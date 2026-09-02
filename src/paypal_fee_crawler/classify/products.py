@@ -178,6 +178,10 @@ def _classify_table_category(table: Table) -> str | None:
     if _is_currency_conversion_text(text):
         return "currency_conversion_table"
 
+    # Bill Pay for Business Accounts tables are a distinct product family.
+    if _keyword_match(text, _TABLE_CATEGORY_KEYWORDS.get("bill_pay_rate_table", ()), word_boundary=False):
+        return "bill_pay_rate_table"
+
     category = _select_category_from_scores(table, text)
     # Tables that score as international surcharge schedules but actually
     # contain full percentage + fixed-fee rates are commercial rate tables

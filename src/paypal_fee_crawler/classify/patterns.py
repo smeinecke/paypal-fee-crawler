@@ -348,6 +348,12 @@ _PRODUCT_ALIASES: dict[str, tuple[str, ...]] = {
         "kortterminaler",
         "kortpresent",
     ),
+    "bill_pay": (
+        "bill pay",
+        "billpay",
+        "bill pay for business",
+        "bill pay for business accounts",
+    ),
 }
 
 _PRODUCT_ORDER = list(_PRODUCT_ALIASES)
@@ -506,6 +512,14 @@ _TABLE_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "goods_and_services_rate_table": (
         "geld für waren und dienstleistungen",
         "goods and services",
+    ),
+    "bill_pay_rate_table": (
+        "bill pay",
+        "billpay",
+        "bill pay for business",
+        "bill pay for business accounts",
+        "funding a bill pay",
+        "disbursement of bill pay",
     ),
     "donation_rate_table": (
         "empfang von inlandsspenden",
@@ -951,6 +965,7 @@ _TABLE_CATEGORY_SCHEDULE: dict[str, str] = {
     "apm_rate_table": "alternative_payment_methods",
     "pos_rate_table": "pos_transactions",
     "micropayment_rate_table": "micropayments",
+    "bill_pay_rate_table": "bill_pay",
 }
 
 _CANONICAL_AMOUNT_RE = re.compile(r"[+-]?(?:\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)")
@@ -1060,6 +1075,7 @@ _PRODUCT_CATEGORY_MAP: dict[str, str] = {
     "invoice_pay_later": "commercial_rate_table",
     "pay_later_consumer": "commercial_rate_table",
     "qr_code_payments": "commercial_rate_table",
+    "bill_pay": "bill_pay_rate_table",
     "chargebacks": "online_card_rate_table",
     "refunds": "online_card_rate_table",
     "disputes": "online_card_rate_table",
@@ -1077,6 +1093,7 @@ _TABLE_CATEGORY_PRODUCT: dict[str, str] = {
     "online_card_rate_table": "advanced_card_payments",
     "goods_and_services_rate_table": "goods_and_services",
     "commercial_rate_table": "other_commercial",
+    "bill_pay_rate_table": "bill_pay",
     "withdrawals_rate_table": "withdrawals",
 }
 
@@ -2336,6 +2353,7 @@ _BASE_VARIANTS_BY_PRODUCT: dict[str, frozenset[str]] = {
     "micropayments": frozenset({"standard", "digital_goods", "mass_payments"}),
     "disputes": frozenset({"standard"}),
     "withdrawals": frozenset({"withdrawal", "bank_account", "cards"}),
+    "bill_pay": frozenset({"standard"}),
     "sepa_direct_debit": frozenset({"standard_settlement"}),
     "fraud_protection": frozenset({"advanced"}),
     "records_request": frozenset({"standard"}),
@@ -2766,6 +2784,14 @@ _SCHEDULE_NAME_FROM_TABLE_MAPPING = {
         "verification",
         "verifizierung",
     ),
+    "bill_pay": (
+        "bill pay",
+        "billpay",
+        "bill pay for business",
+        "bill pay for business accounts",
+        "funding a bill pay",
+        "disbursement of bill pay",
+    ),
     "commercial": (
         "geschäftlichen transaktionen",
         "commercial transaction",
@@ -3000,6 +3026,7 @@ _FIXED_FEE_SCHEDULE_FOR: dict[str, str | None] = {
     "invoice_pay_later": "invoice_pay_later",
     "pay_later_consumer": "pay_later_consumer",
     "qr_code_payments": "qr_code_payments",
+    "bill_pay": "bill_pay",
     "donations": "donations",
     "nonprofit": "nonprofit",
     "micropayments": "micropayments",
@@ -3041,6 +3068,7 @@ _INTERNATIONAL_SURCHARGE_SCHEDULE_FOR: dict[str, str | None] = {
     "invoice_pay_later": "invoice_pay_later",
     "pay_later_consumer": "pay_later_consumer",
     "qr_code_payments": None,
+    "bill_pay": None,
     "donations": "donations",
     "nonprofit": "nonprofit",
     "micropayments": None,

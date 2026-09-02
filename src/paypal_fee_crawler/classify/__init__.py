@@ -824,6 +824,7 @@ def classify_tables(tables: list[Table], source: Source | None = None) -> Derive
             "pos_rate_table",
             "micropayment_rate_table",
             "withdrawals_rate_table",
+            "bill_pay_rate_table",
             "other_fees_table",
         }:
             rules, uncls, ambig, ignored, numeric_candidates, unclassified_candidates = _extract_rules_from_rate_table(
