@@ -347,6 +347,8 @@ def _conditions_for_pos(
     elif variant_id == "qr_code":
         conditions["payment_methods"] = ["qr_code"]
         conditions["point_of_sale"] = True
+    elif variant_id == "pay_later":
+        conditions["payment_methods"] = ["pay_later"]
     elif variant_id == "payment_links":
         text = _norm(label)
         if _keyword_match(text, ("paypal checkout", "venmo", "pay later", "guest checkout"), word_boundary=False):

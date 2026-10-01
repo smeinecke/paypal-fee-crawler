@@ -2178,6 +2178,13 @@ _POS_VARIANTS: tuple[tuple[tuple[str, ...], str], ...] = (
     ),
     (
         (
+            "buy now pay later",
+            "bnpl",
+        ),
+        "pay_later",
+    ),
+    (
+        (
             "payment link",
             "zahlungslink",
             "zahlungslinks",
