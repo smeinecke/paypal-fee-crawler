@@ -8,10 +8,13 @@ import logging
 import random
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 
 import httpx
+from curl_cffi import CurlECode
+from curl_cffi.requests import AsyncSession
+from curl_cffi.requests.errors import RequestsError
 from lxml import html
 
 from .exceptions import (
@@ -28,6 +31,37 @@ from .models import CrawlConfiguration
 logger = logging.getLogger(__name__)
 
 DEFAULT_USER_AGENT = "paypal-fee-crawler/0.1.0 (+https://github.com/smeinecke/paypal-fee-crawler)"
+
+# Browser identity used for requests. PayPal sits behind DataDome, which
+# rejects clients whose TLS/HTTP fingerprint does not look like a real
+# browser - a custom User-Agent with a Chrome fingerprint is denied too.
+IMPERSONATE_TARGET = "chrome"
+
+_TRANSIENT_CURL_CODES = {
+    CurlECode.OPERATION_TIMEDOUT,
+    CurlECode.COULDNT_CONNECT,
+    CurlECode.COULDNT_RESOLVE_HOST,
+    CurlECode.COULDNT_RESOLVE_PROXY,
+    CurlECode.SSL_CONNECT_ERROR,
+    CurlECode.QUIC_CONNECT_ERROR,
+    CurlECode.GOT_NOTHING,
+    CurlECode.RECV_ERROR,
+    CurlECode.SEND_ERROR,
+    CurlECode.PARTIAL_FILE,
+    CurlECode.HTTP2,
+    CurlECode.HTTP2_STREAM,
+    CurlECode.NO_CONNECTION_AVAILABLE,
+}
+
+
+def _to_httpx_response(response: Any, method: str, url: str) -> httpx.Response:
+    """Wrap a curl_cffi response so downstream code keeps a single type."""
+    return httpx.Response(
+        status_code=response.status_code,
+        content=response.content,
+        headers=dict(response.headers),
+        request=httpx.Request(method, url),
+    )
 
 
 def _sanitize_url(url: str) -> str:
@@ -100,56 +134,59 @@ class HttpClient:
 
         self.config = config or CrawlConfiguration()
         self._semaphore = asyncio.Semaphore(self.config.max_workers)
-        self._client: httpx.AsyncClient | None = None
+        self._client: httpx.AsyncClient | AsyncSession | None = None
         self._cache = HttpCache(self.config)
 
     @property
     def cache_stats(self) -> Any:
         return self._cache.stats
 
-    def _client_headers(self) -> dict[str, str]:
-        return {
-            "User-Agent": self.config.user_agent or DEFAULT_USER_AGENT,
+    def _client_headers(self, *, impersonated: bool) -> dict[str, str]:
+        headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
             # PayPal's edge cache returns a pre-rendered, CMS-free page when the
             # client advertises compression support. Requesting identity encoding
             # ensures the dynamic origin page with the CMS context is served.
             "Accept-Encoding": "identity",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
         }
+        if impersonated:
+            # Only an explicit --user-agent overrides the impersonated UA.
+            # Sending the crawler UA would defeat the browser fingerprint.
+            if self.config.user_agent:
+                headers["User-Agent"] = self.config.user_agent
+        else:
+            headers["User-Agent"] = self.config.user_agent or DEFAULT_USER_AGENT
+            headers["DNT"] = "1"
+            headers["Connection"] = "keep-alive"
+            headers["Upgrade-Insecure-Requests"] = "1"
+        return headers
 
-    def _create_client(self) -> httpx.AsyncClient:
+    def _create_client(self) -> AsyncSession:
         """Return a fresh, cookie-free client for a single request.
 
-        ``httpx.AsyncClient(cookies=None)`` still stores cookies received during
-        a request. By creating a new client for every request and closing it,
-        cookies can never leak between markets or between discovery and page
-        fetch steps.
+        By creating a new session for every request and closing it, cookies can
+        never leak between markets or between discovery and page fetch steps.
         """
         connect_timeout = (
             self.config.connect_timeout if self.config.connect_timeout is not None else self.config.timeout
         )
         read_timeout = self.config.read_timeout if self.config.read_timeout is not None else self.config.timeout
-        timeout = httpx.Timeout(
-            connect=connect_timeout,
-            read=read_timeout,
-            write=10.0,
-            pool=10.0,
-        )
-        return httpx.AsyncClient(
-            timeout=timeout,
-            follow_redirects=True,
-            cookies=None,
-            headers=self._client_headers(),
+        return AsyncSession(
+            impersonate=IMPERSONATE_TARGET,
+            timeout=(connect_timeout, read_timeout),
+            allow_redirects=True,
         )
 
     async def close(self) -> None:
-        if self._client is not None and not self._client.is_closed:
-            await self._client.aclose()
-            self._client = None
+        if self._client is None:
+            return
+        close = getattr(self._client, "aclose", None) or getattr(self._client, "close", None)
+        if close is not None:
+            result = close()
+            if asyncio.iscoroutine(result):
+                await result
+        self._client = None
 
     async def __aenter__(self) -> HttpClient:
         return self
@@ -326,7 +363,7 @@ class HttpClient:
         **kwargs: Any,
     ) -> HttpResponse:
         self._validate_url(url)
-        request_headers = self._client_headers()
+        request_headers = self._client_headers(impersonated=self._client is None)
 
         last_error: Exception | None = None
         html_tree: Any | None = None
@@ -338,11 +375,21 @@ class HttpClient:
                 try:
                     async with self._semaphore:
                         logger.debug("%s %s (attempt %d)", method, _sanitize_url(url), attempt + 1)
-                        if self._client is not None:
-                            response = await self._client.request(method, url, headers=headers, **kwargs)
-                        else:
-                            async with self._create_client() as client:
-                                response = await client.request(method, url, headers=headers, **kwargs)
+                        try:
+                            http_method = cast(Any, method)
+                            if self._client is not None:
+                                response = await self._client.request(http_method, url, headers=headers, **kwargs)
+                            else:
+                                async with self._create_client() as client:
+                                    response = await client.request(http_method, url, headers=headers, **kwargs)
+                        except RequestsError as exc:
+                            if getattr(exc, "code", None) in _TRANSIENT_CURL_CODES:
+                                raise TransientNetworkError(
+                                    f"Connection error for {_sanitize_url(url)}: {exc}"
+                                ) from exc
+                            raise PermanentNetworkError(f"Request failed for {_sanitize_url(url)}: {exc}") from exc
+                        if not isinstance(response, httpx.Response):
+                            response = _to_httpx_response(response, method, str(response.url))
                         # Check final URL after redirects
                         final_url = str(response.url)
                         if final_url != url:
