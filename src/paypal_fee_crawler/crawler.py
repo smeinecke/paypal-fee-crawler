@@ -562,10 +562,14 @@ class Crawler:
             if unsup is not None:
                 return cc, None, unsup, False, False
             if transient:
-                if self.config.transient_policy == "reuse-previous" and cc in previous_state.supported_countries:
-                    previous_output = self.load_previous_country_output(market)
-                    if previous_output is not None:
-                        return cc, previous_output, None, True, False
+                if self.config.transient_policy == "reuse-previous":
+                    if cc in previous_state.supported_countries:
+                        previous_output = self.load_previous_country_output(market)
+                        if previous_output is not None:
+                            return cc, previous_output, None, True, False
+                    previous_unsupported = previous_state.unsupported_records.get(cc)
+                    if previous_unsupported is not None:
+                        return cc, None, previous_unsupported, False, False
                 return cc, None, None, False, True
             return cc, None, None, False, True
 

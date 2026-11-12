@@ -296,7 +296,12 @@ async def _fetch_with_flags(
 ) -> tuple[HttpResponse | None, bool, bool]:
     try:
         return await http_client.get(url, market=code), False, False
-    except (AccessChallengeError, ContentSecurityError) as exc:
+    except AccessChallengeError:
+        # Deterministic denial (403 / interstitial / tarpit): once one probe
+        # is blocked, the rest of this market's probes are too, so bail out
+        # early instead of burning retries on every remaining candidate.
+        raise
+    except ContentSecurityError as exc:
         logger.debug("Access/security failure on %s for %s: %s", context, code, exc)
     except PermanentHttpError as exc:
         if exc.status_code == 404:
@@ -442,7 +447,12 @@ async def discover_fee_page(
     for legacy in config.legacy_fee_paths:
         candidates.append(f"{PAYPAL_BASE_URL}/{slug}/{legacy}")
 
-    confirmed, tested, transient_failure, parser_failure = await _try_candidates(http_client, candidates, slug, code)
+    try:
+        confirmed, tested, transient_failure, parser_failure = await _try_candidates(
+            http_client, candidates, slug, code
+        )
+    except AccessChallengeError as exc:
+        raise FeePageError(f"Candidate access challenge for {code}: {exc}") from exc
     if confirmed:
         return confirmed
 
@@ -455,9 +465,12 @@ async def discover_fee_page(
     except ParserError as exc:
         raise FeePageStructureError(f"Homepage for {code} has no valid CMS context: {exc}") from exc
 
-    confirmed, transient_failure, parser_failure = await _try_homepage_links(
-        http_client, page_data, homepage, code, tested
-    )
+    try:
+        confirmed, transient_failure, parser_failure = await _try_homepage_links(
+            http_client, page_data, homepage, code, tested
+        )
+    except AccessChallengeError as exc:
+        raise FeePageError(f"Fee-link access challenge for {code}: {exc}") from exc
     if confirmed:
         return confirmed
 

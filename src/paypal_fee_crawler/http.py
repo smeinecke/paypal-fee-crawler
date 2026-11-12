@@ -383,7 +383,17 @@ class HttpClient:
                                 async with self._create_client() as client:
                                     response = await client.request(http_method, url, headers=headers, **kwargs)
                         except RequestsError as exc:
-                            if getattr(exc, "code", None) in _TRANSIENT_CURL_CODES:
+                            curl_code = getattr(exc, "code", None)
+                            if curl_code == CurlECode.OPERATION_TIMEDOUT and "0 bytes received" in str(exc):
+                                # DataDome tarpit: the server accepts the
+                                # connection and never sends a byte. Retrying
+                                # gets the same treatment, so surface it as a
+                                # deterministic denial instead of a transient
+                                # network error.
+                                raise AccessChallengeError(
+                                    f"Request denied (timeout, 0 bytes received) for {_sanitize_url(url)}"
+                                ) from exc
+                            if curl_code in _TRANSIENT_CURL_CODES:
                                 raise TransientNetworkError(
                                     f"Connection error for {_sanitize_url(url)}: {exc}"
                                 ) from exc
